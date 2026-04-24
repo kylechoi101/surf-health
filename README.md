@@ -84,3 +84,7 @@ python -m app.ml.training --curated --forecast-date 2026-04-20
 - Operational storage targets Postgres/PostGIS and research snapshots target DuckDB/Parquet.
 - Ollama is used only for explanations and QA assistance, not numeric forecasting.
 - The current repo is scaffolded for local-first development on Apple Silicon with PyTorch MPS.
+
+## Acknowledgement 
+
+- This project is inspired by the project my team attempted to do: https://github.com/SatrunsDream/DataTide
