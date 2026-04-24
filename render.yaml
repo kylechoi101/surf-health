@@ -6,13 +6,7 @@ services:
     dockerfilePath: ./backend/Dockerfile
     dockerContext: ./backend
     region: us-west
-    plan: starter
-    disk:
-      name: surf-health-data
-      mountPath: /data
-      sizeGB: 10
+    plan: free
     envVars:
       - key: APP_ENV
         value: production
-      - key: WORKSPACE_DIR
-        value: /data
