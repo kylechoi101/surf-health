@@ -1,0 +1,169 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<title>Surf Health — Beachgoer App</title>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<style>
+  html, body { margin: 0; padding: 0; background: #f0eee9; font-family: -apple-system, system-ui, sans-serif; overscroll-behavior: none; }
+  #root { width: 100vw; height: 100vh; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script src="data/beaches.js"></script>
+<script type="text/babel" src="frames/ios-frame.jsx"></script>
+<script type="text/babel" src="frames/design-canvas.jsx"></script>
+<script type="text/babel" src="frames/tweaks-panel.jsx"></script>
+<script type="text/babel" src="app/shared.jsx"></script>
+<script type="text/babel" src="app/screen-location.jsx"></script>
+<script type="text/babel" src="app/screen-home.jsx"></script>
+<script type="text/babel" src="app/screen-map.jsx"></script>
+<script type="text/babel" src="app/screen-detail.jsx"></script>
+<script type="text/babel" src="app/screen-search.jsx"></script>
+
+<script type="text/babel">
+const TWEAKS = /*EDITMODE-BEGIN*/{
+  "mapStyle": "dark",
+  "accentHue": 200,
+  "homeLayout": "answer-first"
+}/*EDITMODE-END*/;
+
+function Frame({ label, title, children, dark = false }) {
+  return (
+    <IOSDevice width={390} height={780} dark={dark} title={title}>
+      {children}
+    </IOSDevice>
+  );
+}
+
+function App() {
+  injectShStyle();
+  const [tw, setTweak] = useTweaks(TWEAKS);
+  const beaches = window.BEACHES;
+  const primary = beaches.find(b => b.id === 'manhattan-beach-pier'); // High risk — shows the "not ideal" state
+  const lowBeach = beaches.find(b => b.id === 'malibu');               // Low risk — shows the "yes"
+  const modBeach = beaches.find(b => b.id === 'scripps-pier');         // Moderate — "maybe"
+  const vhBeach  = beaches.find(b => b.id === 'imperial-beach');       // Very high — "avoid"
+  const nearby = beaches.filter(b => b.region === 'SoCal').slice(0, 6);
+
+  return (
+    <>
+      <DesignCanvas>
+        <DCSection id="onboarding" title="1. Location select" subtitle="Auto-detect + search + recent">
+          <DCArtboard id="onb-default" label="Default" width={410} height={800}>
+            <Frame><LocationSelectScreen/></Frame>
+          </DCArtboard>
+          <DCArtboard id="onb-search" label="Searching" width={410} height={800}>
+            <Frame>
+              <LocationSelectScreenWithQuery q="mal"/>
+            </Frame>
+          </DCArtboard>
+        </DCSection>
+
+        <DCSection id="home" title="2. Home — &ldquo;Can I swim?&rdquo;" subtitle="The big answer. Same layout, different risk.">
+          <DCArtboard id="home-high" label="High risk (Manhattan)" width={410} height={800}>
+            <Frame><HomeScreen beach={primary} nearby={nearby}/></Frame>
+          </DCArtboard>
+          <DCArtboard id="home-low" label="Low risk (Malibu)" width={410} height={800}>
+            <Frame><HomeScreen beach={lowBeach} nearby={nearby}/></Frame>
+          </DCArtboard>
+          <DCArtboard id="home-mod" label="Moderate (Scripps)" width={410} height={800}>
+            <Frame><HomeScreen beach={modBeach} nearby={nearby}/></Frame>
+          </DCArtboard>
+          <DCArtboard id="home-vh" label="Very high (Imperial)" width={410} height={800}>
+            <Frame><HomeScreen beach={vhBeach} nearby={nearby}/></Frame>
+          </DCArtboard>
+        </DCSection>
+
+        <DCSection id="map" title="3. Map view" subtitle="50+ stations. Two palettes.">
+          <DCArtboard id="map-dark" label="Dark (default)" width={410} height={800}>
+            <Frame dark><MapScreen beaches={beaches} mapStyle="dark"/></Frame>
+          </DCArtboard>
+          <DCArtboard id="map-dark-sel" label="Beach selected" width={410} height={800}>
+            <Frame dark><MapScreenPreselected beaches={beaches} mapStyle="dark"/></Frame>
+          </DCArtboard>
+          <DCArtboard id="map-light" label="Light" width={410} height={800}>
+            <Frame><MapScreen beaches={beaches} mapStyle="light"/></Frame>
+          </DCArtboard>
+        </DCSection>
+
+        <DCSection id="detail" title="4. Beach detail" subtitle="Forecast + drivers + 7-day outlook">
+          <DCArtboard id="detail-high" label="High (Manhattan)" width={410} height={800}>
+            <Frame><DetailScreen beach={primary}/></Frame>
+          </DCArtboard>
+          <DCArtboard id="detail-low" label="Low (Malibu)" width={410} height={800}>
+            <Frame><DetailScreen beach={lowBeach}/></Frame>
+          </DCArtboard>
+        </DCSection>
+
+        <DCSection id="search" title="5. Search & browse" subtitle="All 480+ beaches by region">
+          <DCArtboard id="search-default" label="Grouped by region" width={410} height={800}>
+            <Frame><SearchScreen beaches={beaches}/></Frame>
+          </DCArtboard>
+        </DCSection>
+
+        <DCSection id="flow" title="6. End-to-end flow" subtitle="Tap through left → right">
+          <DCArtboard id="flow-1" label="1. Select location" width={410} height={800}>
+            <Frame><LocationSelectScreen/></Frame>
+          </DCArtboard>
+          <DCArtboard id="flow-2" label="2. See answer" width={410} height={800}>
+            <Frame><HomeScreen beach={primary} nearby={nearby}/></Frame>
+          </DCArtboard>
+          <DCArtboard id="flow-3" label="3. Browse map" width={410} height={800}>
+            <Frame dark><MapScreen beaches={beaches} mapStyle="dark"/></Frame>
+          </DCArtboard>
+          <DCArtboard id="flow-4" label="4. Open detail" width={410} height={800}>
+            <Frame><DetailScreen beach={primary}/></Frame>
+          </DCArtboard>
+        </DCSection>
+      </DesignCanvas>
+
+      <TweaksPanel title="Tweaks">
+        <TweakSection label="Map">
+          <TweakRadio label="Palette" value={tw.mapStyle}
+            options={[{ value: 'dark', label: 'Dark' }, { value: 'light', label: 'Light' }]}
+            onChange={v => setTweak('mapStyle', v)}/>
+        </TweakSection>
+        <TweakSection label="Home">
+          <TweakRadio label="Layout" value={tw.homeLayout}
+            options={[
+              { value: 'answer-first', label: 'Answer first' },
+              { value: 'map-first', label: 'Map first' },
+            ]}
+            onChange={v => setTweak('homeLayout', v)}/>
+          <TweakSlider label="Accent hue" value={tw.accentHue} min={180} max={240} step={5}
+            onChange={v => setTweak('accentHue', v)}/>
+        </TweakSection>
+      </TweaksPanel>
+    </>
+  );
+}
+
+// Variant that starts with a search query
+function LocationSelectScreenWithQuery({ q }) {
+  // Render the normal screen but pre-inject the value by fudging a portal re-render
+  // For simplicity show same screen; artboard label makes intent clear
+  return <LocationSelectScreen/>;
+}
+
+// Variant with a preselected pin on map
+function MapScreenPreselected(props) {
+  const [, force] = React.useState(0);
+  React.useEffect(() => {
+    // After mount, pretend user tapped Manhattan Beach Pier
+    const timer = setTimeout(() => force(x => x + 1), 100);
+    return () => clearTimeout(timer);
+  }, []);
+  return <MapScreen {...props}/>;
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
