@@ -231,20 +231,18 @@ def normalize_advisories(frame: pd.DataFrame) -> pd.DataFrame:
     marine["beach_id"] = derive_beach_id(marine)
     marine["started_at"] = [
         _parse_datetime(date_value, time_value)
+        for date_value, time_value in zip(marine["DateofAdvisory"], marine["TimeofAdvisory"], strict=False)
+    ]
+    marine["ended_at"] = [
+        _parse_datetime(date_value, time_value)
         for date_value, time_value in zip(marine["DateOpened"], marine["TimeOpened"], strict=False)
     ]
-    fallback_started = [
-        _parse_datetime(date_value, time_value)
-        for date_value, time_value in zip(
-            marine["DateofAdvisory"], marine["TimeofAdvisory"], strict=False
-        )
-    ]
-    started_primary = pd.Series(pd.to_datetime(marine["started_at"], errors="coerce"), index=marine.index)
-    started_fallback = pd.Series(pd.to_datetime(fallback_started, errors="coerce"), index=marine.index)
-    marine["started_at"] = started_primary.where(started_primary.notna(), started_fallback)
+    
+    marine["started_at"] = pd.to_datetime(marine["started_at"], errors="coerce")
+    marine["ended_at"] = pd.to_datetime(marine["ended_at"], errors="coerce")
     marine = marine.loc[_plausible_datetime_mask(marine["started_at"])].copy()
-    marine["ended_at"] = pd.NaT
-    marine["status"] = "historical"
+    
+    marine["status"] = marine["ended_at"].isna().map(lambda active: "active" if active else "historical")
     marine["advisory_type"] = _column(marine, "AdvisoryType", "Unknown").fillna("Unknown")
     marine["cause"] = _column(marine, "AdvisoryCause", "Unknown").fillna("Unknown")
     marine["county"] = _column(marine, "CountyName").fillna(_column(marine, "County"))

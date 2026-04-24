@@ -47,6 +47,7 @@ class ForecastRecord(BaseModel):
     top_drivers: list[str] = Field(default_factory=list)
     model_version: str
     forecast_generated_at: datetime
+    forecast_age_hours: int | None = None
     environmental_summary: EnvironmentalSummary = Field(default_factory=EnvironmentalSummary)
 
 
@@ -78,6 +79,7 @@ class SystemHealthResponse(BaseModel):
     pipeline_freshness: str
     source_freshness: dict[str, str]
     model_registry: dict[str, Any]
+    active_advisories_count: int | None = None
 
 
 class ForecastExplanationRequest(BaseModel):

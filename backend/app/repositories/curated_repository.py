@@ -146,6 +146,17 @@ class CuratedBeachRepository(BeachRepository):
             wind_direction_deg=pick("wind_direction_deg"),
         )
         row["environmental_summary"] = environmental_summary
+        
+        try:
+            gen_at = pd.to_datetime(row.get("forecast_generated_at"))
+            now_utc = pd.Timestamp.now(tz="UTC")
+            if gen_at.tz is None:
+                gen_at = gen_at.tz_localize("UTC")
+            age_hours = int((now_utc - gen_at).total_seconds() / 3600)
+            row["forecast_age_hours"] = max(0, age_hours)
+        except Exception:
+            row["forecast_age_hours"] = None
+
         return ForecastRecord.model_validate(row)
 
     def _latest_beach_day_env(self, beach_id: str) -> dict[str, float | None]:
@@ -265,4 +276,13 @@ class CuratedBeachRepository(BeachRepository):
     def get_system_health(self) -> SystemHealthResponse:
         health_path = self.curated_dir / "system_health.json"
         payload = json.loads(health_path.read_text()) if health_path.exists() else {}
-        return SystemHealthResponse.model_validate({"app_env": os.getenv("APP_ENV", "development"), **payload})
+        
+        active_count = 0
+        if not self.advisories_frame.empty:
+            active_count = int((self.advisories_frame["status"] == "active").sum())
+            
+        return SystemHealthResponse.model_validate({
+            "app_env": os.getenv("APP_ENV", "development"),
+            "active_advisories_count": active_count,
+            **payload
+        })
