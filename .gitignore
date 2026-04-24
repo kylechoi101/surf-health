@@ -15,6 +15,12 @@ node_modules/
 dist/
 coverage/
 artifacts/
-/data/
+# data/curated/ is baked into the Docker image (Dockerfile: COPY data/curated/)
+# and MUST be tracked so Render's build context has the parquets.
+# Ignore everything under data/ EXCEPT curated/:
+/data/raw/
+/data/research/
+/data/curated/*.pre-cdip.parquet
+
 mobile/build-*.ipa
 order.txt
