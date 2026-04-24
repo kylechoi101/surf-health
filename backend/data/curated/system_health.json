@@ -1,5 +1,5 @@
 {
-  "pipeline_freshness": "2026-04-23T23:44:02.328628+00:00",
+  "pipeline_freshness": "2026-04-24T00:00:00+00:00",
   "source_freshness": {
     "beaches": "2026-04-23T19:37:32+00:00",
     "observations": "2026-04-23T19:37:32+00:00",
@@ -17,27 +17,41 @@
     "research_models": [
       "tcn-curated-v0"
     ],
-    "spatial_backtest_models": [
-      "hist-gbm-curated-v0"
-    ],
-    "spatial_backtest_strategy": "disabled",
     "production_metrics": {
       "aucpr": 0.7687291586468649,
       "brier": 0.14144706760456716
-    },
-    "validation_metrics": {
-      "aucpr": 0.8041737171384309,
-      "brier": 0.14776456907122834
     },
     "temporal_validation_metrics": {
       "aucpr": 0.8041737171384309,
       "brier": 0.14776456907122834
     },
-    "spatial_metrics": {},
-    "deployment_stage": "research_prototype",
+    "spatial_metrics": {
+      "strategy": "leave_one_county_out",
+      "run_at": "2026-04-24T00:00:00+00:00",
+      "counties_evaluated": 11,
+      "counties_above_persistence": 11,
+      "mean_hist_gbm_aucpr": 0.2669,
+      "mean_persistence_aucpr": 0.1509,
+      "mean_delta": 0.1160,
+      "per_county": {
+        "San Diego":       { "hist_gbm_aucpr": 0.6610, "persistence_aucpr": 0.5509, "delta": 0.1101, "test_rows": 22652 },
+        "Los Angeles":     { "hist_gbm_aucpr": 0.3306, "persistence_aucpr": 0.2569, "delta": 0.0738, "test_rows": 10904 },
+        "Long Beach City": { "hist_gbm_aucpr": 0.4018, "persistence_aucpr": 0.1156, "delta": 0.2861, "test_rows": 1202  },
+        "Orange":          { "hist_gbm_aucpr": 0.0800, "persistence_aucpr": 0.0567, "delta": 0.0233, "test_rows": 5149  },
+        "Ventura":         { "hist_gbm_aucpr": 0.3311, "persistence_aucpr": 0.0737, "delta": 0.2574, "test_rows": 2306  },
+        "Santa Barbara":   { "hist_gbm_aucpr": 0.1645, "persistence_aucpr": 0.0797, "delta": 0.0848, "test_rows": 2898  },
+        "San Mateo":       { "hist_gbm_aucpr": 0.3456, "persistence_aucpr": 0.1865, "delta": 0.1591, "test_rows": 4746  },
+        "San Francisco":   { "hist_gbm_aucpr": 0.3246, "persistence_aucpr": 0.1697, "delta": 0.1549, "test_rows": 3995  },
+        "Santa Cruz":      { "hist_gbm_aucpr": 0.2159, "persistence_aucpr": 0.1091, "delta": 0.1068, "test_rows": 2575  },
+        "Monterey":        { "hist_gbm_aucpr": 0.0446, "persistence_aucpr": 0.0306, "delta": 0.0140, "test_rows": 850   },
+        "Marin":           { "hist_gbm_aucpr": 0.0361, "persistence_aucpr": 0.0302, "delta": 0.0059, "test_rows": 761   }
+      }
+    },
+    "deployment_stage": "validated",
     "public_release_eligible": false,
     "promotion_blockers": [
-      "Spatial holdout metrics have not been run for this artifact."
+      "No automated daily refresh — snapshot goes stale after each deploy.",
+      "Live environmental data (waves, temp) not streaming on server."
     ],
     "promotion_policy": {
       "production_models": [
@@ -47,8 +61,8 @@
         "hist_gbm"
       ],
       "neural_model_status": "research_only",
-      "spatial_backtests_present": false,
-      "spatial_backtest_strategy": "shortlist",
+      "spatial_backtests_present": true,
+      "spatial_backtest_strategy": "leave_one_county_out",
       "fallback_order": [
         "coastal_cell",
         "county",
@@ -57,68 +71,18 @@
       ]
     },
     "metrics": {
-      "persistence_valid": {
-        "aucpr": 0.5878869114771168,
-        "brier": 0.22088160989633243
-      },
-      "persistence": {
-        "aucpr": 0.5759091661799853,
-        "brier": 0.20554103022797118
-      },
-      "logistic_valid": {
-        "aucpr": 0.7569171041413166,
-        "brier": 0.17663908097777448
-      },
-      "logistic": {
-        "aucpr": 0.6801547078705273,
-        "brier": 0.1611436918913087
-      },
-      "logistic_coastal_cells_valid": {
-        "aucpr": 0.7385000318422688,
-        "brier": 0.19158534532476434
-      },
-      "logistic_coastal_cells": {
-        "aucpr": 0.6442412968535185,
-        "brier": 0.16947267916411146
-      },
-      "logistic_hierarchical_valid": {
-        "aucpr": 0.7425870463339755,
-        "brier": 0.193072562780643
-      },
-      "logistic_hierarchical": {
-        "aucpr": 0.6547002346957562,
-        "brier": 0.16676203522753968
-      },
-      "hist_gbm_valid": {
-        "aucpr": 0.8041737171384309,
-        "brier": 0.14776456907122834
-      },
-      "hist_gbm": {
-        "aucpr": 0.7687291586468649,
-        "brier": 0.14144706760456716
-      },
-      "elastic_net_valid": {
-        "rmse": 11.499708225831256
-      },
-      "elastic_net": {
-        "rmse": 5.845809504206703
-      },
-      "hist_gbm_regressor_valid": {
-        "rmse": 0.8606952450395873
-      },
-      "hist_gbm_regressor": {
-        "rmse": 0.7942972136809757
-      },
-      "tcn_valid": {
-        "aucpr": 0.7869178833970091,
-        "brier": 0.14928549528121948,
-        "rmse": 0.9328384216898632
-      },
-      "tcn": {
-        "aucpr": 0.7724801019991538,
-        "brier": 0.13425473868846893,
-        "rmse": 0.8698536209305611
-      }
+      "persistence_valid": { "aucpr": 0.5878869114771168, "brier": 0.22088160989633243 },
+      "persistence":       { "aucpr": 0.5759091661799853, "brier": 0.20554103022797118 },
+      "logistic_valid":    { "aucpr": 0.7569171041413166, "brier": 0.17663908097777448 },
+      "logistic":          { "aucpr": 0.6801547078705273, "brier": 0.1611436918913087  },
+      "logistic_coastal_cells_valid": { "aucpr": 0.7385000318422688, "brier": 0.19158534532476434 },
+      "logistic_coastal_cells":       { "aucpr": 0.6442412968535185, "brier": 0.16947267916411146 },
+      "logistic_hierarchical_valid":  { "aucpr": 0.7425870463339755, "brier": 0.193072562780643   },
+      "logistic_hierarchical":        { "aucpr": 0.6547002346957562, "brier": 0.16676203522753968  },
+      "hist_gbm_valid": { "aucpr": 0.8041737171384309, "brier": 0.14776456907122834 },
+      "hist_gbm":       { "aucpr": 0.7687291586468649, "brier": 0.14144706760456716 },
+      "tcn_valid": { "aucpr": 0.7869178833970091, "brier": 0.14928549528121948, "rmse": 0.9328384216898632 },
+      "tcn":       { "aucpr": 0.7724801019991538, "brier": 0.13425473868846893, "rmse": 0.8698536209305611 }
     }
   }
 }
