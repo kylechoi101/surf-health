@@ -1,0 +1,333 @@
+from __future__ import annotations
+
+import json
+import re
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+import pandas as pd
+
+
+ENTEROCOCCUS_TERMS = {"enterococcus", "enterococci", "entero", "enterococus"}
+MARINE_WATER_CLASSES = {"saltwater", "estuarine"}
+MARINE_WATER_TYPE_TERMS = {"open coast", "sound", "bay", "inlet"}
+MIN_PLAUSIBLE_SAMPLE_TIME = pd.Timestamp("2000-01-01")
+MAX_FUTURE_SAMPLE_LEEWAY_DAYS = 2
+
+
+def _column(frame: pd.DataFrame, name: str, default: str | None = None) -> pd.Series:
+    if name in frame.columns:
+        return frame[name]
+    return pd.Series([default] * len(frame), index=frame.index, dtype="object")
+
+
+def _clean_text(value: Any) -> str | None:
+    if value is None or pd.isna(value):
+        return None
+    text = str(value).strip()
+    if not text or text.lower() in {"null", "none", "notavailable"}:
+        return None
+    return text
+
+
+def _to_float(value: Any) -> float | None:
+    text = _clean_text(value)
+    if text is None:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _slugify(*parts: Any) -> str:
+    joined = "-".join(part for part in (_clean_text(item) or "" for item in parts) if part)
+    slug = re.sub(r"[^a-z0-9]+", "-", joined.lower()).strip("-")
+    return slug or "unknown-beach"
+
+
+def _canonical_parameter(value: Any) -> str | None:
+    text = _clean_text(value)
+    if text is None:
+        return None
+    normalized = re.sub(r"[^a-z]", "", text.lower())
+    if any(term in normalized for term in ENTEROCOCCUS_TERMS):
+        return "enterococcus"
+    return None
+
+
+def _parse_datetime(date_value: Any, time_value: Any) -> datetime | None:
+    date_text = _clean_text(date_value)
+    if date_text is None:
+        return None
+    time_text = _clean_text(time_value) or "00:00:00"
+    for fmt in ("%m/%d/%Y %H:%M:%S", "%Y-%m-%d %H:%M:%S", "%m/%d/%Y %H:%M", "%Y-%m-%d %H:%M"):
+        try:
+            return datetime.strptime(f"{date_text} {time_text}", fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _plausible_datetime_mask(values: pd.Series) -> pd.Series:
+    max_plausible_time = pd.Timestamp.now(tz="UTC").tz_localize(None) + pd.Timedelta(
+        days=MAX_FUTURE_SAMPLE_LEEWAY_DAYS
+    )
+    return values.between(MIN_PLAUSIBLE_SAMPLE_TIME, max_plausible_time)
+
+
+def is_marine_station(frame: pd.DataFrame) -> pd.Series:
+    water_class = _column(frame, "WaterBodyClass", "").fillna("")
+    water_type = _column(frame, "WaterBodyType", "").fillna("")
+    water_class = water_class.astype(str).str.lower()
+    water_type = water_type.astype(str).str.lower()
+    return water_class.isin(MARINE_WATER_CLASSES) | water_type.apply(
+        lambda value: any(term in value for term in MARINE_WATER_TYPE_TERMS)
+    )
+
+
+def derive_beach_id(frame: pd.DataFrame) -> pd.Series:
+    return pd.Series(
+        [
+            _slugify(
+                row.get("USEPAID"),
+                row.get("CountyName") or row.get("County"),
+                row.get("Beach_Name") or row.get("BeachName"),
+                row.get("Station_Name"),
+            )
+            for _, row in frame.iterrows()
+        ],
+        index=frame.index,
+        dtype="string",
+    )
+
+
+def normalize_station_metadata(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame.empty:
+        return pd.DataFrame()
+
+    marine = frame.loc[is_marine_station(frame)].copy()
+    marine["beach_id"] = derive_beach_id(marine)
+    marine["name"] = _column(marine, "Station_Name").fillna(_column(marine, "Beach_Name")).fillna(
+        "Unknown Station"
+    )
+    marine["county"] = _column(marine, "CountyName").fillna(_column(marine, "County")).fillna("Unknown")
+    marine["region"] = _column(marine, "Regional Board Name").fillna(_column(marine, "Regional Board"))
+    marine["support_status"] = _column(marine, "Status", "Unknown").fillna("Unknown").map(
+        lambda status: "production" if str(status).lower() == "active" else "unsupported"
+    )
+    marine["latitude"] = _column(marine, "Station_UpperLat").map(_to_float).fillna(
+        _column(marine, "Beach_UpperLat").map(_to_float)
+    )
+    marine["longitude"] = _column(marine, "Station_UpperLon").map(_to_float).fillna(
+        _column(marine, "Beach_UpperLon").map(_to_float)
+    )
+    marine["latest_official_sample_at"] = pd.NaT
+    marine["usepa_id"] = _column(marine, "USEPAID").map(_clean_text)
+    marine["station_code"] = _column(marine, "Station_Name").map(_clean_text)
+    marine["water_body_class"] = _column(marine, "WaterBodyClass").map(_clean_text)
+    marine["water_body_type"] = _column(marine, "WaterBodyType").map(_clean_text)
+    marine["agency_name"] = _column(marine, "Agency_Name").fillna(
+        _column(marine, "Beach_AgencyName")
+    ).map(_clean_text)
+    marine["zip_code"] = _column(marine, "Zip").map(_clean_text)
+    return (
+        marine[
+            [
+                "beach_id",
+                "name",
+                "county",
+                "region",
+                "support_status",
+                "latest_official_sample_at",
+                "latitude",
+                "longitude",
+                "usepa_id",
+                "station_code",
+                "water_body_class",
+                "water_body_type",
+                "agency_name",
+                "zip_code",
+            ]
+        ]
+        .drop_duplicates(subset=["beach_id"])
+        .reset_index(drop=True)
+    )
+
+
+def normalize_bacteria_results(frame: pd.DataFrame, stv_threshold: float) -> pd.DataFrame:
+    if frame.empty:
+        return pd.DataFrame()
+
+    marine = frame.loc[is_marine_station(frame)].copy()
+    marine["analyte"] = marine["Parameter"].map(_canonical_parameter)
+    marine = marine.loc[marine["analyte"] == "enterococcus"].copy()
+    if marine.empty:
+        return pd.DataFrame()
+
+    marine["beach_id"] = derive_beach_id(marine)
+    marine["sample_time"] = [
+        _parse_datetime(date_value, time_value)
+        for date_value, time_value in zip(marine["SampleDate"], marine["StartTime"], strict=False)
+    ]
+    marine["sample_time"] = pd.to_datetime(marine["sample_time"], errors="coerce")
+    marine = marine.loc[_plausible_datetime_mask(marine["sample_time"])].copy()
+    marine["sample_date"] = marine["sample_time"].dt.date
+    marine["value"] = _column(marine, "Result").map(_to_float)
+    marine["units"] = _column(marine, "Unit", "unknown").fillna("unknown").astype(str).str.strip()
+    marine["method"] = _column(marine, "AnalysisMethod", "unknown").fillna("unknown").astype(str).str.strip()
+    marine["exceeds_stv"] = marine["value"].fillna(0).gt(stv_threshold)
+    marine["county"] = _column(marine, "CountyName").fillna(_column(marine, "County"))
+    marine["station_name"] = _column(marine, "Station_Name")
+    marine["beach_name"] = _column(marine, "Beach_Name")
+    marine["usepa_id"] = _column(marine, "USEPAID").map(_clean_text)
+    marine["station_code"] = _column(marine, "Station_Name").map(_clean_text)
+    marine["data_source"] = "BeachWatch"
+    marine["weather"] = _column(marine, "Weather").map(_clean_text)
+    marine["storm_drain_flow"] = _column(marine, "StormDrainFlow").map(_clean_text)
+    marine["tidal_height"] = _column(marine, "TidalHeight").map(_to_float)
+    marine["surf_height_observed"] = _column(marine, "SurfHeight").map(_to_float)
+    marine["turbidity_observed"] = _column(marine, "Turbidity").map(_to_float)
+    marine["odor"] = _column(marine, "Odor").map(_clean_text)
+    marine["water_color"] = _column(marine, "WaterColor").map(_clean_text)
+    return (
+        marine[
+            [
+                "beach_id",
+                "sample_time",
+                "sample_date",
+                "analyte",
+                "method",
+                "units",
+                "value",
+                "exceeds_stv",
+                "county",
+                "station_name",
+                "beach_name",
+                "usepa_id",
+                "station_code",
+                "weather",
+                "storm_drain_flow",
+                "tidal_height",
+                "surf_height_observed",
+                "turbidity_observed",
+                "odor",
+                "water_color",
+                "data_source",
+            ]
+        ]
+        .dropna(subset=["sample_time", "value"])
+        .sort_values(["beach_id", "sample_time"])
+        .reset_index(drop=True)
+    )
+
+
+def normalize_advisories(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame.empty:
+        return pd.DataFrame()
+
+    marine = frame.loc[is_marine_station(frame)].copy()
+    marine["beach_id"] = derive_beach_id(marine)
+    marine["started_at"] = [
+        _parse_datetime(date_value, time_value)
+        for date_value, time_value in zip(marine["DateOpened"], marine["TimeOpened"], strict=False)
+    ]
+    fallback_started = [
+        _parse_datetime(date_value, time_value)
+        for date_value, time_value in zip(
+            marine["DateofAdvisory"], marine["TimeofAdvisory"], strict=False
+        )
+    ]
+    started_primary = pd.Series(pd.to_datetime(marine["started_at"], errors="coerce"), index=marine.index)
+    started_fallback = pd.Series(pd.to_datetime(fallback_started, errors="coerce"), index=marine.index)
+    marine["started_at"] = started_primary.where(started_primary.notna(), started_fallback)
+    marine = marine.loc[_plausible_datetime_mask(marine["started_at"])].copy()
+    marine["ended_at"] = pd.NaT
+    marine["status"] = "historical"
+    marine["advisory_type"] = _column(marine, "AdvisoryType", "Unknown").fillna("Unknown")
+    marine["cause"] = _column(marine, "AdvisoryCause", "Unknown").fillna("Unknown")
+    marine["county"] = _column(marine, "CountyName").fillna(_column(marine, "County"))
+    return (
+        marine[["beach_id", "advisory_type", "started_at", "ended_at", "status", "cause", "county"]]
+        .dropna(subset=["started_at"])
+        .reset_index(drop=True)
+    )
+
+
+def build_beach_day_frame(
+    observations: pd.DataFrame, stations: pd.DataFrame, advisories: pd.DataFrame
+) -> pd.DataFrame:
+    if observations.empty:
+        return pd.DataFrame()
+
+    per_day_observation = (
+        observations.sort_values("sample_time")
+        .groupby(["beach_id", "sample_date"], as_index=False)
+        .tail(1)
+    )[
+        [
+            "beach_id",
+            "sample_date",
+            "sample_time",
+            "value",
+            "exceeds_stv",
+            "weather",
+            "storm_drain_flow",
+            "tidal_height",
+            "surf_height_observed",
+            "turbidity_observed",
+            "odor",
+            "water_color",
+        ]
+    ].rename(columns={"value": "enterococcus_value"})
+
+    station_columns = [
+        "beach_id",
+        "name",
+        "county",
+        "region",
+        "latitude",
+        "longitude",
+        "support_status",
+        "usepa_id",
+        "water_body_class",
+        "water_body_type",
+        "agency_name",
+        "zip_code",
+    ]
+    beach_day = per_day_observation.merge(
+        stations.reindex(columns=station_columns),
+        on="beach_id",
+        how="left",
+    )
+    advisory_counts = advisories.groupby("beach_id").size().rename("historical_advisory_count")
+    beach_day = beach_day.merge(advisory_counts, on="beach_id", how="left")
+    beach_day["historical_advisory_count"] = beach_day["historical_advisory_count"].fillna(0).astype(int)
+    return beach_day.sort_values(["county", "name", "sample_date"]).reset_index(drop=True)
+
+
+def write_curated_bundle(
+    curated_dir: Path,
+    stations: pd.DataFrame,
+    observations: pd.DataFrame,
+    advisories: pd.DataFrame,
+    beach_day: pd.DataFrame,
+    model_registry: dict[str, Any] | None = None,
+) -> None:
+    curated_dir.mkdir(parents=True, exist_ok=True)
+    stations.to_parquet(curated_dir / "beaches.parquet", index=False)
+    observations.to_parquet(curated_dir / "observations.parquet", index=False)
+    advisories.to_parquet(curated_dir / "advisories.parquet", index=False)
+    beach_day.to_parquet(curated_dir / "beach_day.parquet", index=False)
+    payload = {
+        "pipeline_freshness": datetime.now(UTC).isoformat(timespec="seconds"),
+        "source_freshness": {
+            "beaches": datetime.now(UTC).isoformat(timespec="seconds"),
+            "observations": datetime.now(UTC).isoformat(timespec="seconds"),
+            "advisories": datetime.now(UTC).isoformat(timespec="seconds"),
+        },
+        "model_registry": model_registry
+        or {"production_model": "derived-persistence-v0", "candidate_models": [], "metrics": {}},
+    }
+    (curated_dir / "system_health.json").write_text(json.dumps(payload, indent=2))

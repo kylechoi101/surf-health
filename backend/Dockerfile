@@ -12,13 +12,15 @@ WORKDIR /app
 # Upgrade pip
 RUN pip install --upgrade pip
 
-# Copy pyproject.toml and install dependencies first for caching
+# Copy pyproject.toml first for caching
 COPY pyproject.toml /app/
-RUN pip install -e "."
 
 # Copy the rest of the backend codebase
 COPY app/ /app/app/
 COPY scripts/ /app/scripts/
+
+# Install the package and its dependencies
+RUN pip install --no-cache-dir .
 
 # Create data directories so the app has a place to write if no volume is mounted
 RUN mkdir -p /app/data/curated /app/data/research /app/data/raw/cnrfc /app/data/raw/usgs_streamflow /app/data/raw/nhdplus
