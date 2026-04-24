@@ -50,5 +50,9 @@ class FixtureBeachRepository(BeachRepository):
 
     def get_system_health(self) -> SystemHealthResponse:
         payload = self.payload["system_health"]
-        return SystemHealthResponse.model_validate({"app_env": "development", **payload})
+        return SystemHealthResponse.model_validate({
+            "app_env": "development",
+            "active_advisories_count": 5,
+            **payload
+        })
 

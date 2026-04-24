@@ -63,7 +63,7 @@ export default async function BeachDetail({ params }: { params: { id: string } }
           </div>
           <div style={{ flex: 1 }}>
             <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase" }}>
-              Water quality · today
+              Water quality · today {forecast && forecast.forecast_age_hours !== undefined && forecast.forecast_age_hours > 24 && <span style={{textTransform: "none"}}>({Math.floor(forecast.forecast_age_hours / 24)}d old)</span>}
             </div>
             <div style={{ fontSize: 22, fontWeight: 700, marginTop: 3 }}>{band}</div>
             <div style={{ fontSize: 13, marginTop: 4, opacity: 0.9, lineHeight: 1.4 }}>{riskAdvice(band)}</div>

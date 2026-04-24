@@ -26,6 +26,7 @@ export interface ForecastRecord {
   top_drivers: string[];
   model_version: string;
   forecast_generated_at: string;
+  forecast_age_hours?: number;
   environmental_summary: {
     wave_height_m: number | null;
     dominant_period_s: number | null;

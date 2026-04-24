@@ -56,6 +56,11 @@ export default async function BeachHome({ params }: { params: { id: string } }) 
           <div style={{ marginTop: 28 }}>
             <div style={{ fontSize: 13, fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase", opacity: 0.85 }}>
               Can I swim today?
+              {forecast && forecast.forecast_age_hours !== undefined && forecast.forecast_age_hours > 24 && (
+                <span style={{ marginLeft: 8, background: "rgba(0,0,0,0.1)", padding: "2px 6px", borderRadius: 4, fontSize: 10, color: "inherit", textTransform: "none", verticalAlign: "middle" }}>
+                  {Math.floor(forecast.forecast_age_hours / 24)}d old
+                </span>
+              )}
             </div>
             <h1 style={{ fontSize: 58, lineHeight: 0.95, fontWeight: 700, marginTop: 6 }}>
               {riskVerdict(band)}

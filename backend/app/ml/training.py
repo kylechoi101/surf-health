@@ -1379,13 +1379,34 @@ def _build_forecast_candidates(
     stations: pd.DataFrame,
     uv_daily: pd.DataFrame,
     forecast_date: date,
+    *,
+    full_frame: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Build one synthetic forecast row per beach.
+
+    ``frame`` is the recent training window (typically 60 days).  When a
+    covariate is missing from that window (e.g. because the upstream ingest
+    dropped the column for a period), we fall back to the most-recent non-null
+    value from ``full_frame`` — the complete unfiltered history.  This gives
+    us env-persistence rather than all-null inputs, which keeps the calibrated
+    probability meaningful even when the ingest pipeline has schema drift.
+    """
     history = frame.copy()
     history["sample_date"] = pd.to_datetime(history["sample_date"], errors="coerce")
     history["sample_time"] = pd.to_datetime(history["sample_time"], errors="coerce")
     history = history.loc[history["sample_date"].dt.date < forecast_date].copy()
     if history.empty:
         return history, pd.DataFrame()
+
+    # Build a per-beach lookup from the full history for covariate fallback.
+    full_history_by_beach: dict[str, pd.DataFrame] = {}
+    if full_frame is not None and not full_frame.empty:
+        full_copy = full_frame.copy()
+        full_copy["sample_date"] = pd.to_datetime(full_copy["sample_date"], errors="coerce")
+        full_copy["sample_time"] = pd.to_datetime(full_copy["sample_time"], errors="coerce")
+        full_copy = full_copy.loc[full_copy["sample_date"].dt.date < forecast_date].copy()
+        for beach_id, grp in full_copy.groupby("beach_id", sort=False):
+            full_history_by_beach[str(beach_id)] = grp.sort_values("sample_time")
 
     station_lookup = stations.set_index("beach_id") if not stations.empty else pd.DataFrame()
     uv_lookup = _build_uv_lookup(uv_daily, forecast_date)
@@ -1417,7 +1438,14 @@ def _build_forecast_candidates(
         candidate["enterococcus_value"] = np.nan
         candidate["exceeds_stv"] = np.nan
         for column in covariate_columns:
-            candidate[column] = _latest_numeric(beach_history, column)
+            # Primary: use the windowed beach history (recent 60 days).
+            val = _latest_numeric(beach_history, column)
+            # Fallback: if the recent window has no data for this covariate,
+            # pull the most-recent non-null value from the full history so we
+            # use env-persistence rather than feeding the model a null.
+            if val is None and str(beach_id) in full_history_by_beach:
+                val = _latest_numeric(full_history_by_beach[str(beach_id)], column)
+            candidate[column] = val
         if not station_lookup.empty and beach_id in station_lookup.index and not uv_lookup.empty:
             zip_code = station_lookup.loc[beach_id].get("zip_code")
             if pd.notna(zip_code):
@@ -1465,6 +1493,19 @@ def _predict_sequence_inference(
 
 _STV_THRESHOLD = 104.0  # CFU/100mL — CA marine single-sample action value
 
+# Seasonal/cyclical encoding features are not actionable for end users and tend
+# to dominate permutation importance when env data is missing.  Always exclude
+# them from the driver computation so they can never surface as top-driver text.
+_SEASONAL_FEATURE_PREFIXES: frozenset[str] = frozenset(
+    (
+        "day_of_year",
+        "sin_doy",
+        "cos_doy",
+        "sin_week",
+        "cos_week",
+    )
+)
+
 
 def _compute_local_drivers(
     tree_classifier,
@@ -1474,23 +1515,27 @@ def _compute_local_drivers(
     all_drivers = []
     if not hasattr(tree_classifier, "predict_proba"):
         return [["stable recent conditions with no strong environmental signal"]] * len(features)
-        
+
     for i in range(len(features)):
         row = features.iloc[[i]]
         base_prob = baseline_probs[i]
-        
+
         candidates = []
         cols_to_check = []
         for col in features.columns:
+            # Never surface seasonal/cyclical features to end users — they are
+            # not actionable and would expose raw internal names.
+            if any(col == prefix or col.startswith(prefix + "_") for prefix in _SEASONAL_FEATURE_PREFIXES):
+                continue
             val = float(row[col].iloc[0])
             if val != 0.0:
                 cols_to_check.append((col, val))
-                
+
         if cols_to_check:
-            perturbed_df = pd.concat([row]*len(cols_to_check), ignore_index=True)
+            perturbed_df = pd.concat([row] * len(cols_to_check), ignore_index=True)
             for j, (col, _) in enumerate(cols_to_check):
                 perturbed_df.at[j, col] = 0.0
-            
+
             try:
                 pert_probs = tree_classifier.predict_proba(perturbed_df)[:, 1]
                 for j, (col, val) in enumerate(cols_to_check):
@@ -1499,9 +1544,9 @@ def _compute_local_drivers(
                         candidates.append((diff, col, val))
             except Exception:
                 pass
-                
+
         candidates.sort(key=lambda x: x[0], reverse=True)
-        
+
         driver_strings = []
         for diff, col, val in candidates[:3]:
             if col == "first_flush_flag":
@@ -1522,15 +1567,14 @@ def _compute_local_drivers(
                 driver_strings.append(f"previous sample exceeded the threshold ({val:.0f} CFU/100 mL)")
             elif col == "turbidity_observed_lag_1":
                 driver_strings.append("recent turbidity noted in field observations")
-            else:
-                clean_name = col.replace("_", " ")
-                driver_strings.append(f"{clean_name} ({val:.1f})")
-                
+            # else: feature has no human-readable mapping — skip it rather than
+            # leaking internal names like "day of year (114.0)" to end users.
+
         if not driver_strings:
             driver_strings = ["stable recent conditions with no strong environmental signal"]
-            
+
         all_drivers.append(driver_strings)
-        
+
     return all_drivers
 
 
@@ -1553,10 +1597,13 @@ def train_curated_and_export(
         )
     print("Loading datasets...", file=sys.stderr, flush=True)
     settings = get_settings()
-    frame = _load_curated_training_frame(curated_dir)
-    frame["sample_date"] = pd.to_datetime(frame["sample_date"])
-    max_date = frame["sample_date"].max()
-    frame = frame.loc[frame["sample_date"] > (max_date - pd.Timedelta(days=60))].copy()
+    full_frame = _load_curated_training_frame(curated_dir)
+    full_frame["sample_date"] = pd.to_datetime(full_frame["sample_date"])
+    max_date = full_frame["sample_date"].max()
+    # Keep the full history available for env-covariate persistence fallback
+    # in _build_forecast_candidates.  The training window is still capped at
+    # 60 days so the model doesn't over-weight stale bacterial data.
+    frame = full_frame.loc[full_frame["sample_date"] > (max_date - pd.Timedelta(days=60))].copy()
     stations = pd.read_parquet(curated_dir / "beaches.parquet")
     uv_daily_path = curated_dir / "uv_daily.parquet"
     uv_daily = pd.read_parquet(uv_daily_path) if uv_daily_path.exists() else pd.DataFrame()
@@ -1712,7 +1759,9 @@ def train_curated_and_export(
         regressor_valid_predictions,
     )
 
-    history, forecast_candidates = _build_forecast_candidates(frame, stations, uv_daily, forecast_date)
+    history, forecast_candidates = _build_forecast_candidates(
+        frame, stations, uv_daily, forecast_date, full_frame=full_frame
+    )
     inference_input = (
         pd.concat([history, forecast_candidates], ignore_index=True)
         if not forecast_candidates.empty
@@ -1770,6 +1819,25 @@ def train_curated_and_export(
         if calibrator is not None:
             probabilities = calibrator.transform(probabilities)
     density_predictions = regressor.predict(baseline_forecast_features)
+    # ── Risk-distribution sanity guard ──────────────────────────────────────
+    # A degenerate calibrator (e.g. trained on all-null env features) can push
+    # p_exceed to exactly 1.00 for most beaches, producing an implausible
+    # distribution like 41% Very High.  risk_band() maps p >= 0.70 → Very High,
+    # so we clamp to 0.69 — the highest value still in the High band — which
+    # redistributes the hard-1.0 mass while preserving relative ranking.
+    _VERY_HIGH_THRESHOLD = 0.70  # must match risk_band() definition
+    _MAX_VERY_HIGH_FRACTION = 0.30
+    if len(probabilities) > 0:
+        very_high_fraction = float((probabilities >= _VERY_HIGH_THRESHOLD).mean())
+        if very_high_fraction > _MAX_VERY_HIGH_FRACTION:
+            print(
+                f"[sanity guard] {very_high_fraction:.1%} of beaches at Very High "
+                f"(threshold {_MAX_VERY_HIGH_FRACTION:.0%}); clamping p_exceed to 0.69.",
+                file=sys.stderr,
+                flush=True,
+            )
+            probabilities = np.clip(probabilities, 0.0, 0.69)
+    # ─────────────────────────────────────────────────────────────────────────
     computed_drivers = _compute_local_drivers(classifier, baseline_forecast_features, probabilities)
 
     forecasts = []

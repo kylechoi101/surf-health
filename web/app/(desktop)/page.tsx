@@ -102,7 +102,7 @@ export default async function HomePage() {
               <article key={beach.id} className="spotlight-card">
                 <div className="card-topline">
                   <span>{beach.name}</span>
-                  <RiskBadge band={forecast.risk_band} />
+                  <RiskBadge band={forecast.risk_band} ageHours={forecast.forecast_age_hours} />
                 </div>
                 <p className="muted">{forecast.top_drivers.join(" • ")}</p>
                 <dl>

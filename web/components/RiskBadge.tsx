@@ -7,7 +7,12 @@ const toneByBand: Record<RiskBand, string> = {
   "Very High": "very-high"
 };
 
-export function RiskBadge({ band }: { band: RiskBand }) {
-  return <span className={`risk-badge ${toneByBand[band]}`}>{band}</span>;
+export function RiskBadge({ band, ageHours }: { band: RiskBand; ageHours?: number }) {
+  return (
+    <span className={`risk-badge ${toneByBand[band]}`}>
+      {band}
+      {ageHours !== undefined && ageHours > 24 && ` (${Math.floor(ageHours / 24)}d old)`}
+    </span>
+  );
 }
 

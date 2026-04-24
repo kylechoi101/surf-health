@@ -65,6 +65,13 @@ export default function BeachHome() {
             {/* Big answer */}
             <View style={s.answerBlock}>
               <Text style={s.answerLabel}>Can I swim today?</Text>
+              {forecast && forecast.forecast_age_hours !== undefined && forecast.forecast_age_hours > 24 && (
+                <View style={{ backgroundColor: "rgba(0,0,0,0.1)", paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, alignSelf: "flex-start", marginTop: 4, marginBottom: 8 }}>
+                  <Text style={{ fontSize: 12, fontWeight: "600", color: colors.deep }}>
+                    Forecast is {Math.floor(forecast.forecast_age_hours / 24)} days old
+                  </Text>
+                </View>
+              )}
               <Text style={s.verdict}>{riskVerdict(band)}</Text>
               <Text style={s.advice}>{riskAdvice(band)}</Text>
             </View>

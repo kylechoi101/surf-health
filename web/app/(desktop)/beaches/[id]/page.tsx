@@ -27,7 +27,7 @@ export default async function BeachDetailPage({ params }: { params: Promise<{ id
           </p>
         </div>
         <div className="detail-sidecar">
-          <RiskBadge band={forecast.risk_band} />
+          <RiskBadge band={forecast.risk_band} ageHours={forecast.forecast_age_hours} />
           <p>{Math.round(forecast.p_exceed * 100)}% chance of exceeding the marine threshold</p>
           <p className="muted">Latest official sample: {beach.latest_official_sample_at ?? "n/a"}</p>
         </div>
