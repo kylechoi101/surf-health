@@ -15,7 +15,11 @@
     },
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "com.surfhealth.app"
+      "bundleIdentifier": "com.surfhealth.app",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSLocationWhenInUseUsageDescription": "Used to sort nearby beaches by distance."
+      }
     },
     "android": {
       "package": "com.surfhealth.app",
@@ -31,7 +35,13 @@
       "bundler": "metro"
     },
     "plugins": [
-      "expo-router"
+      "expo-router",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Used to sort nearby beaches by distance."
+        }
+      ]
     ],
     "extra": {
       "router": {},
