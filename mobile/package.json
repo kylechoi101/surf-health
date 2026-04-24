@@ -6,7 +6,11 @@
     "start": "expo start",
     "android": "expo start --android",
     "ios": "expo start --ios",
-    "web": "expo start --web"
+    "web": "expo start --web",
+    "build:ios:local": "eas build --platform ios --profile production --local",
+    "build:android:local": "eas build --platform android --profile production --local",
+    "submit:ios": "eas submit --platform ios --profile production",
+    "submit:android": "eas submit --platform android --profile production"
   },
   "dependencies": {
     "expo": "~54.0.33",
@@ -14,13 +18,14 @@
     "expo-linking": "~8.0.11",
     "expo-router": "~6.0.23",
     "expo-status-bar": "~3.0.9",
-    "react": "19.1.0",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5",
     "react-native": "0.81.5",
     "react-native-safe-area-context": "~5.6.0",
     "react-native-screens": "~4.16.0"
   },
   "devDependencies": {
-    "@types/react": "~19.1.0",
+    "@types/react": "^19.2.5",
     "typescript": "~5.9.2"
   },
   "private": true
