@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from datetime import UTC, date, datetime
 from functools import cached_property
@@ -22,6 +23,19 @@ from app.schemas.domain import (
     Point,
     SystemHealthResponse,
 )
+
+
+def _derive_friendly_name(row: object) -> str:
+    beach_id = str(row["beach_id"])
+    beach_id = re.sub(r"^ca\d+-", "", beach_id)
+    county_slug = str(row.get("county", "")).lower().replace(" ", "-")
+    if beach_id.startswith(county_slug + "-"):
+        beach_id = beach_id[len(county_slug) + 1 :]
+    station_raw = str(row.get("name", ""))
+    station_slug = re.sub(r"[^a-z0-9]+", "-", station_raw.lower()).strip("-")
+    if station_slug and beach_id.endswith("-" + station_slug):
+        beach_id = beach_id[: -(len(station_slug) + 1)]
+    return beach_id.replace("-", " ").title() if beach_id else station_raw
 
 
 def _safe_float(value: object) -> float | None:
@@ -218,4 +232,4 @@ class CuratedBeachRepository(BeachRepository):
     def get_system_health(self) -> SystemHealthResponse:
         health_path = self.curated_dir / "system_health.json"
         payload = json.loads(health_path.read_text()) if health_path.exists() else {}
-        return SystemHealthResponse.model_validate({"app_env": "development", **payload})
+        return SystemHealthResponse.model_validate({"app_env": os.getenv("APP_ENV", "development"), **payload})
