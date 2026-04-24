@@ -1,0 +1,17 @@
+version: "3.9"
+
+services:
+  postgis:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_DB: surf_health
+      POSTGRES_USER: surf_health
+      POSTGRES_PASSWORD: surf_health
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgis-data:/var/lib/postgresql/data
+
+volumes:
+  postgis-data:
+

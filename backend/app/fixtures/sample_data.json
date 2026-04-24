@@ -1,0 +1,269 @@
+{
+  "beaches": [
+    {
+      "id": "scripps-pier",
+      "name": "Scripps Pier",
+      "county": "San Diego",
+      "region": "Southern California",
+      "support_status": "production",
+      "latest_official_sample_at": "2026-04-18T08:15:00-07:00",
+      "geometry": { "latitude": 32.8662, "longitude": -117.2571 }
+    },
+    {
+      "id": "manhattan-beach-pier",
+      "name": "Manhattan Beach Pier",
+      "county": "Los Angeles",
+      "region": "Southern California",
+      "support_status": "production",
+      "latest_official_sample_at": "2026-04-18T08:05:00-07:00",
+      "geometry": { "latitude": 33.8847, "longitude": -118.4109 }
+    },
+    {
+      "id": "capitola-beach",
+      "name": "Capitola Beach",
+      "county": "Santa Cruz",
+      "region": "Central California",
+      "support_status": "beta",
+      "latest_official_sample_at": "2026-04-17T09:00:00-07:00",
+      "geometry": { "latitude": 36.9753, "longitude": -121.9533 }
+    }
+  ],
+  "forecasts": {
+    "scripps-pier": {
+      "2026-04-20": {
+        "risk_band": "Moderate",
+        "p_exceed": 0.29,
+        "predicted_log_enterococcus": 1.78,
+        "lower_prediction_interval": 1.28,
+        "upper_prediction_interval": 2.21,
+        "prediction_interval_level": 0.9,
+        "top_drivers": [
+          "Elevated overnight wave energy",
+          "Three-day salinity drop",
+          "Recent enterococcus persistence remains below the alert threshold"
+        ],
+        "model_version": "fixture-tcn-v0",
+        "forecast_generated_at": "2026-04-20T05:00:00-07:00",
+        "environmental_summary": {
+          "wave_height_m": 1.3,
+          "dominant_period_s": 11.0,
+          "water_temperature_c": 15.8,
+          "salinity_psu": 33.2,
+          "uv_index": 7.0,
+          "wind_speed_mps": 3.4,
+          "wind_direction_deg": 290.0
+        }
+      }
+    },
+    "manhattan-beach-pier": {
+      "2026-04-20": {
+        "risk_band": "High",
+        "p_exceed": 0.64,
+        "predicted_log_enterococcus": 2.23,
+        "lower_prediction_interval": 1.74,
+        "upper_prediction_interval": 2.68,
+        "prediction_interval_level": 0.9,
+        "top_drivers": [
+          "Strong overnight onshore flow",
+          "Recent rainfall accumulation remains elevated",
+          "Persistence baseline is above the station median"
+        ],
+        "model_version": "fixture-hgb-v0",
+        "forecast_generated_at": "2026-04-20T05:00:00-07:00",
+        "environmental_summary": {
+          "wave_height_m": 0.8,
+          "dominant_period_s": 9.0,
+          "water_temperature_c": 16.3,
+          "salinity_psu": 32.5,
+          "uv_index": 6.0,
+          "wind_speed_mps": 5.1,
+          "wind_direction_deg": 245.0
+        }
+      }
+    },
+    "capitola-beach": {
+      "2026-04-20": {
+        "risk_band": "Moderate",
+        "p_exceed": 0.34,
+        "predicted_log_enterococcus": 1.94,
+        "lower_prediction_interval": 1.31,
+        "upper_prediction_interval": 2.51,
+        "prediction_interval_level": 0.9,
+        "top_drivers": [
+          "Sparse historical coverage limits confidence",
+          "Mild wave energy increase during the last 48 hours",
+          "Salinity and temperature remain seasonally normal"
+        ],
+        "model_version": "fixture-statewide-v0",
+        "forecast_generated_at": "2026-04-20T05:00:00-07:00",
+        "environmental_summary": {
+          "wave_height_m": 1.1,
+          "dominant_period_s": 12.0,
+          "water_temperature_c": 13.9,
+          "salinity_psu": 33.7,
+          "uv_index": 5.0,
+          "wind_speed_mps": 4.0,
+          "wind_direction_deg": 315.0
+        }
+      }
+    }
+  },
+  "observations": {
+    "scripps-pier": {
+      "observations": [
+        {
+          "sample_time": "2026-04-04T08:15:00-07:00",
+          "analyte": "enterococcus",
+          "method": "culture",
+          "units": "cfu/100mL",
+          "value": 42,
+          "exceeds_stv": false
+        },
+        {
+          "sample_time": "2026-04-11T08:10:00-07:00",
+          "analyte": "enterococcus",
+          "method": "culture",
+          "units": "cfu/100mL",
+          "value": 67,
+          "exceeds_stv": false
+        },
+        {
+          "sample_time": "2026-04-18T08:15:00-07:00",
+          "analyte": "enterococcus",
+          "method": "culture",
+          "units": "cfu/100mL",
+          "value": 81,
+          "exceeds_stv": false
+        }
+      ],
+      "advisories": [],
+      "recent_environment": [
+        { "date": "2026-04-18", "wave_height_m": 1.0, "salinity_psu": 33.6, "uv_index": 6.0 },
+        { "date": "2026-04-19", "wave_height_m": 1.2, "salinity_psu": 33.4, "uv_index": 7.0 },
+        { "date": "2026-04-20", "wave_height_m": 1.3, "salinity_psu": 33.2, "uv_index": 7.0 }
+      ]
+    },
+    "manhattan-beach-pier": {
+      "observations": [
+        {
+          "sample_time": "2026-04-04T08:20:00-07:00",
+          "analyte": "enterococcus",
+          "method": "culture",
+          "units": "cfu/100mL",
+          "value": 88,
+          "exceeds_stv": false
+        },
+        {
+          "sample_time": "2026-04-11T08:07:00-07:00",
+          "analyte": "enterococcus",
+          "method": "culture",
+          "units": "cfu/100mL",
+          "value": 118,
+          "exceeds_stv": true
+        },
+        {
+          "sample_time": "2026-04-18T08:05:00-07:00",
+          "analyte": "enterococcus",
+          "method": "culture",
+          "units": "cfu/100mL",
+          "value": 132,
+          "exceeds_stv": true
+        }
+      ],
+      "advisories": [
+        {
+          "advisory_type": "posting",
+          "started_at": "2026-04-11T10:00:00-07:00",
+          "ended_at": null,
+          "status": "active"
+        }
+      ],
+      "recent_environment": [
+        { "date": "2026-04-18", "wave_height_m": 0.7, "salinity_psu": 33.0, "uv_index": 5.0 },
+        { "date": "2026-04-19", "wave_height_m": 0.8, "salinity_psu": 32.7, "uv_index": 6.0 },
+        { "date": "2026-04-20", "wave_height_m": 0.8, "salinity_psu": 32.5, "uv_index": 6.0 }
+      ]
+    },
+    "capitola-beach": {
+      "observations": [
+        {
+          "sample_time": "2026-04-03T09:00:00-07:00",
+          "analyte": "enterococcus",
+          "method": "culture",
+          "units": "cfu/100mL",
+          "value": 57,
+          "exceeds_stv": false
+        },
+        {
+          "sample_time": "2026-04-10T09:10:00-07:00",
+          "analyte": "enterococcus",
+          "method": "culture",
+          "units": "cfu/100mL",
+          "value": 71,
+          "exceeds_stv": false
+        },
+        {
+          "sample_time": "2026-04-17T09:00:00-07:00",
+          "analyte": "enterococcus",
+          "method": "culture",
+          "units": "cfu/100mL",
+          "value": 95,
+          "exceeds_stv": false
+        }
+      ],
+      "advisories": [],
+      "recent_environment": [
+        { "date": "2026-04-18", "wave_height_m": 0.9, "salinity_psu": 33.9, "uv_index": 5.0 },
+        { "date": "2026-04-19", "wave_height_m": 1.0, "salinity_psu": 33.8, "uv_index": 5.0 },
+        { "date": "2026-04-20", "wave_height_m": 1.1, "salinity_psu": 33.7, "uv_index": 5.0 }
+      ]
+    }
+  },
+  "system_health": {
+    "pipeline_freshness": "fixtures-current",
+    "source_freshness": {
+      "ca_open_data": "2026-04-20T05:00:00-07:00",
+      "cdip": "2026-04-20T04:45:00-07:00",
+      "sccoos": "2026-04-20T04:50:00-07:00",
+      "epa_uv": "2026-04-20T03:30:00-07:00"
+    },
+    "model_registry": {
+      "production_model": "fixture-hgb-v0",
+      "candidate_models": ["fixture-logistic-v0", "fixture-hgb-v0"],
+      "research_models": ["fixture-tcn-v0"],
+      "production_metrics": {
+        "aucpr": 0.72,
+        "brier": 0.14
+      },
+      "validation_metrics": {
+        "aucpr": 0.75,
+        "brier": 0.16
+      },
+      "spatial_metrics": {},
+      "deployment_stage": "research_prototype",
+      "public_release_eligible": false,
+      "promotion_blockers": [
+        "Spatial holdout metrics have not been run for this artifact."
+      ],
+      "promotion_policy": {
+        "production_models": ["logistic", "hist_gbm"],
+        "neural_model_status": "research_only",
+        "spatial_backtests_present": false
+      },
+      "metrics": {
+        "fixture-hgb-v0": {
+          "aucpr": 0.72,
+          "brier": 0.14
+        },
+        "fixture-logistic-v0": {
+          "aucpr": 0.66,
+          "brier": 0.18
+        },
+        "fixture-tcn-v0": {
+          "aucpr": 0.59,
+          "brier": 0.22
+        }
+      }
+    }
+  }
+}

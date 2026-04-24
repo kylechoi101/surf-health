@@ -1,0 +1,40 @@
+services:
+  # The FastAPI Backend
+  - type: web
+    name: surf-health-api
+    env: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    region: us-west
+    plan: starter
+    disk:
+      name: surf-health-data
+      mountPath: /data
+      sizeGB: 10
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: WORKSPACE_DIR
+        value: /data
+
+  # The Daily ML Pipeline (Cron Job)
+  - type: cron
+    name: surf-health-daily-forecast
+    env: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    region: us-west
+    plan: starter
+    schedule: "0 13 * * *" # 5 AM PT (13:00 UTC)
+    # The command overrides the CMD in the Dockerfile
+    # We install curl to fetch the BeachWatch stations, then run the pipeline
+    dockerCommand: bash -c "apt-get update && apt-get install -y curl && curl -o /tmp/beach-monitoring-stations.csv 'https://raw.githubusercontent.com/CA-Water-Board/Beach-Water-Quality-Postings/master/stations.csv' && python -m app.data.pipeline.cli --normalize-beachwatch --stations-csv /tmp/beach-monitoring-stations.csv --merge-ceden --with-external-covariates --with-hydrology && python -m app.ml.training --curated --forecast-date \"\$(date +%Y-%m-%d)\""
+    disk:
+      name: surf-health-data
+      mountPath: /data
+      sizeGB: 10
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: WORKSPACE_DIR
+        value: /data
