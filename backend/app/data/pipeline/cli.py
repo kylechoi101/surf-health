@@ -342,7 +342,11 @@ def main() -> None:
         uv_daily = pd.DataFrame()
         if args.with_external_covariates:
             bundle["stations"], bundle["beach_day"], uv_daily = asyncio.run(
-                enrich_beach_day_with_external_covariates(bundle["stations"], bundle["beach_day"])
+                enrich_beach_day_with_external_covariates(
+                    bundle["stations"],
+                    bundle["beach_day"],
+                    assert_covariates=True,  # Fail loudly if CDIP columns are all-null post-merge
+                )
             )
             
         if args.with_hydrology:

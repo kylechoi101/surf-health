@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from io import StringIO
@@ -9,6 +10,16 @@ from typing import Any
 
 import httpx
 import pandas as pd
+
+log = logging.getLogger(__name__)
+
+# Covariate columns that MUST be present (non-all-null) after a successful CDIP
+# enrichment.  If any is entirely missing we raise so the pipeline fails loudly
+# rather than silently producing NaN-only columns that collapse the calibrator.
+CDIP_REQUIRED_COVARIATE_COLUMNS: tuple[str, ...] = (
+    "wave_height_m",
+    "dominant_period_s",
+)
 
 
 CDIP_SUMMARY_URL = "https://cdip.ucsd.edu/data_access/sccoos.cdip"
@@ -93,6 +104,16 @@ def parse_cdip_summary(text: str) -> pd.DataFrame:
                 "sea_surface_temperature_c_latest": _safe_float(parts[9]),
             }
         )
+    if not rows:
+        # Return a typed empty frame so callers never hit dropna KeyError
+        return pd.DataFrame(
+            columns=[
+                "cdip_station_id", "cdip_station_name",
+                "latitude", "longitude", "depth_m",
+                "wave_height_m_latest", "dominant_period_s_latest",
+                "wave_direction_deg_latest", "sea_surface_temperature_c_latest",
+            ]
+        )
     return pd.DataFrame(rows).dropna(subset=["latitude", "longitude"]).reset_index(drop=True)
 
 
@@ -167,9 +188,35 @@ def _chunk_date_ranges(start: date, end: date, chunk_days: int = 1825) -> list[t
 
 
 async def fetch_cdip_summary(client: httpx.AsyncClient) -> pd.DataFrame:
-    response = await client.get(CDIP_SUMMARY_URL, timeout=20.0)
-    response.raise_for_status()
-    return parse_cdip_summary(response.text)
+    """Fetch the CDIP station summary.  Returns empty DataFrame on any network
+    or HTTP error so callers can proceed with zero CDIP coverage rather than
+    crashing the entire enrichment pipeline."""
+    try:
+        response = await client.get(CDIP_SUMMARY_URL, timeout=20.0)
+        response.raise_for_status()
+        df = parse_cdip_summary(response.text)
+        if df.empty:
+            log.warning(
+                "[cdip] sccoos summary returned 0 CA stations — "
+                "check %s for upstream changes", CDIP_SUMMARY_URL
+            )
+        else:
+            log.info("[cdip] summary: %d CA stations loaded", len(df))
+        return df
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "[cdip] fetch_cdip_summary failed (%s: %s) — "
+            "wave covariates will be NaN for this run",
+            type(exc).__name__, exc,
+        )
+        return pd.DataFrame(
+            columns=[
+                "cdip_station_id", "cdip_station_name",
+                "latitude", "longitude", "depth_m",
+                "wave_height_m_latest", "dominant_period_s_latest",
+                "wave_direction_deg_latest", "sea_surface_temperature_c_latest",
+            ]
+        )
 
 
 async def fetch_cdip_daily_covariates(
@@ -178,15 +225,33 @@ async def fetch_cdip_daily_covariates(
     start: date,
     end: date,
 ) -> pd.DataFrame:
+    """Fetch JUSTDAR PM timeseries for one station.  Returns empty DataFrame on
+    any network/HTTP error so a single bad station does not abort the pipeline."""
     frames: list[pd.DataFrame] = []
     for chunk_start, chunk_end in _chunk_date_ranges(start, end):
         url = f"{CDIP_JUSTDAR_URL}?{station_id}+pm+{chunk_start:%Y%m%d}+{chunk_end:%Y%m%d}"
-        response = await client.get(url, timeout=45.0)
-        response.raise_for_status()
+        try:
+            response = await client.get(url, timeout=45.0)
+            response.raise_for_status()
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "[cdip] station %s chunk %s–%s fetch failed (%s: %s) — skipping chunk",
+                station_id, chunk_start, chunk_end, type(exc).__name__, exc,
+            )
+            continue
         parsed = parse_cdip_pm_text(response.text, station_id)
         if not parsed.empty:
             frames.append(parsed)
+        else:
+            log.debug(
+                "[cdip] station %s chunk %s–%s returned 0 parseable rows",
+                station_id, chunk_start, chunk_end,
+            )
     if not frames:
+        log.warning(
+            "[cdip] station %s: no data returned across all requested chunks "
+            "(%s – %s)", station_id, start, end
+        )
         return pd.DataFrame()
     return aggregate_cdip_daily(pd.concat(frames, ignore_index=True))
 
@@ -303,10 +368,66 @@ def assign_nearest_erddap_source(stations: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(assignments)
 
 
+def assert_covariate_columns_populated(
+    beach_day: pd.DataFrame,
+    cdip_assignments: pd.DataFrame,
+    required_columns: tuple[str, ...] = CDIP_REQUIRED_COVARIATE_COLUMNS,
+) -> None:
+    """Fail loudly if a named covariate column is all-null after the CDIP merge.
+
+    A silent all-null column downstream causes the calibrator to produce
+    degenerate p_exceed=1.00 mass (no wave signal → all beaches read as
+    extreme), which was the immediate trigger for the sanity-guard clamp.
+    Better to crash the pipeline here and fix the upstream feed.
+
+    Only runs when CDIP station assignments were non-empty (i.e. we expected
+    to receive data).  If the summary fetch itself returned 0 stations the
+    assertion is skipped — that failure is already logged as a warning.
+    """
+    if cdip_assignments.empty:
+        return
+    assigned_beaches = set(cdip_assignments["beach_id"])
+    rows_with_station = beach_day.loc[
+        beach_day.get("beach_id", pd.Series(dtype=str)).isin(assigned_beaches)
+    ]
+    if rows_with_station.empty:
+        return
+    missing_cols: list[str] = []
+    for col in required_columns:
+        if col not in beach_day.columns or rows_with_station[col].isna().all():
+            missing_cols.append(col)
+    if missing_cols:
+        raise RuntimeError(
+            f"[cdip] COVARIATE ASSERTION FAILED — the following columns are "
+            f"entirely null after CDIP merge for {len(assigned_beaches)} assigned beaches: "
+            f"{missing_cols}.  "
+            f"This means the CDIP JUSTDAR fetch returned no data.  "
+            f"Check network connectivity to {CDIP_JUSTDAR_URL} and re-run "
+            f"--normalize-beachwatch --with-external-covariates once the feed recovers."
+        )
+    log.info(
+        "[cdip] covariate assertion passed — %s all have non-null values "
+        "across %d assigned-beach rows",
+        required_columns, len(rows_with_station),
+    )
+
+
 async def enrich_beach_day_with_external_covariates(
     stations: pd.DataFrame,
     beach_day: pd.DataFrame,
+    assert_covariates: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Enrich beach_day with CDIP wave, ERDDAP oceanographic, and EPA UV data.
+
+    Args:
+        stations: Station metadata DataFrame.
+        beach_day: Beach-day observation frame.
+        assert_covariates: If True, raise RuntimeError when CDIP wave columns
+            are all-null after merge despite non-empty station assignments.
+            Set this to True when running the normalisation pipeline so silent
+            CDIP drops fail the build rather than propagating NaN into the
+            calibrator.  Defaults to False for backwards compatibility.
+    """
     if beach_day.empty:
         return stations, beach_day, pd.DataFrame()
 
@@ -346,6 +467,24 @@ async def enrich_beach_day_with_external_covariates(
                     on=["cdip_station_id", "sample_date"],
                     how="left",
                 )
+                log.info(
+                    "[cdip] merged %d station-day rows onto beach_day "
+                    "(wave_height_m non-null: %d / %d)",
+                    len(cdip_daily),
+                    beach_day["wave_height_m"].notna().sum() if "wave_height_m" in beach_day.columns else 0,
+                    len(beach_day),
+                )
+            else:
+                log.warning(
+                    "[cdip] ALL station fetches returned empty — "
+                    "wave_height_m will be NaN for this run.  "
+                    "Feed URL: %s", CDIP_JUSTDAR_URL
+                )
+
+            if assert_covariates:
+                assert_covariate_columns_populated(beach_day, cdip_assignments)
+        else:
+            log.info("[cdip] no station assignments — CDIP covariates skipped")
 
         erddap_assignments = assign_nearest_erddap_source(stations)
         if not erddap_assignments.empty:
