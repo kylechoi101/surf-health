@@ -1,0 +1,75 @@
+name: Daily forecast refresh
+
+on:
+  schedule:
+    - cron: '0 13 * * *'   # 6 AM PDT / 5 AM PST
+  workflow_dispatch:
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+
+      - name: Install backend
+        run: pip install -e .
+        working-directory: backend
+
+      - name: Restore raw-data cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            data/raw/usgs_streamflow
+            data/raw/cnrfc
+          key: raw-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: raw-${{ runner.os }}-
+
+      - name: Create data directories
+        run: mkdir -p data/curated data/raw/cnrfc data/raw/usgs_streamflow data/raw/nhdplus
+
+      - name: Fetch beach monitoring stations CSV
+        run: |
+          curl -fsSL -o /tmp/stations.csv \
+            'https://raw.githubusercontent.com/CA-Water-Board/Beach-Water-Quality-Postings/master/stations.csv'
+
+      - name: Run data pipeline
+        run: |
+          python -m app.data.pipeline.cli \
+            --normalize-beachwatch \
+            --stations-csv /tmp/stations.csv \
+            --merge-ceden \
+            --with-external-covariates \
+            --with-hydrology
+        working-directory: backend
+
+      - name: Run ML training + forecasts
+        run: |
+          FORECAST_DATE=$(TZ=America/Los_Angeles date +%Y-%m-%d)
+          python -m app.ml.training --curated --forecast-date "$FORECAST_DATE"
+        working-directory: backend
+
+      - name: Sync curated snapshot to backend/
+        run: cp -r data/curated/. backend/data/curated/
+
+      - name: Commit and push if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add backend/data/curated/
+          if git diff --staged --quiet; then
+            echo "No data changes."
+          else
+            FORECAST_DATE=$(TZ=America/Los_Angeles date +%Y-%m-%d)
+            git commit -m "chore: daily forecast refresh ${FORECAST_DATE}"
+            git push
+          fi
