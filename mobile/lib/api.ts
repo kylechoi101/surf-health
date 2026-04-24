@@ -19,6 +19,7 @@ export interface ForecastRecord {
   top_drivers: string[];
   model_version: string;
   forecast_generated_at: string;
+  forecast_age_hours?: number;
   environmental_summary: {
     wave_height_m: number | null;
     dominant_period_s: number | null;
@@ -56,7 +57,16 @@ export function todayLA(): string {
 }
 
 export const getBeaches = () => request<BeachSummary[]>("/beaches");
+export const getSystemHealth = () => request<SystemHealthResponse>("/system/health");
+export const getObservations = (id: string) => request<ObservationResponse>(`/beaches/${id}/observations`);
 export const getForecast = (id: string, date: string) =>
   request<ForecastRecord>(`/beaches/${id}/forecast?date=${date}`);
 export const getExplanation = (id: string, date: string) =>
+  request<ExplanationResponse>(`/beaches/${id}/forecast/explain?date=${date}`);
+=> request<BeachSummary[]>("/beaches");
+export const getForecast = (id: string, date: string) =>
+  request<ForecastRecord>(`/beaches/${id}/forecast?date=${date}`);
+export const getExplanation = (id: string, date: string) =>
+  request<ExplanationResponse>(`/beaches/${id}/forecast/explain?date=${date}`);
+tExplanation = (id: string, date: string) =>
   request<ExplanationResponse>(`/beaches/${id}/forecast/explain?date=${date}`);

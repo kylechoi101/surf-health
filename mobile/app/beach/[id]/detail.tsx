@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { View, Text, TouchableOpacity, ScrollView, StyleSheet, ActivityIndicator } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { getBeaches, getForecast, todayLA, type BeachSummary, type ForecastRecord } from "../../../lib/api";
+import { getBeaches, getForecast, getObservations, todayLA, type BeachSummary, type ForecastRecord, type ObservationResponse } from "../../../lib/api";
 import { riskAdvice, RISK_COLORS, mToFt, cToF, mpsToMph, fmtUv, uvLabel, fmtPeriod, daysSince } from "../../../lib/utils";
 
 export default function BeachDetail() {
@@ -10,6 +10,7 @@ export default function BeachDetail() {
   const router = useRouter();
   const [beach, setBeach] = useState<BeachSummary | null>(null);
   const [forecast, setForecast] = useState<ForecastRecord | null>(null);
+  const [observations, setObservations] = useState<ObservationResponse | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -17,7 +18,8 @@ export default function BeachDetail() {
     Promise.all([
       getBeaches().then((bs) => bs.find((b) => b.id === id) ?? null),
       getForecast(id, todayLA()).catch(() => null),
-    ]).then(([b, f]) => { setBeach(b); setForecast(f); }).finally(() => setLoading(false));
+      getObservations(id).catch(() => null),
+    ]).then(([b, f, o]) => { setBeach(b); setForecast(f); setObservations(o); }).finally(() => setLoading(false));
   }, [id]);
 
   if (loading) return (
@@ -56,7 +58,9 @@ export default function BeachDetail() {
               <Text style={{ fontSize: 20 }}>💧</Text>
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={[s.riskBannerLabel, { color: colors.deep }]}>Water quality · today</Text>
+              <Text style={[s.riskBannerLabel, { color: colors.deep }]}>
+                Water quality · today {forecast && forecast.forecast_age_hours !== undefined && forecast.forecast_age_hours > 24 && `(${Math.floor(forecast.forecast_age_hours / 24)}d old)`}
+              </Text>
               <Text style={[s.riskBannerBand, { color: colors.deep }]}>{band}</Text>
               <Text style={[s.riskBannerAdvice, { color: colors.deep }]}>{riskAdvice(band)}</Text>
             </View>
@@ -68,6 +72,17 @@ export default function BeachDetail() {
             )}
           </View>
         </View>
+
+        {observations && observations.advisories && observations.advisories.length > 0 && observations.advisories[0].status === "active" && (
+          <View style={{ padding: 16, paddingBottom: 0 }}>
+            <View style={{ backgroundColor: "#fee2e2", padding: 16, borderRadius: 18, borderWidth: 1, borderColor: "#fca5a5" }}>
+              <Text style={{ color: "#991b1b", fontWeight: "700", fontSize: 13, textTransform: "uppercase", letterSpacing: 0.5 }}>Official Advisory</Text>
+              <Text style={{ color: "#991b1b", marginTop: 4, fontSize: 15, lineHeight: 22 }}>
+                An official county health advisory is currently active for this beach.
+              </Text>
+            </View>
+          </View>
+        )}
 
         {/* Conditions grid */}
         <View style={{ padding: 16, paddingBottom: 0 }}>
@@ -113,6 +128,23 @@ export default function BeachDetail() {
                 </Text>
                 <Text style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>Official county monitoring</Text>
               </View>
+            </View>
+          </View>
+        )}
+
+        {/* Observations chart */}
+        {observations && observations.observations && observations.observations.length > 0 && (
+          <View style={{ padding: 16, paddingBottom: 0 }}>
+            <Text style={s.sectionLabel}>Recent Observations</Text>
+            <View style={[s.card, { padding: 16, height: 100, flexDirection: "row", alignItems: "flex-end", gap: 3, justifyContent: "space-between" }]}>
+              {[...observations.observations].reverse().map((obs, i) => {
+                const maxVal = Math.max(...observations.observations.map(o => Math.log10(Math.max(o.value, 1))));
+                const valLog = Math.log10(Math.max(obs.value, 1));
+                const heightPct = Math.max((valLog / (maxVal || 1)) * 100, 2);
+                return (
+                  <View key={i} style={{ flex: 1, backgroundColor: obs.exceeds_stv ? "#ef4444" : "#cbd5e1", height: `${heightPct}%`, borderRadius: 2, minHeight: 4 }} />
+                );
+              })}
             </View>
           </View>
         )}

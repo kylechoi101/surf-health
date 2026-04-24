@@ -1466,44 +1466,72 @@ def _predict_sequence_inference(
 _STV_THRESHOLD = 104.0  # CFU/100mL — CA marine single-sample action value
 
 
-def _driver_strings(feature_row: pd.Series) -> list[str]:
-    candidates: list[tuple[float, str]] = []
-
-    def _val(col: str) -> float | None:
-        v = feature_row.get(col)
-        return float(v) if pd.notna(v) else None
-
-    # Hydrology: highest-signal features first
-    if (_ff := _val("first_flush_flag")) and _ff >= 1:
-        candidates.append((100.0, "first-flush runoff after an extended dry spell"))
-    if (_sf := _val("streamflow_rising_flag")) and _sf >= 1:
-        candidates.append((80.0, "rising stream discharge near the beach"))
-    if (_p24 := _val("precip_mm_24h")) is not None and _p24 > 25.4:
-        candidates.append((_p24 * 2, f"heavy rainfall in the past 24 h ({_p24:.0f} mm)"))
-    elif _p24 is not None and _p24 > 6.35:
-        candidates.append((_p24 * 2, f"recent rainfall ({_p24:.0f} mm in 24 h)"))
-    if (_awi := _val("precip_awi")) is not None and _awi > 8.0:
-        candidates.append((_awi * 3, f"saturated watershed after sustained rain (AWI {_awi:.0f})"))
-    if (_p7d := _val("precip_mm_7d")) is not None and _p7d > 50.0:
-        candidates.append((_p7d, f"high 7-day cumulative rainfall ({_p7d:.0f} mm)"))
-    if (_sf_cfs := _val("streamflow_cfs_latest")) is not None and _sf_cfs > 200:
-        candidates.append((_sf_cfs / 5, f"elevated stream discharge ({_sf_cfs:.0f} cfs)"))
-
-    # Wave / ocean
-    if (_wh := _val("wave_height_m")) is not None and _wh > 2.0:
-        candidates.append((_wh * 20, f"high surf ({_wh:.1f} m)"))
-    elif _wh is not None and _wh > 1.2:
-        candidates.append((_wh * 15, f"moderate surf ({_wh:.1f} m)"))
-
-    # Recent lab persistence (lag-1 features)
-    if (_ent := _val("enterococcus_value_lag_1")) is not None and _ent > _STV_THRESHOLD:
-        candidates.append((_ent, f"previous sample exceeded the threshold ({_ent:.0f} CFU/100 mL)"))
-    if (_turb := _val("turbidity_observed_lag_1")) is not None and _turb > 0:
-        candidates.append((_turb * 5, "recent turbidity noted in field observations"))
-
-    candidates.sort(key=lambda item: item[0], reverse=True)
-    drivers = [msg for _, msg in candidates[:3]]
-    return drivers or ["stable recent conditions with no strong environmental signal"]
+def _compute_local_drivers(
+    tree_classifier,
+    features: pd.DataFrame,
+    baseline_probs: np.ndarray,
+) -> list[list[str]]:
+    all_drivers = []
+    if not hasattr(tree_classifier, "predict_proba"):
+        return [["stable recent conditions with no strong environmental signal"]] * len(features)
+        
+    for i in range(len(features)):
+        row = features.iloc[[i]]
+        base_prob = baseline_probs[i]
+        
+        candidates = []
+        cols_to_check = []
+        for col in features.columns:
+            val = float(row[col].iloc[0])
+            if val != 0.0:
+                cols_to_check.append((col, val))
+                
+        if cols_to_check:
+            perturbed_df = pd.concat([row]*len(cols_to_check), ignore_index=True)
+            for j, (col, _) in enumerate(cols_to_check):
+                perturbed_df.at[j, col] = 0.0
+            
+            try:
+                pert_probs = tree_classifier.predict_proba(perturbed_df)[:, 1]
+                for j, (col, val) in enumerate(cols_to_check):
+                    diff = base_prob - pert_probs[j]
+                    if diff > 0.01:
+                        candidates.append((diff, col, val))
+            except Exception:
+                pass
+                
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        
+        driver_strings = []
+        for diff, col, val in candidates[:3]:
+            if col == "first_flush_flag":
+                driver_strings.append("first-flush runoff after an extended dry spell")
+            elif col == "streamflow_rising_flag":
+                driver_strings.append("rising stream discharge near the beach")
+            elif col == "precip_mm_24h":
+                driver_strings.append(f"recent rainfall ({val:.0f} mm in 24 h)")
+            elif col == "precip_awi":
+                driver_strings.append(f"saturated watershed after sustained rain (AWI {val:.0f})")
+            elif col == "precip_mm_7d":
+                driver_strings.append(f"high 7-day cumulative rainfall ({val:.0f} mm)")
+            elif col == "streamflow_cfs_latest":
+                driver_strings.append(f"elevated stream discharge ({val:.0f} cfs)")
+            elif col == "wave_height_m":
+                driver_strings.append(f"elevated surf ({val:.1f} m)")
+            elif col == "enterococcus_value_lag_1":
+                driver_strings.append(f"previous sample exceeded the threshold ({val:.0f} CFU/100 mL)")
+            elif col == "turbidity_observed_lag_1":
+                driver_strings.append("recent turbidity noted in field observations")
+            else:
+                clean_name = col.replace("_", " ")
+                driver_strings.append(f"{clean_name} ({val:.1f})")
+                
+        if not driver_strings:
+            driver_strings = ["stable recent conditions with no strong environmental signal"]
+            
+        all_drivers.append(driver_strings)
+        
+    return all_drivers
 
 
 def train_curated_and_export(
@@ -1526,6 +1554,9 @@ def train_curated_and_export(
     print("Loading datasets...", file=sys.stderr, flush=True)
     settings = get_settings()
     frame = _load_curated_training_frame(curated_dir)
+    frame["sample_date"] = pd.to_datetime(frame["sample_date"])
+    max_date = frame["sample_date"].max()
+    frame = frame.loc[frame["sample_date"] > (max_date - pd.Timedelta(days=60))].copy()
     stations = pd.read_parquet(curated_dir / "beaches.parquet")
     uv_daily_path = curated_dir / "uv_daily.parquet"
     uv_daily = pd.read_parquet(uv_daily_path) if uv_daily_path.exists() else pd.DataFrame()
@@ -1739,6 +1770,7 @@ def train_curated_and_export(
         if calibrator is not None:
             probabilities = calibrator.transform(probabilities)
     density_predictions = regressor.predict(baseline_forecast_features)
+    computed_drivers = _compute_local_drivers(classifier, baseline_forecast_features, probabilities)
 
     forecasts = []
     forecast_lookup = (
@@ -1750,13 +1782,13 @@ def train_curated_and_export(
     station_lookup = stations.set_index("beach_id")
     if not forecast_metadata.empty:
         forecast_generated_at = datetime.now(UTC).isoformat()
-        for idx, probability, density_prediction, scope in zip(
+        for i, (idx, probability, density_prediction, scope) in enumerate(zip(
             forecast_metadata.index,
             probabilities,
             density_predictions,
             scopes,
             strict=False,
-        ):
+        )):
             meta_row = forecast_metadata.iloc[idx]
             feature_row = forecast_feature_frame.iloc[idx]
             beach_id = meta_row["beach_id"]
@@ -1791,7 +1823,7 @@ def train_curated_and_export(
                     "prediction_interval_level": (
                         0.9 if regression_interval_half_width is not None else None
                     ),
-                    "top_drivers": _driver_strings(feature_row),
+                    "top_drivers": computed_drivers[i],
                     "model_version": _forecast_model_version(winner, str(scope)),
                     "forecast_generated_at": forecast_generated_at,
                     "wave_height_m": _safe_float(latest_row.get("wave_height_m")) if latest_row is not None else None,

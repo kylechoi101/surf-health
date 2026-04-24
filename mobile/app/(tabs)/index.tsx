@@ -73,6 +73,14 @@ export default function HomeTab() {
             <Text style={{ opacity: 0.7 }}>— before you paddle out.</Text>
           </Text>
           <Text style={s.sub}>Daily bacteria + surf forecast for 290+ California beaches.</Text>
+
+          {health && health.active_advisories_count !== undefined && health.active_advisories_count > 0 && (
+            <View style={{ marginTop: 16, backgroundColor: "rgba(0,0,0,0.1)", paddingVertical: 8, paddingHorizontal: 12, borderRadius: 8, alignSelf: "flex-start" }}>
+              <Text style={{ color: "#000", fontWeight: "700", fontSize: 12, letterSpacing: 0.5, textTransform: "uppercase" }}>
+                {health.active_advisories_count} ADVISOR{health.active_advisories_count === 1 ? "Y" : "IES"} ACROSS CALIFORNIA TODAY
+              </Text>
+            </View>
+          )}
         </SafeAreaView>
       </View>
 
