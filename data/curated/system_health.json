@@ -1,0 +1,124 @@
+{
+  "pipeline_freshness": "2026-04-23T23:44:02.328628+00:00",
+  "source_freshness": {
+    "beaches": "2026-04-23T19:37:32+00:00",
+    "observations": "2026-04-23T19:37:32+00:00",
+    "advisories": "2026-04-23T19:37:32+00:00"
+  },
+  "model_registry": {
+    "production_model": "hist-gbm-curated-v0",
+    "temporal_validation_winner": "hist-gbm-curated-v0",
+    "candidate_models": [
+      "logistic-curated-v0",
+      "logistic-coastal-cells-curated-v0",
+      "logistic-hierarchical-curated-v0",
+      "hist-gbm-curated-v0"
+    ],
+    "research_models": [
+      "tcn-curated-v0"
+    ],
+    "spatial_backtest_models": [
+      "hist-gbm-curated-v0"
+    ],
+    "spatial_backtest_strategy": "disabled",
+    "production_metrics": {
+      "aucpr": 0.7687291586468649,
+      "brier": 0.14144706760456716
+    },
+    "validation_metrics": {
+      "aucpr": 0.8041737171384309,
+      "brier": 0.14776456907122834
+    },
+    "temporal_validation_metrics": {
+      "aucpr": 0.8041737171384309,
+      "brier": 0.14776456907122834
+    },
+    "spatial_metrics": {},
+    "deployment_stage": "research_prototype",
+    "public_release_eligible": false,
+    "promotion_blockers": [
+      "Spatial holdout metrics have not been run for this artifact."
+    ],
+    "promotion_policy": {
+      "production_models": [
+        "logistic",
+        "logistic_coastal_cells",
+        "logistic_hierarchical",
+        "hist_gbm"
+      ],
+      "neural_model_status": "research_only",
+      "spatial_backtests_present": false,
+      "spatial_backtest_strategy": "shortlist",
+      "fallback_order": [
+        "coastal_cell",
+        "county",
+        "region",
+        "global"
+      ]
+    },
+    "metrics": {
+      "persistence_valid": {
+        "aucpr": 0.5878869114771168,
+        "brier": 0.22088160989633243
+      },
+      "persistence": {
+        "aucpr": 0.5759091661799853,
+        "brier": 0.20554103022797118
+      },
+      "logistic_valid": {
+        "aucpr": 0.7569171041413166,
+        "brier": 0.17663908097777448
+      },
+      "logistic": {
+        "aucpr": 0.6801547078705273,
+        "brier": 0.1611436918913087
+      },
+      "logistic_coastal_cells_valid": {
+        "aucpr": 0.7385000318422688,
+        "brier": 0.19158534532476434
+      },
+      "logistic_coastal_cells": {
+        "aucpr": 0.6442412968535185,
+        "brier": 0.16947267916411146
+      },
+      "logistic_hierarchical_valid": {
+        "aucpr": 0.7425870463339755,
+        "brier": 0.193072562780643
+      },
+      "logistic_hierarchical": {
+        "aucpr": 0.6547002346957562,
+        "brier": 0.16676203522753968
+      },
+      "hist_gbm_valid": {
+        "aucpr": 0.8041737171384309,
+        "brier": 0.14776456907122834
+      },
+      "hist_gbm": {
+        "aucpr": 0.7687291586468649,
+        "brier": 0.14144706760456716
+      },
+      "elastic_net_valid": {
+        "rmse": 11.499708225831256
+      },
+      "elastic_net": {
+        "rmse": 5.845809504206703
+      },
+      "hist_gbm_regressor_valid": {
+        "rmse": 0.8606952450395873
+      },
+      "hist_gbm_regressor": {
+        "rmse": 0.7942972136809757
+      },
+      "tcn_valid": {
+        "aucpr": 0.7869178833970091,
+        "brier": 0.14928549528121948,
+        "rmse": 0.9328384216898632
+      },
+      "tcn": {
+        "aucpr": 0.7724801019991538,
+        "brier": 0.13425473868846893,
+        "rmse": 0.8698536209305611
+      }
+    }
+  }
+}
