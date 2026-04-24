@@ -116,24 +116,57 @@ class CuratedBeachRepository(BeachRepository):
 
     def get_forecast(self, beach_id: str, forecast_date: date) -> ForecastRecord:
         if not self.forecasts_frame.empty:
-            match = self.forecasts_frame.loc[
-                (self.forecasts_frame["beach_id"] == beach_id)
-                & (pd.to_datetime(self.forecasts_frame["forecast_date"]).dt.date == forecast_date)
+            beach_forecasts = self.forecasts_frame.loc[
+                self.forecasts_frame["beach_id"] == beach_id
             ]
-            if not match.empty:
-                row = match.iloc[0].to_dict()
-                environmental_summary = EnvironmentalSummary(
-                    wave_height_m=_safe_float(row.get("wave_height_m")),
-                    dominant_period_s=_safe_float(row.get("dominant_period_s")),
-                    water_temperature_c=_safe_float(row.get("water_temperature_c")),
-                    salinity_psu=_safe_float(row.get("salinity_psu")),
-                    uv_index=_safe_float(row.get("uv_index")),
-                    wind_speed_mps=_safe_float(row.get("wind_speed_mps")),
-                    wind_direction_deg=_safe_float(row.get("wind_direction_deg")),
-                )
-                row["environmental_summary"] = environmental_summary
-                return ForecastRecord.model_validate(row)
+            if not beach_forecasts.empty:
+                forecast_dates = pd.to_datetime(beach_forecasts["forecast_date"]).dt.date
+                exact = beach_forecasts.loc[forecast_dates == forecast_date]
+                if not exact.empty:
+                    return self._build_forecast_record(exact.iloc[0].to_dict(), beach_id)
+                # No forecast for the requested date — return the most recent available.
+                latest = beach_forecasts.loc[forecast_dates.idxmax()]
+                return self._build_forecast_record(latest.to_dict(), beach_id)
         return self._derived_forecast(beach_id, forecast_date)
+
+    def _build_forecast_record(self, row: dict, beach_id: str) -> ForecastRecord:
+        env_fallback = self._latest_beach_day_env(beach_id)
+
+        def pick(key: str) -> float | None:
+            primary = _safe_float(row.get(key))
+            return primary if primary is not None else env_fallback.get(key)
+
+        environmental_summary = EnvironmentalSummary(
+            wave_height_m=pick("wave_height_m"),
+            dominant_period_s=pick("dominant_period_s"),
+            water_temperature_c=pick("water_temperature_c"),
+            salinity_psu=pick("salinity_psu"),
+            uv_index=pick("uv_index"),
+            wind_speed_mps=pick("wind_speed_mps"),
+            wind_direction_deg=pick("wind_direction_deg"),
+        )
+        row["environmental_summary"] = environmental_summary
+        return ForecastRecord.model_validate(row)
+
+    def _latest_beach_day_env(self, beach_id: str) -> dict[str, float | None]:
+        if self.beach_day_frame.empty:
+            return {}
+        rows = self.beach_day_frame.loc[self.beach_day_frame["beach_id"] == beach_id]
+        if rows.empty:
+            return {}
+        latest = rows.sort_values("sample_date", ascending=False).iloc[0]
+        return {
+            key: _safe_float(latest.get(key))
+            for key in (
+                "wave_height_m",
+                "dominant_period_s",
+                "water_temperature_c",
+                "salinity_psu",
+                "uv_index",
+                "wind_speed_mps",
+                "wind_direction_deg",
+            )
+        }
 
     def _derived_forecast(self, beach_id: str, forecast_date: date) -> ForecastRecord:
         beach_obs = self.observations_frame.loc[self.observations_frame["beach_id"] == beach_id].copy()

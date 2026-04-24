@@ -31,6 +31,12 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
+        name="map"
+        options={{
+          tabBarIcon: ({ focused }) => <TabIcon focused={focused} emoji="🗺️" label="Map" />,
+        }}
+      />
+      <Tabs.Screen
         name="search"
         options={{
           tabBarIcon: ({ focused }) => <TabIcon focused={focused} emoji="🔍" label="Search" />,
