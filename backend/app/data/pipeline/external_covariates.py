@@ -315,10 +315,20 @@ async def fetch_erddap_daily_covariates(
     start: date,
     end: date,
 ) -> pd.DataFrame:
+    """Fetch ERDDAP daily covariates.  Returns empty DataFrame on network/HTTP
+    error so one failing dataset does not abort the enrichment pipeline."""
     url = dataset.dataset_url.format(start=start.isoformat(), end=end.isoformat())
-    response = await client.get(url, timeout=30.0)
-    response.raise_for_status()
+    try:
+        response = await client.get(url, timeout=30.0)
+        response.raise_for_status()
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "[erddap] fetch failed for %s (%s: %s) — skipping",
+            dataset.source_name, type(exc).__name__, exc,
+        )
+        return pd.DataFrame()
     if response.text.startswith("Error"):
+        log.warning("[erddap] %s returned error text — skipping", dataset.source_name)
         return pd.DataFrame()
     frame = pd.read_csv(StringIO(response.text), skiprows=[1])
     if frame.empty:
