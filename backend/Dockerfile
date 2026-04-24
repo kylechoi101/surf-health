@@ -10,9 +10,9 @@ WORKDIR /app
 
 RUN pip install --upgrade pip
 
-COPY backend/pyproject.toml /app/
-COPY backend/app/ /app/app/
-COPY backend/scripts/ /app/scripts/
+COPY pyproject.toml /app/
+COPY app/ /app/app/
+COPY scripts/ /app/scripts/
 
 RUN pip install --no-cache-dir .
 
