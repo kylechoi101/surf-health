@@ -219,24 +219,3 @@ class CuratedBeachRepository(BeachRepository):
         health_path = self.curated_dir / "system_health.json"
         payload = json.loads(health_path.read_text()) if health_path.exists() else {}
         return SystemHealthResponse.model_validate({"app_env": "development", **payload})
-e_c"),
-                        "salinity_psu": row.get("salinity_psu"),
-                        "weather": row.get("weather"),
-                        "storm_drain_flow": row.get("storm_drain_flow"),
-                        "tidal_height": row.get("tidal_height"),
-                        "surf_height_observed": row.get("surf_height_observed"),
-                        "turbidity_observed": row.get("turbidity_observed"),
-                    }
-                )
-
-        return ObservationResponse(
-            beach_id=beach_id,
-            observations=observations,
-            advisories=advisories,
-            recent_environment=recent_environment,
-        )
-
-    def get_system_health(self) -> SystemHealthResponse:
-        health_path = self.curated_dir / "system_health.json"
-        payload = json.loads(health_path.read_text()) if health_path.exists() else {}
-        return SystemHealthResponse.model_validate({"app_env": "development", **payload})
