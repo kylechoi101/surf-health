@@ -95,6 +95,7 @@ class SystemHealthResponse(BaseModel):
     source_freshness: dict[str, str]
     model_registry: dict[str, Any]
     active_advisories_count: int | None = None
+    forecast_audit: dict[str, Any] | None = None
 
 
 class ForecastExplanationRequest(BaseModel):

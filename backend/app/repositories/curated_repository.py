@@ -334,13 +334,29 @@ class CuratedBeachRepository(BeachRepository):
     def get_system_health(self) -> SystemHealthResponse:
         health_path = self.curated_dir / "system_health.json"
         payload = json.loads(health_path.read_text()) if health_path.exists() else {}
-        
+
         active_count = 0
         if not self.advisories_frame.empty:
             active_count = int((self.advisories_frame["status"] == "active").sum())
-            
+
+        audit: dict | None = None
+        audit_path = self.curated_dir / "advisory_audit.json"
+        if audit_path.exists():
+            try:
+                raw = json.loads(audit_path.read_text())
+                audit = {
+                    "generated_at": raw.get("generated_at"),
+                    "agreement_rate": raw.get("agreement_rate"),
+                    "false_negatives": raw.get("false_negatives", {}).get("count"),
+                    "false_positives": raw.get("false_positives", {}).get("count"),
+                    "active_advisories": raw.get("active_advisories"),
+                }
+            except Exception:
+                pass
+
         return SystemHealthResponse.model_validate({
             "app_env": os.getenv("APP_ENV", "development"),
             "active_advisories_count": active_count,
+            "forecast_audit": audit,
             **payload
         })
