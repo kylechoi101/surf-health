@@ -1881,21 +1881,25 @@ def train_curated_and_export(
     # ── Risk-distribution sanity guard ──────────────────────────────────────
     # A degenerate calibrator (e.g. trained on all-null env features) can push
     # p_exceed to exactly 1.00 for most beaches, producing an implausible
-    # distribution like 41% Very High.  risk_band() maps p >= 0.70 → Very High,
-    # so we clamp to 0.69 — the highest value still in the High band — which
-    # redistributes the hard-1.0 mass while preserving relative ranking.
+    # distribution like 41% Very High.  This guard logs loudly when that happens
+    # so CI catches the regression — but does NOT clamp, so that genuine Very
+    # High risk signals (e.g. post-storm first-flush) are never suppressed.
+    #
+    # Historical note: a hard np.clip to 0.69 was used while the CDIP feed was
+    # broken (wave_height_m = all-null → calibrator mass at p=1.00).  Removed
+    # 2026-04-25 once CDIP enrichment confirmed healthy (0 % Very High).
     _VERY_HIGH_THRESHOLD = 0.70  # must match risk_band() definition
-    _MAX_VERY_HIGH_FRACTION = 0.30
+    _DEGENERATE_VERY_HIGH_FRACTION = 0.30  # >30% Very High implies a broken calibrator
     if len(probabilities) > 0:
         very_high_fraction = float((probabilities >= _VERY_HIGH_THRESHOLD).mean())
-        if very_high_fraction > _MAX_VERY_HIGH_FRACTION:
+        if very_high_fraction > _DEGENERATE_VERY_HIGH_FRACTION:
             print(
-                f"[sanity guard] {very_high_fraction:.1%} of beaches at Very High "
-                f"(threshold {_MAX_VERY_HIGH_FRACTION:.0%}); clamping p_exceed to 0.69.",
+                f"[sanity guard] WARNING: {very_high_fraction:.1%} of beaches at Very High "
+                f"(>{_DEGENERATE_VERY_HIGH_FRACTION:.0%} threshold). "
+                "Possible degenerate calibrator — check env feature fill rates.",
                 file=sys.stderr,
                 flush=True,
             )
-            probabilities = np.clip(probabilities, 0.0, 0.69)
     # ─────────────────────────────────────────────────────────────────────────
     # Driver computation always uses hist_gbm (individual-beach sensitivity).
     # logistic_hierarchical outputs cluster-level probs — zeroing one beach's
