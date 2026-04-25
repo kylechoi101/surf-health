@@ -22,7 +22,7 @@ jobs:
           cache-dependency-path: backend/pyproject.toml
 
       - name: Install backend
-        run: pip install -e .
+        run: pip install -e ".[training]"
         working-directory: backend
 
       - name: Restore raw-data cache
