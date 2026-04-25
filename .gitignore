@@ -15,12 +15,13 @@ node_modules/
 dist/
 coverage/
 artifacts/
-# data/curated/ is baked into the Docker image (Dockerfile: COPY data/curated/)
-# and MUST be tracked so Render's build context has the parquets.
-# Ignore everything under data/ EXCEPT curated/:
+# data/curated/ is the single tracked source of truth for curated parquets.
+# Docker build context is repo root; Dockerfile COPYs from data/curated/ directly.
+# backend/data/curated/ is NOT tracked (it was the old sync target).
 /data/raw/
 /data/research/
 /data/curated/*.pre-cdip.parquet
+/backend/data/curated/
 
 mobile/build-*.ipa
 order.txt

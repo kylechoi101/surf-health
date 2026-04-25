@@ -35,6 +35,21 @@ class BeachSummary(BaseModel):
     geometry: Point
 
 
+class ParentBeachSummary(BaseModel):
+    id: str
+    name: str
+    county: str
+    region: str
+    support_status: SupportStatus
+    station_count: int
+    member_beach_ids: list[str]
+    latest_official_sample_at: datetime | None = None
+    geometry: Point
+    risk_band: RiskBand | None = None
+    p_exceed: float | None = None
+    has_active_advisory: bool = False
+
+
 class ForecastRecord(BaseModel):
     beach_id: str
     forecast_date: date

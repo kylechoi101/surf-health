@@ -23,6 +23,11 @@ def get_service(
 router = APIRouter()
 
 
+@router.get("/parent-beaches")
+def list_parent_beaches(service: BeachService = Depends(get_service)):
+    return service.list_parent_beaches()
+
+
 @router.get("/beaches")
 def list_beaches(service: BeachService = Depends(get_service)):
     return service.list_beaches()

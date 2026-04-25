@@ -126,6 +126,7 @@ def normalize_station_metadata(frame: pd.DataFrame) -> pd.DataFrame:
     marine["latest_official_sample_at"] = pd.NaT
     marine["usepa_id"] = _column(marine, "USEPAID").map(_clean_text)
     marine["station_code"] = _column(marine, "Station_Name").map(_clean_text)
+    marine["beach_name"] = _column(marine, "Beach_Name").map(_clean_text)
     marine["water_body_class"] = _column(marine, "WaterBodyClass").map(_clean_text)
     marine["water_body_type"] = _column(marine, "WaterBodyType").map(_clean_text)
     marine["agency_name"] = _column(marine, "Agency_Name").fillna(
@@ -145,6 +146,7 @@ def normalize_station_metadata(frame: pd.DataFrame) -> pd.DataFrame:
                 "longitude",
                 "usepa_id",
                 "station_code",
+                "beach_name",
                 "water_body_class",
                 "water_body_type",
                 "agency_name",
@@ -154,6 +156,63 @@ def normalize_station_metadata(frame: pd.DataFrame) -> pd.DataFrame:
         .drop_duplicates(subset=["beach_id"])
         .reset_index(drop=True)
     )
+
+
+def derive_parent_beaches(stations: pd.DataFrame) -> pd.DataFrame:
+    """Group station rows into logical parent beaches using usepa_id.
+
+    Each USEPA beach ID may have many monitoring stations. This produces one
+    parent row per usepa_id with a canonical name, centroid geometry, and the
+    list of member station beach_ids.
+    """
+    if stations.empty:
+        return pd.DataFrame()
+
+    def _canonical_name(group: pd.DataFrame) -> str:
+        # Prefer raw Beach_Name if preserved in beach_name column.
+        if "beach_name" in group.columns:
+            beach_names = group["beach_name"].dropna().unique().tolist()
+            if beach_names:
+                return max(beach_names, key=len)
+        # Fall back: derive from first member's beach_id (mirrors _derive_friendly_name).
+        first_id = group["beach_id"].iloc[0]
+        slug = re.sub(r"^ca\d+-", "", first_id)
+        county_slug = str(group["county"].iloc[0]).lower().replace(" ", "-")
+        if slug.startswith(county_slug + "-"):
+            slug = slug[len(county_slug) + 1:]
+        station_slug = re.sub(r"[^a-z0-9]+", "-", str(group["name"].iloc[0]).lower()).strip("-")
+        if station_slug and slug.endswith("-" + station_slug):
+            slug = slug[:-(len(station_slug) + 1)]
+        derived = slug.replace("-", " ").title()
+        return derived if derived else (group["name"].iloc[0] if not group["name"].empty else "Unknown Beach")
+
+    rows = []
+    for usepa_id, group in stations.groupby("usepa_id"):
+        if not usepa_id:
+            continue
+        member_ids = group["beach_id"].tolist()
+        parent_id = f"parent-{str(usepa_id).lower().replace(' ', '-')}"
+        rows.append({
+            "parent_beach_id": parent_id,
+            "usepa_id": usepa_id,
+            "name": _canonical_name(group),
+            "county": group["county"].iloc[0],
+            "region": group["region"].iloc[0],
+            "support_status": (
+                "production" if (group["support_status"] == "production").any() else "unsupported"
+            ),
+            "latitude": float(group["latitude"].dropna().mean()) if group["latitude"].notna().any() else None,
+            "longitude": float(group["longitude"].dropna().mean()) if group["longitude"].notna().any() else None,
+            "station_count": len(member_ids),
+            "member_beach_ids": member_ids,
+            "latest_official_sample_at": (
+                group["latest_official_sample_at"].dropna().max()
+                if group["latest_official_sample_at"].notna().any()
+                else None
+            ),
+        })
+
+    return pd.DataFrame(rows).reset_index(drop=True)
 
 
 def normalize_bacteria_results(frame: pd.DataFrame, stv_threshold: float) -> pd.DataFrame:
@@ -315,6 +374,7 @@ def write_curated_bundle(
 ) -> None:
     curated_dir.mkdir(parents=True, exist_ok=True)
     stations.to_parquet(curated_dir / "beaches.parquet", index=False)
+    derive_parent_beaches(stations).to_parquet(curated_dir / "parent_beaches.parquet", index=False)
     observations.to_parquet(curated_dir / "observations.parquet", index=False)
     advisories.to_parquet(curated_dir / "advisories.parquet", index=False)
     beach_day.to_parquet(curated_dir / "beach_day.parquet", index=False)
