@@ -1561,12 +1561,16 @@ def _compute_local_drivers(
                 driver_strings.append(f"high 7-day cumulative rainfall ({val:.0f} mm)")
             elif col == "streamflow_cfs_latest":
                 driver_strings.append(f"elevated stream discharge ({val:.0f} cfs)")
-            elif col == "wave_height_m":
+            elif col == "wave_height_m" or col.startswith("wave_height_m_lag_"):
                 driver_strings.append(f"elevated surf ({val:.1f} m)")
-            elif col == "enterococcus_value_lag_1":
-                driver_strings.append(f"previous sample exceeded the threshold ({val:.0f} CFU/100 mL)")
-            elif col == "turbidity_observed_lag_1":
+            elif col.startswith("wave_height_m_mean_"):
+                driver_strings.append(f"persistently elevated swell ({val:.1f} m avg)")
+            elif col.startswith("enterococcus_value_lag_"):
+                driver_strings.append(f"elevated bacteria in recent sample ({val:.0f} CFU/100 mL)")
+            elif col.startswith("turbidity_observed_lag_"):
                 driver_strings.append("recent turbidity noted in field observations")
+            elif col.startswith("salinity_psu_lag_") and val < 25:
+                driver_strings.append(f"freshwater input detected (low salinity {val:.0f} psu)")
             # else: feature has no human-readable mapping — skip it rather than
             # leaking internal names like "day of year (114.0)" to end users.
 
@@ -1838,7 +1842,16 @@ def train_curated_and_export(
             )
             probabilities = np.clip(probabilities, 0.0, 0.69)
     # ─────────────────────────────────────────────────────────────────────────
-    computed_drivers = _compute_local_drivers(classifier, baseline_forecast_features, probabilities)
+    # Driver computation always uses hist_gbm (individual-beach sensitivity).
+    # logistic_hierarchical outputs cluster-level probs — zeroing one beach's
+    # features barely moves it, so drivers would all be the stub fallback if
+    # we used the hierarchical probs as the baseline.  Using hist_gbm probs for
+    # BOTH baseline and perturbation gives a self-consistent diff.
+    if not baseline_forecast_features.empty and hasattr(tree_classifier, "predict_proba"):
+        driver_baseline_probs = tree_classifier.predict_proba(baseline_forecast_features)[:, 1]
+    else:
+        driver_baseline_probs = probabilities
+    computed_drivers = _compute_local_drivers(tree_classifier, baseline_forecast_features, driver_baseline_probs)
 
     forecasts = []
     forecast_lookup = (
