@@ -158,23 +158,33 @@ def normalize_station_metadata(frame: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+_DBSCAN_EPS_KM = 3.0
+_DBSCAN_EPS_RAD = _DBSCAN_EPS_KM / 6371.0
+_SPLIT_THRESHOLD_KM = 5.0  # only sub-cluster if group spans more than this
+
+
 def derive_parent_beaches(stations: pd.DataFrame) -> pd.DataFrame:
     """Group station rows into logical parent beaches using usepa_id.
 
-    Each USEPA beach ID may have many monitoring stations. This produces one
-    parent row per usepa_id with a canonical name, centroid geometry, and the
-    list of member station beach_ids.
+    Uses DBSCAN (eps=3 km) to split usepa_id groups that span >5 km into
+    geographic sub-clusters, each becoming its own parent beach entry with a
+    directional suffix (· North / · South).
     """
     if stations.empty:
         return pd.DataFrame()
 
+    try:
+        from sklearn.cluster import DBSCAN as _DBSCAN
+        import numpy as _np
+        _dbscan_available = True
+    except ImportError:
+        _dbscan_available = False
+
     def _canonical_name(group: pd.DataFrame) -> str:
-        # Prefer raw Beach_Name if preserved in beach_name column.
         if "beach_name" in group.columns:
             beach_names = group["beach_name"].dropna().unique().tolist()
             if beach_names:
                 return max(beach_names, key=len)
-        # Fall back: derive from first member's beach_id (mirrors _derive_friendly_name).
         first_id = group["beach_id"].iloc[0]
         slug = re.sub(r"^ca\d+-", "", first_id)
         county_slug = str(group["county"].iloc[0]).lower().replace(" ", "-")
@@ -186,31 +196,75 @@ def derive_parent_beaches(stations: pd.DataFrame) -> pd.DataFrame:
         derived = slug.replace("-", " ").title()
         return derived if derived else (group["name"].iloc[0] if not group["name"].empty else "Unknown Beach")
 
+    def _spread_km(group: pd.DataFrame) -> float:
+        coords = group[["latitude", "longitude"]].dropna()
+        if len(coords) < 2:
+            return 0.0
+        lat_km = (coords["latitude"].max() - coords["latitude"].min()) * 111.0
+        lon_km = (coords["longitude"].max() - coords["longitude"].min()) * 88.0
+        return float((lat_km ** 2 + lon_km ** 2) ** 0.5)
+
+    def _sub_clusters(group: pd.DataFrame) -> list[pd.DataFrame]:
+        """Return list of sub-group DataFrames; splits via DBSCAN if warranted."""
+        if not _dbscan_available or _spread_km(group) <= _SPLIT_THRESHOLD_KM:
+            return [group]
+        coords = group[["latitude", "longitude"]].dropna()
+        if len(coords) < 2:
+            return [group]
+        coords_rad = _np.radians(coords.values)
+        labels = _DBSCAN(eps=_DBSCAN_EPS_RAD, min_samples=1, metric="haversine").fit_predict(coords_rad)
+        group = group.copy()
+        group.loc[coords.index, "_cluster"] = labels
+        group["_cluster"] = group["_cluster"].fillna(-1).astype(int)
+        unique = sorted(cl for cl in group["_cluster"].unique() if cl >= 0)
+        if len(unique) <= 1:
+            return [group]
+        return [group[group["_cluster"] == cl].copy() for cl in unique]
+
+    _DIRECTION_LABELS = ["North", "South", "East", "West", "Central"]
+
     rows = []
     for usepa_id, group in stations.groupby("usepa_id"):
         if not usepa_id:
             continue
-        member_ids = group["beach_id"].tolist()
-        parent_id = f"parent-{str(usepa_id).lower().replace(' ', '-')}"
-        rows.append({
-            "parent_beach_id": parent_id,
-            "usepa_id": usepa_id,
-            "name": _canonical_name(group),
-            "county": group["county"].iloc[0],
-            "region": group["region"].iloc[0],
-            "support_status": (
-                "production" if (group["support_status"] == "production").any() else "unsupported"
-            ),
-            "latitude": float(group["latitude"].dropna().mean()) if group["latitude"].notna().any() else None,
-            "longitude": float(group["longitude"].dropna().mean()) if group["longitude"].notna().any() else None,
-            "station_count": len(member_ids),
-            "member_beach_ids": member_ids,
-            "latest_official_sample_at": (
-                group["latest_official_sample_at"].dropna().max()
-                if group["latest_official_sample_at"].notna().any()
-                else None
-            ),
-        })
+
+        base_name = _canonical_name(group)
+        sub_groups = _sub_clusters(group)
+
+        # Sort sub-groups north→south by centroid latitude so suffixes are stable
+        if len(sub_groups) > 1:
+            sub_groups = sorted(sub_groups, key=lambda sg: sg["latitude"].mean(), reverse=True)
+
+        for rank, sub in enumerate(sub_groups):
+            member_ids = sub["beach_id"].tolist()
+            n_subs = len(sub_groups)
+            if n_subs == 1:
+                name = base_name
+                parent_id = f"parent-{str(usepa_id).lower()}"
+            else:
+                direction = _DIRECTION_LABELS[rank] if rank < len(_DIRECTION_LABELS) else str(rank + 1)
+                name = f"{base_name} · {direction}"
+                parent_id = f"parent-{str(usepa_id).lower()}-{rank + 1}"
+
+            rows.append({
+                "parent_beach_id": parent_id,
+                "usepa_id": usepa_id,
+                "name": name,
+                "county": sub["county"].iloc[0],
+                "region": sub["region"].iloc[0],
+                "support_status": (
+                    "production" if (sub["support_status"] == "production").any() else "unsupported"
+                ),
+                "latitude": float(sub["latitude"].dropna().mean()) if sub["latitude"].notna().any() else None,
+                "longitude": float(sub["longitude"].dropna().mean()) if sub["longitude"].notna().any() else None,
+                "station_count": len(member_ids),
+                "member_beach_ids": member_ids,
+                "latest_official_sample_at": (
+                    sub["latest_official_sample_at"].dropna().max()
+                    if sub["latest_official_sample_at"].notna().any()
+                    else None
+                ),
+            })
 
     return pd.DataFrame(rows).reset_index(drop=True)
 
