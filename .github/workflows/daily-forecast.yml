@@ -58,14 +58,11 @@ jobs:
           python -m app.ml.training --curated --forecast-date "$FORECAST_DATE"
         working-directory: backend
 
-      - name: Sync curated snapshot to backend/
-        run: cp -r data/curated/. backend/data/curated/
-
       - name: Commit and push if changed
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add backend/data/curated/
+          git add data/curated/
           if git diff --staged --quiet; then
             echo "No data changes."
           else
@@ -73,5 +70,15 @@ jobs:
             git commit -m "chore: daily forecast refresh ${FORECAST_DATE}"
             git push
           fi
+
       - name: Trigger Render deploy
-        run: curl -X POST "${{ secrets.RENDER_DEPLOY_HOOK }}" 
+        if: success()
+        env:
+          RENDER_DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
+        run: |
+          if [ -n "$RENDER_DEPLOY_HOOK" ]; then
+            curl -fsSL -X POST "$RENDER_DEPLOY_HOOK"
+            echo "Render deploy triggered."
+          else
+            echo "RENDER_DEPLOY_HOOK not set — skipping (set repo secret to enable)."
+          fi

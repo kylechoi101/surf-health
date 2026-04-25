@@ -3,7 +3,8 @@ import { View, Text, TextInput, TouchableOpacity, ScrollView, StyleSheet, Activi
 import { useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import * as Location from "expo-location";
-import { getBeaches, type BeachSummary } from "../../lib/api";
+import { getParentBeaches, getSystemHealth, type ParentBeachSummary, type SystemHealthResponse } from "../../lib/api";
+import { RISK_COLORS } from "../../lib/utils";
 
 function distanceKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const R = 6371;
@@ -20,15 +21,27 @@ function fmtDist(km: number): string {
   return mi < 10 ? `${mi.toFixed(1)} mi` : `${Math.round(mi)} mi`;
 }
 
+function riskDotColor(band: string | null): string {
+  if (!band) return "#94a3b8";
+  return RISK_COLORS[band]?.hero[0] ?? "#94a3b8";
+}
+
 export default function HomeTab() {
-  const [beaches, setBeaches] = useState<BeachSummary[]>([]);
+  const [beaches, setBeaches] = useState<ParentBeachSummary[]>([]);
+  const [health, setHealth] = useState<SystemHealthResponse | null>(null);
   const [q, setQ] = useState("");
   const [loading, setLoading] = useState(true);
   const [userCoords, setUserCoords] = useState<{ lat: number; lon: number } | null>(null);
   const router = useRouter();
 
   useEffect(() => {
-    getBeaches().then(setBeaches).finally(() => setLoading(false));
+    Promise.all([
+      getParentBeaches(),
+      getSystemHealth().catch(() => null),
+    ]).then(([bs, h]) => {
+      setBeaches(bs);
+      setHealth(h);
+    }).finally(() => setLoading(false));
 
     Location.requestForegroundPermissionsAsync().then(({ status }) => {
       if (status === "granted") {
@@ -54,11 +67,14 @@ export default function HomeTab() {
             b.name.toLowerCase().includes(q.toLowerCase()) ||
             b.county.toLowerCase().includes(q.toLowerCase())
         )
-        .slice(0, 10)
-    : sorted.slice(0, 5);
+        .slice(0, 15)
+    : sorted.slice(0, 8);
 
-  function pick(b: BeachSummary) {
-    router.push(`/beach/${b.id}` as any);
+  function pick(b: ParentBeachSummary) {
+    // Single-station parent goes straight to the station detail.
+    // Multi-station: open the first (best-ranked) member station for now.
+    const targetId = b.member_beach_ids[0];
+    router.push(`/beach/${targetId}` as any);
   }
 
   return (
@@ -72,12 +88,12 @@ export default function HomeTab() {
             Find out if the water&apos;s clean{" "}
             <Text style={{ opacity: 0.7 }}>— before you paddle out.</Text>
           </Text>
-          <Text style={s.sub}>Daily bacteria + surf forecast for 290+ California beaches.</Text>
+          <Text style={s.sub}>Daily bacteria + surf forecast for 333 California beaches.</Text>
 
-          {health && health.active_advisories_count !== undefined && health.active_advisories_count > 0 && (
-            <View style={{ marginTop: 16, backgroundColor: "rgba(0,0,0,0.1)", paddingVertical: 8, paddingHorizontal: 12, borderRadius: 8, alignSelf: "flex-start" }}>
-              <Text style={{ color: "#000", fontWeight: "700", fontSize: 12, letterSpacing: 0.5, textTransform: "uppercase" }}>
-                {health.active_advisories_count} ADVISOR{health.active_advisories_count === 1 ? "Y" : "IES"} ACROSS CALIFORNIA TODAY
+          {health && health.active_advisories_count != null && health.active_advisories_count > 0 && (
+            <View style={s.advisoryBanner}>
+              <Text style={s.advisoryText}>
+                ⚠ {health.active_advisories_count} ACTIVE ADVISOR{health.active_advisories_count === 1 ? "Y" : "IES"} STATEWIDE
               </Text>
             </View>
           )}
@@ -103,7 +119,7 @@ export default function HomeTab() {
           <ScrollView style={{ marginTop: 16 }} keyboardShouldPersistTaps="handled">
             {!q && (
               <Text style={s.sectionLabel}>
-                {userCoords ? "Nearest beaches" : "Nearby beaches"}
+                {userCoords ? "Nearest beaches" : "California beaches"}
               </Text>
             )}
             {results.map((b) => {
@@ -111,16 +127,28 @@ export default function HomeTab() {
                 userCoords && !q
                   ? distanceKm(userCoords.lat, userCoords.lon, b.geometry.latitude, b.geometry.longitude)
                   : null;
+              const dotColor = riskDotColor(b.risk_band);
               return (
                 <TouchableOpacity key={b.id} onPress={() => pick(b)} style={s.beachRow}>
-                  <View style={s.dot} />
+                  <View style={[s.dot, { backgroundColor: dotColor }]} />
                   <View style={{ flex: 1 }}>
-                    <Text style={s.beachName}>{b.name}</Text>
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                      <Text style={s.beachName}>{b.name}</Text>
+                      {b.has_active_advisory && (
+                        <Text style={s.advisoryDot}>⚠</Text>
+                      )}
+                      {b.station_count > 1 && (
+                        <Text style={s.stationBadge}>{b.station_count} stations</Text>
+                      )}
+                    </View>
                     <Text style={s.beachSub}>
                       {b.county} County
                       {dist != null ? ` · ${fmtDist(dist)}` : ` · ${b.region}`}
                     </Text>
                   </View>
+                  {b.risk_band && (
+                    <Text style={[s.riskLabel, { color: dotColor }]}>{b.risk_band}</Text>
+                  )}
                   <Text style={s.chevron}>›</Text>
                 </TouchableOpacity>
               );
@@ -142,6 +170,11 @@ const s = StyleSheet.create({
   brandMark: { color: "#fff", fontSize: 14, fontWeight: "700", letterSpacing: 1 },
   headline: { color: "#fff", fontSize: 32, fontWeight: "700", lineHeight: 38, marginTop: 28, maxWidth: 300 },
   sub: { color: "rgba(255,255,255,0.8)", fontSize: 15, marginTop: 12, lineHeight: 22 },
+  advisoryBanner: {
+    marginTop: 14, backgroundColor: "rgba(239,68,68,0.2)",
+    paddingVertical: 7, paddingHorizontal: 12, borderRadius: 8, alignSelf: "flex-start",
+  },
+  advisoryText: { color: "#fca5a5", fontWeight: "700", fontSize: 11, letterSpacing: 0.5 },
   sheet: {
     flex: 1, backgroundColor: "#fff",
     borderTopLeftRadius: 28, borderTopRightRadius: 28,
@@ -163,9 +196,12 @@ const s = StyleSheet.create({
     flexDirection: "row", alignItems: "center", gap: 12,
     paddingVertical: 11, borderBottomWidth: 1, borderBottomColor: "#f8fafc",
   },
-  dot: { width: 8, height: 8, borderRadius: 4, backgroundColor: "#94a3b8" },
+  dot: { width: 8, height: 8, borderRadius: 4 },
   beachName: { fontSize: 14, fontWeight: "600", color: "#0f172a" },
+  advisoryDot: { fontSize: 10 },
+  stationBadge: { fontSize: 9, color: "#94a3b8", fontWeight: "600", letterSpacing: 0.3 },
   beachSub: { fontSize: 11, color: "#64748b", marginTop: 2 },
+  riskLabel: { fontSize: 10, fontWeight: "700", letterSpacing: 0.3 },
   chevron: { fontSize: 20, color: "#cbd5e1", fontWeight: "300" },
   noResults: { fontSize: 13, color: "#64748b", padding: 12 },
 });

@@ -8,6 +8,7 @@ from app.schemas.domain import (
     ForecastExplanationResponse,
     ForecastRecord,
     ObservationResponse,
+    ParentBeachSummary,
     SystemHealthResponse,
 )
 
@@ -15,6 +16,9 @@ from app.schemas.domain import (
 class BeachService:
     def __init__(self, repository: BeachRepository) -> None:
         self.repository = repository
+
+    def list_parent_beaches(self) -> list[ParentBeachSummary]:
+        return sorted(self.repository.list_parent_beaches(), key=lambda b: (b.county, b.name))
 
     def list_beaches(self) -> list[BeachSummary]:
         return sorted(self.repository.list_beaches(), key=lambda item: (item.county, item.name))

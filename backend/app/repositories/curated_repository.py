@@ -20,6 +20,7 @@ from app.schemas.domain import (
     ForecastRecord,
     ObservationRecord,
     ObservationResponse,
+    ParentBeachSummary,
     Point,
     SystemHealthResponse,
 )
@@ -74,6 +75,63 @@ class CuratedBeachRepository(BeachRepository):
     def forecasts_frame(self) -> pd.DataFrame:
         path = self.curated_dir / "forecasts.parquet"
         return pd.read_parquet(path) if path.exists() else pd.DataFrame()
+
+    @cached_property
+    def parent_beaches_frame(self) -> pd.DataFrame:
+        path = self.curated_dir / "parent_beaches.parquet"
+        return pd.read_parquet(path) if path.exists() else pd.DataFrame()
+
+    def list_parent_beaches(self) -> list[ParentBeachSummary]:
+        if self.parent_beaches_frame.empty:
+            return []
+
+        # Build forecast lookup: worst-case p_exceed per member station
+        forecast_lookup: dict[str, tuple[str, float]] = {}
+        if not self.forecasts_frame.empty:
+            for _, row in self.forecasts_frame.iterrows():
+                bid = row["beach_id"]
+                forecast_lookup[bid] = (str(row["risk_band"]), float(row["p_exceed"]))
+
+        # Build advisory lookup: any active advisory per station
+        active_stations: set[str] = set()
+        if not self.advisories_frame.empty:
+            active = self.advisories_frame.loc[self.advisories_frame["status"] == "active"]
+            active_stations = set(active["beach_id"].tolist())
+
+        parents: list[ParentBeachSummary] = []
+        for _, row in self.parent_beaches_frame.iterrows():
+            member_ids: list[str] = list(row["member_beach_ids"])
+            member_forecasts = [forecast_lookup[bid] for bid in member_ids if bid in forecast_lookup]
+            worst_band: str | None = None
+            worst_p: float | None = None
+            if member_forecasts:
+                worst = max(member_forecasts, key=lambda x: x[1])
+                worst_band, worst_p = worst
+
+            lat = _safe_float(row.get("latitude"))
+            lon = _safe_float(row.get("longitude"))
+            if lat is None or lon is None:
+                continue
+
+            parents.append(ParentBeachSummary(
+                id=str(row["parent_beach_id"]),
+                name=str(row["name"]),
+                county=str(row["county"]),
+                region=str(row["region"]),
+                support_status=row.get("support_status", "unsupported"),
+                station_count=int(row["station_count"]),
+                member_beach_ids=member_ids,
+                latest_official_sample_at=(
+                    pd.to_datetime(row.get("latest_official_sample_at")).to_pydatetime()
+                    if pd.notna(row.get("latest_official_sample_at"))
+                    else None
+                ),
+                geometry=Point(latitude=lat, longitude=lon),
+                risk_band=worst_band,
+                p_exceed=worst_p,
+                has_active_advisory=any(bid in active_stations for bid in member_ids),
+            ))
+        return parents
 
     def list_beaches(self) -> list[BeachSummary]:
         beaches: list[BeachSummary] = []

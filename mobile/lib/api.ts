@@ -10,6 +10,21 @@ export interface BeachSummary {
   geometry: { latitude: number; longitude: number };
 }
 
+export interface ParentBeachSummary {
+  id: string;
+  name: string;
+  county: string;
+  region: string;
+  support_status: string;
+  station_count: number;
+  member_beach_ids: string[];
+  latest_official_sample_at: string | null;
+  geometry: { latitude: number; longitude: number };
+  risk_band: RiskBand | null;
+  p_exceed: number | null;
+  has_active_advisory: boolean;
+}
+
 export interface ForecastRecord {
   beach_id: string;
   forecast_date: string;
@@ -31,13 +46,38 @@ export interface ForecastRecord {
   };
 }
 
+export interface ObservationResponse {
+  beach_id: string;
+  observations: Array<{
+    sample_time: string;
+    analyte: string;
+    method: string;
+    units: string;
+    value: number;
+    exceeds_stv: boolean;
+  }>;
+  advisories: Array<{
+    advisory_type: string;
+    started_at: string;
+    ended_at: string | null;
+    status: string;
+  }>;
+  recent_environment: Array<Record<string, unknown>>;
+}
+
+export interface SystemHealthResponse {
+  app_env: string;
+  pipeline_freshness: string;
+  active_advisories_count?: number;
+  model_registry?: Record<string, unknown>;
+}
+
 export interface ExplanationResponse {
   beach_id: string;
   summary: string;
   used_model: string;
 }
 
-// On physical devices/emulators, localhost points to the device — use the LAN IP set in .env
 const API_BASE = process.env.EXPO_PUBLIC_API_URL ?? "http://localhost:8000";
 
 async function request<T>(path: string): Promise<T> {
@@ -56,17 +96,11 @@ export function todayLA(): string {
   return `${v.year}-${v.month}-${v.day}`;
 }
 
+export const getParentBeaches = () => request<ParentBeachSummary[]>("/parent-beaches");
 export const getBeaches = () => request<BeachSummary[]>("/beaches");
 export const getSystemHealth = () => request<SystemHealthResponse>("/system/health");
 export const getObservations = (id: string) => request<ObservationResponse>(`/beaches/${id}/observations`);
 export const getForecast = (id: string, date: string) =>
   request<ForecastRecord>(`/beaches/${id}/forecast?date=${date}`);
 export const getExplanation = (id: string, date: string) =>
-  request<ExplanationResponse>(`/beaches/${id}/forecast/explain?date=${date}`);
-=> request<BeachSummary[]>("/beaches");
-export const getForecast = (id: string, date: string) =>
-  request<ForecastRecord>(`/beaches/${id}/forecast?date=${date}`);
-export const getExplanation = (id: string, date: string) =>
-  request<ExplanationResponse>(`/beaches/${id}/forecast/explain?date=${date}`);
-tExplanation = (id: string, date: string) =>
   request<ExplanationResponse>(`/beaches/${id}/forecast/explain?date=${date}`);

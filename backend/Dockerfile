@@ -10,13 +10,13 @@ WORKDIR /app
 
 RUN pip install --upgrade pip
 
-COPY pyproject.toml /app/
-COPY app/ /app/app/
-COPY scripts/ /app/scripts/
+COPY backend/pyproject.toml /app/
+COPY backend/app/ /app/app/
+COPY backend/scripts/ /app/scripts/
 
 RUN pip install --no-cache-dir .
 
-# Bake the curated dataset snapshot into the image
+# Bake the curated dataset snapshot into the image (single source of truth: repo-root data/curated/)
 COPY data/curated/ /app/data/curated/
 
 RUN mkdir -p /app/data/raw/cnrfc /app/data/raw/usgs_streamflow /app/data/raw/nhdplus

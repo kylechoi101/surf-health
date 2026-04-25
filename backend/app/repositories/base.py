@@ -7,11 +7,15 @@ from app.schemas.domain import (
     BeachSummary,
     ForecastRecord,
     ObservationResponse,
+    ParentBeachSummary,
     SystemHealthResponse,
 )
 
 
 class BeachRepository(ABC):
+    def list_parent_beaches(self) -> list[ParentBeachSummary]:
+        return []
+
     @abstractmethod
     def list_beaches(self) -> list[BeachSummary]:
         raise NotImplementedError
