@@ -73,3 +73,5 @@ jobs:
             git commit -m "chore: daily forecast refresh ${FORECAST_DATE}"
             git push
           fi
+      - name: Trigger Render deploy
+        run: curl -X POST "${{ secrets.RENDER_DEPLOY_HOOK }}" 
