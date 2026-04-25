@@ -1374,6 +1374,41 @@ def _forecast_model_version(model_name: str, scope: str = "global") -> str:
     return _registry_model_version(model_name)
 
 
+def _refresh_candidate_advisory_features(
+    candidates: pd.DataFrame,
+    advisories: pd.DataFrame,
+    forecast_date: date,
+) -> None:
+    """Recompute advisory activity features for synthetic forecast rows.
+
+    The candidates were cloned from the most-recent historical row per beach.
+    That row's advisory features reflect the state on the observation date, not
+    on the forecast date — so we recompute them here from current advisory state.
+    """
+    adv = advisories[["beach_id", "started_at", "ended_at"]].copy()
+    adv["started_at"] = pd.to_datetime(adv["started_at"])
+    adv["ended_at_ts"] = pd.to_datetime(adv["ended_at"])
+    adv["ended_at_filled"] = adv["ended_at_ts"].fillna(pd.Timestamp("2099-01-01"))
+
+    forecast_ts = pd.Timestamp(forecast_date)
+    window_start = forecast_ts - pd.Timedelta(days=14)
+
+    in_window = adv[
+        (adv["started_at"] < forecast_ts) & (adv["ended_at_filled"] > window_start)
+    ]["beach_id"]
+    active_ids = set(in_window.tolist())
+    candidates["advisory_active_prev_14d"] = candidates["beach_id"].isin(active_ids).astype(int)
+
+    closed = adv[adv["ended_at_ts"].notna()].copy()
+    closed["_days"] = (forecast_ts - closed["ended_at_ts"]).dt.days
+    closed = closed[closed["_days"] >= 0]
+    if not closed.empty:
+        min_days = closed.groupby("beach_id")["_days"].min()
+        candidates["days_since_advisory_closed"] = candidates["beach_id"].map(min_days)
+    elif "days_since_advisory_closed" not in candidates.columns:
+        candidates["days_since_advisory_closed"] = np.nan
+
+
 def _build_forecast_candidates(
     frame: pd.DataFrame,
     stations: pd.DataFrame,
@@ -1381,6 +1416,7 @@ def _build_forecast_candidates(
     forecast_date: date,
     *,
     full_frame: pd.DataFrame | None = None,
+    advisories: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Build one synthetic forecast row per beach.
 
@@ -1455,6 +1491,8 @@ def _build_forecast_candidates(
         candidate_rows.append(candidate)
 
     candidates = pd.DataFrame(candidate_rows)
+    if advisories is not None and not advisories.empty and not candidates.empty:
+        _refresh_candidate_advisory_features(candidates, advisories, forecast_date)
     return history, candidates
 
 
@@ -1611,6 +1649,8 @@ def train_curated_and_export(
     stations = pd.read_parquet(curated_dir / "beaches.parquet")
     uv_daily_path = curated_dir / "uv_daily.parquet"
     uv_daily = pd.read_parquet(uv_daily_path) if uv_daily_path.exists() else pd.DataFrame()
+    advisories_path = curated_dir / "advisories.parquet"
+    advisories = pd.read_parquet(advisories_path) if advisories_path.exists() else pd.DataFrame()
     dataset = build_sliding_windows(frame)
     features = dataset.feature_frame.select_dtypes(include=["number"]).fillna(0.0)
     labels = dataset.targets_exceed
@@ -1797,7 +1837,7 @@ def train_curated_and_export(
     )
 
     history, forecast_candidates = _build_forecast_candidates(
-        frame, stations, uv_daily, forecast_date, full_frame=full_frame
+        frame, stations, uv_daily, forecast_date, full_frame=full_frame, advisories=advisories
     )
     inference_input = (
         pd.concat([history, forecast_candidates], ignore_index=True)
@@ -1943,12 +1983,20 @@ def train_curated_and_export(
                     if zip_key in uv_lookup.index:
                         uv_index = _safe_float(uv_lookup.loc[zip_key].get("uv_index"))
                         uv_alert = uv_lookup.loc[zip_key].get("uv_alert")
+            # Advisory floor: never say Low or Moderate when a public health
+            # advisory is active. An active DPH/CalState advisory is the
+            # ground-truth that swimming is unsafe; our model must agree at
+            # minimum High (p >= 0.45).  This is the LOTUS forecaster-in-the-
+            # loop rule applied to advisory disagreements identified in
+            # audit_forecasts_vs_advisories.py.
+            advisory_active = _safe_float(feature_row.get("advisory_active_prev_14d")) or 0.0
+            p_final = max(float(probability), 0.45) if advisory_active else float(probability)
             forecasts.append(
                 {
                     "beach_id": beach_id,
                     "forecast_date": forecast_date.isoformat(),
-                    "risk_band": risk_band(float(probability)),
-                    "p_exceed": float(probability),
+                    "risk_band": risk_band(p_final),
+                    "p_exceed": p_final,
                     "predicted_log_enterococcus": float(density_prediction),
                     "lower_prediction_interval": (
                         float(density_prediction - regression_interval_half_width)

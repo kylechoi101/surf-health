@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 
@@ -366,6 +367,53 @@ def normalize_advisories(frame: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def _advisory_temporal_features(beach_day: pd.DataFrame, advisories: pd.DataFrame) -> pd.DataFrame:
+    """Add per-(beach_id, sample_date) advisory activity features.
+
+    advisory_active_prev_14d: 1 if any advisory overlapped the 14-day window
+      before this sample — a lagged signal with no label leakage.
+    days_since_advisory_closed: days since the most-recently-closed advisory
+      for this beach (NaN if no advisory ever closed, i.e. all still open or
+      none at all).
+    """
+    bd = beach_day.copy()
+    bd["sample_date"] = pd.to_datetime(bd["sample_date"])
+
+    if advisories.empty:
+        bd["advisory_active_prev_14d"] = 0
+        bd["days_since_advisory_closed"] = np.nan
+        return bd
+
+    adv = advisories[["beach_id", "started_at", "ended_at"]].copy()
+    adv["started_at"] = pd.to_datetime(adv["started_at"])
+    adv["ended_at_ts"] = pd.to_datetime(adv["ended_at"])
+    adv["ended_at_filled"] = adv["ended_at_ts"].fillna(pd.Timestamp("2099-01-01"))
+
+    # Cross-merge within beach_id; _row tracks the originating beach_day index.
+    key = bd[["beach_id", "sample_date"]].copy()
+    key["_row"] = np.arange(len(key))
+    crossed = key.merge(adv, on="beach_id", how="left")
+
+    crossed["_window_start"] = crossed["sample_date"] - pd.Timedelta(days=14)
+    crossed["_hit"] = (
+        (crossed["started_at"] < crossed["sample_date"])
+        & (crossed["ended_at_filled"] > crossed["_window_start"])
+    )
+    active_14d = crossed.groupby("_row")["_hit"].any().astype(int)
+    bd["advisory_active_prev_14d"] = active_14d.reindex(range(len(bd))).fillna(0).astype(int).to_numpy()
+
+    closed = crossed[crossed["ended_at_ts"].notna()].copy()
+    closed["_days"] = (closed["sample_date"] - closed["ended_at_ts"]).dt.days
+    closed = closed[closed["_days"] >= 0]
+    if not closed.empty:
+        min_days = closed.groupby("_row")["_days"].min()
+        bd["days_since_advisory_closed"] = min_days.reindex(range(len(bd))).to_numpy(dtype=float)
+    else:
+        bd["days_since_advisory_closed"] = np.nan
+
+    return bd
+
+
 def build_beach_day_frame(
     observations: pd.DataFrame, stations: pd.DataFrame, advisories: pd.DataFrame
 ) -> pd.DataFrame:
@@ -415,7 +463,8 @@ def build_beach_day_frame(
     advisory_counts = advisories.groupby("beach_id").size().rename("historical_advisory_count")
     beach_day = beach_day.merge(advisory_counts, on="beach_id", how="left")
     beach_day["historical_advisory_count"] = beach_day["historical_advisory_count"].fillna(0).astype(int)
-    return beach_day.sort_values(["county", "name", "sample_date"]).reset_index(drop=True)
+    beach_day = beach_day.sort_values(["county", "name", "sample_date"]).reset_index(drop=True)
+    return _advisory_temporal_features(beach_day, advisories)
 
 
 def write_curated_bundle(

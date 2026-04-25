@@ -23,7 +23,7 @@ from pathlib import Path
 import pandas as pd
 
 
-_RISK_ALERT_THRESHOLD = 0.45  # risk_band boundary between Moderate and High
+_RISK_ALERT_THRESHOLD = 0.45  # High boundary: advisory beach should be flagged High+
 
 
 def _load(curated_dir: Path, name: str) -> pd.DataFrame:
