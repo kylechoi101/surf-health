@@ -44,7 +44,7 @@ MIN_PLAUSIBLE_SAMPLE_TIME = pd.Timestamp("2000-01-01")
 MAX_FUTURE_SAMPLE_LEEWAY_DAYS = 2
 COASTAL_CELL_MIN_BEACHES_PER_CLUSTER = 24
 COASTAL_CELL_MAX_CLUSTERS = 8
-PRODUCTION_MODEL_NAMES = ("logistic", "logistic_coastal_cells", "logistic_hierarchical", "hist_gbm")
+PRODUCTION_MODEL_NAMES = ("logistic", "logistic_coastal_cells", "logistic_hierarchical", "hist_gbm", "stacked_ensemble")
 SEQUENCE_MODEL_NAMES = ("tcn", "cnn", "lstm", "transformer", "pinn")
 SPATIAL_BACKTEST_STRATEGIES = ("shortlist", "requested")
 COASTAL_CELL_FEATURE_COLUMNS = [
@@ -1692,6 +1692,39 @@ def train_curated_and_export(
         tree_eval = tree_calibrator.transform(tree_eval)
     metrics["hist_gbm"] = classification_metrics(labels[eval_idx], tree_eval)
 
+    print("Computing stacked ensemble...", file=sys.stderr, flush=True)
+    # Weighted-average blend of the four base classifiers.
+    # Weights: AUCPR-proportional from the validation set.
+    # valid metrics: raw (uncalibrated) predictions for fair model comparison —
+    #   calibrators are fitted on valid, so applying them would inflate the score.
+    # eval/inference: calibrated predictions so all components are on the same scale.
+    _ensemble_valid_aucs = np.array([
+        metrics.get("logistic_valid", {}).get("aucpr", 0.0),
+        metrics.get("logistic_coastal_cells_valid", {}).get("aucpr", 0.0),
+        metrics.get("logistic_hierarchical_valid", {}).get("aucpr", 0.0),
+        metrics.get("hist_gbm_valid", {}).get("aucpr", 0.0),
+    ])
+    _auc_sum = _ensemble_valid_aucs.sum()
+    ensemble_weights = _ensemble_valid_aucs / _auc_sum if _auc_sum > 0 else np.full(4, 0.25)
+    # raw valid preds — no calibration leakage
+    ensemble_valid = (
+        np.stack([logistic_valid_raw, coastal_valid_raw, hierarchical_valid_raw, tree_valid_raw], axis=1)
+        @ ensemble_weights
+    )
+    metrics["stacked_ensemble_valid"] = classification_metrics(labels[valid_idx], ensemble_valid)
+    # calibrated eval preds — used for the test score and for production forecasts
+    _cal = lambda raw, cal: cal.transform(raw) if cal is not None else raw  # noqa: E731
+    ensemble_eval = (
+        np.stack([
+            _cal(logistic_eval, logistic_calibrator if len(test_idx) else None),
+            _cal(coastal_eval, coastal_calibrator if len(test_idx) else None),
+            _cal(hierarchical_eval, hierarchical_calibrator if len(test_idx) else None),
+            _cal(tree_eval, tree_calibrator if len(test_idx) else None),
+        ], axis=1)
+        @ ensemble_weights
+    )
+    metrics["stacked_ensemble"] = classification_metrics(labels[eval_idx], ensemble_eval)
+
     print("Training elastic net model...", file=sys.stderr, flush=True)
     baselines.linear.fit(features.iloc[train_idx], densities[train_idx])
     linear_valid = baselines.linear.predict(features.iloc[valid_idx])
@@ -1802,7 +1835,29 @@ def train_curated_and_export(
     ) if not forecast_metadata.empty else pd.DataFrame()
     scopes = np.full(len(baseline_forecast_features), "global", dtype=object)
     assigned_cells = np.full(len(baseline_forecast_features), "unknown", dtype=object)
-    if winner == "logistic_coastal_cells":
+    if winner == "stacked_ensemble":
+        _ens_logistic = logistic.predict_proba(baseline_forecast_features)[:, 1]
+        if logistic_calibrator is not None:
+            _ens_logistic = logistic_calibrator.transform(_ens_logistic)
+        _ens_coastal, _, _ens_coastal_scopes = _predict_coastal_cell_logistic_raw(
+            coastal_cell_logistic, baseline_forecast_features, forecast_group_metadata,
+        )
+        if coastal_cell_logistic.calibrator is not None:
+            _ens_coastal = coastal_cell_logistic.calibrator.transform(_ens_coastal)
+        _ens_hier, _ens_hier_scopes = _predict_hierarchical_logistic_raw(
+            hierarchical_logistic, baseline_forecast_features, forecast_group_metadata,
+        )
+        if hierarchical_logistic.calibrator is not None:
+            _ens_hier = hierarchical_logistic.calibrator.transform(_ens_hier)
+        _ens_tree = tree_classifier.predict_proba(baseline_forecast_features)[:, 1]
+        if tree_calibrator is not None:
+            _ens_tree = tree_calibrator.transform(_ens_tree)
+        probabilities = (
+            np.stack([_ens_logistic, _ens_coastal, _ens_hier, _ens_tree], axis=1)
+            @ ensemble_weights
+        )
+        scopes = _ens_hier_scopes
+    elif winner == "logistic_coastal_cells":
         probabilities, assigned_cells, scopes = _predict_coastal_cell_logistic_raw(
             coastal_cell_logistic,
             baseline_forecast_features,
