@@ -127,13 +127,13 @@ def _rolling_and_spacing_features(enriched: pd.DataFrame) -> pd.DataFrame:
         for column in ROLLING_COLUMNS:
             values = pd.to_numeric(group[column], errors="coerce")
             time_series = pd.Series(values.to_numpy(), index=sample_dates, dtype=float)
-            mean_7d = time_series.rolling("7D", min_periods=2, closed="left").mean()
+            mean_7d = time_series.rolling("7D", min_periods=1, closed="left").mean()
             feature_map[f"{column}_mean_7d"] = pd.Series(mean_7d.to_numpy(), index=group.index)
             feature_map[f"{column}_std_7d"] = pd.Series(
                 time_series.rolling("7D", min_periods=2, closed="left").std().to_numpy(),
                 index=group.index,
             )
-            mean_30d = time_series.rolling("30D", min_periods=5, closed="left").mean()
+            mean_30d = time_series.rolling("30D", min_periods=1, closed="left").mean()
             feature_map[f"{column}_mean_30d"] = pd.Series(mean_30d.to_numpy(), index=group.index)
             feature_map[f"{column}_trend_7d"] = pd.Series(
                 (mean_7d - mean_30d).to_numpy(),
@@ -141,14 +141,18 @@ def _rolling_and_spacing_features(enriched: pd.DataFrame) -> pd.DataFrame:
             )
 
         for column in BASE_NUMERIC_COLUMNS:
+            col_values = pd.to_numeric(group[column], errors="coerce")
             observed_dates = (
-                sample_date_series.where(pd.to_numeric(group[column], errors="coerce").notna())
+                sample_date_series.where(col_values.notna())
                 .shift(1)
                 .ffill()
             )
             feature_map[f"days_since_{column}_obs"] = (
                 sample_date_series - observed_dates
             ).dt.days
+            # Last observed value before this row (avoids leaking current reading).
+            # Non-null for any beach with at least one prior sample.
+            feature_map[f"{column}_last_obs"] = col_values.shift(1).ffill()
 
         feature_frames.append(pd.DataFrame(feature_map, index=group.index))
 
