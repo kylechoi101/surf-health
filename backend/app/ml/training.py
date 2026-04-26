@@ -82,6 +82,22 @@ class StageTwoTrainingPlan:
 
 
 @dataclass
+class _TrainedModels:
+    winner: str
+    tree_classifier: object
+    tree_calibrator: object
+    classifier: object        # winner classifier; None for coastal/hierarchical/ensemble
+    calibrator: object        # winner calibrator; None when classifier is None
+    logistic: object          # None unless winner is logistic or stacked_ensemble
+    logistic_calibrator: object
+    coastal_cell_logistic: object  # None unless winner is coastal or stacked_ensemble
+    hierarchical_logistic: object  # None unless winner is hierarchical or stacked_ensemble
+    ensemble_weights: object  # np.ndarray or None
+    regressor: object
+    regressor_valid_predictions: object  # np.ndarray
+
+
+@dataclass
 class HierarchicalLogisticArtifacts:
     global_model: object
     calibrator: ProbabilityCalibrator | None
@@ -1671,6 +1687,412 @@ def _compute_local_drivers(
     return all_drivers
 
 
+_PRODUCTION_MODEL_REGISTRY = "production_model.json"
+
+
+def _read_production_model_registry(curated_dir: Path) -> dict | None:
+    path = curated_dir / _PRODUCTION_MODEL_REGISTRY
+    return json.loads(path.read_text()) if path.exists() else None
+
+
+def _write_production_model_registry(
+    curated_dir: Path,
+    winner: str,
+    regressor: str,
+    ensemble_weights: list | None = None,
+) -> None:
+    data: dict[str, object] = {"winner": winner, "regressor": regressor}
+    if ensemble_weights is not None:
+        data["ensemble_weights"] = ensemble_weights
+    (curated_dir / _PRODUCTION_MODEL_REGISTRY).write_text(json.dumps(data, indent=2))
+
+
+def _export_forecasts(
+    curated_dir: Path,
+    forecast_date: date,
+    frame: pd.DataFrame,
+    full_frame: pd.DataFrame,
+    features: pd.DataFrame,
+    densities: np.ndarray,
+    valid_idx: np.ndarray,
+    test_idx: np.ndarray,
+    stations: pd.DataFrame,
+    uv_daily: pd.DataFrame,
+    advisories: pd.DataFrame,
+    models: _TrainedModels,
+    plan: StageTwoTrainingPlan,
+    metrics: dict,
+    model_types_to_run: list,
+    spatial_backtests: bool,
+    spatial_backtest_models: list,
+    spatial_strategy: str,
+) -> "TrainingArtifacts":
+    import sys
+    winner = models.winner
+    tree_classifier = models.tree_classifier
+    tree_calibrator = models.tree_calibrator
+    classifier = models.classifier
+    calibrator = models.calibrator
+    logistic = models.logistic
+    logistic_calibrator = models.logistic_calibrator
+    coastal_cell_logistic = models.coastal_cell_logistic
+    hierarchical_logistic = models.hierarchical_logistic
+    ensemble_weights = models.ensemble_weights
+    regressor = models.regressor
+    regression_interval_half_width = _split_conformal_half_width(
+        densities[valid_idx], models.regressor_valid_predictions,
+    )
+    history, forecast_candidates = _build_forecast_candidates(
+        frame, stations, uv_daily, forecast_date, full_frame=full_frame, advisories=advisories
+    )
+    inference_input = (
+        pd.concat([history, forecast_candidates], ignore_index=True)
+        if not forecast_candidates.empty
+        else pd.DataFrame()
+    )
+    baseline_inference = build_inference_features(inference_input) if not inference_input.empty else None
+    baseline_feature_frame = (
+        baseline_inference.feature_frame
+        if baseline_inference is not None and not baseline_inference.feature_frame.empty
+        else pd.DataFrame()
+    )
+    baseline_forecast_features = (
+        baseline_feature_frame.select_dtypes(include=["number"]).fillna(0.0)
+        if not baseline_feature_frame.empty
+        else pd.DataFrame()
+    )
+    forecast_metadata = baseline_inference.metadata if baseline_inference is not None else pd.DataFrame()
+    forecast_feature_frame = baseline_feature_frame
+    baseline_forecast_features = baseline_forecast_features.reindex(columns=features.columns, fill_value=0.0)
+    baseline_forecast_features = _inject_agent_features(
+        baseline_forecast_features, forecast_metadata, inference_input, advisories, stations
+    )
+    forecast_group_metadata = forecast_metadata.merge(
+        stations.reindex(
+            columns=["beach_id", "county", "region", "latitude", "longitude",
+                     "cdip_distance_km", "erddap_distance_km"]
+        ),
+        on="beach_id",
+        how="left",
+    ) if not forecast_metadata.empty else pd.DataFrame()
+    scopes = np.full(len(baseline_forecast_features), "global", dtype=object)
+    assigned_cells = np.full(len(baseline_forecast_features), "unknown", dtype=object)
+    if winner == "stacked_ensemble":
+        _ens_logistic = logistic.predict_proba(baseline_forecast_features)[:, 1]
+        if logistic_calibrator is not None:
+            _ens_logistic = logistic_calibrator.transform(_ens_logistic)
+        _ens_coastal, _, _ens_coastal_scopes = _predict_coastal_cell_logistic_raw(
+            coastal_cell_logistic, baseline_forecast_features, forecast_group_metadata,
+        )
+        if coastal_cell_logistic.calibrator is not None:
+            _ens_coastal = coastal_cell_logistic.calibrator.transform(_ens_coastal)
+        _ens_hier, _ens_hier_scopes = _predict_hierarchical_logistic_raw(
+            hierarchical_logistic, baseline_forecast_features, forecast_group_metadata,
+        )
+        if hierarchical_logistic.calibrator is not None:
+            _ens_hier = hierarchical_logistic.calibrator.transform(_ens_hier)
+        _ens_tree = tree_classifier.predict_proba(baseline_forecast_features)[:, 1]
+        if tree_calibrator is not None:
+            _ens_tree = tree_calibrator.transform(_ens_tree)
+        probabilities = (
+            np.stack([_ens_logistic, _ens_coastal, _ens_hier, _ens_tree], axis=1)
+            @ ensemble_weights
+        )
+        scopes = _ens_hier_scopes
+    elif winner == "logistic_coastal_cells":
+        probabilities, assigned_cells, scopes = _predict_coastal_cell_logistic_raw(
+            coastal_cell_logistic, baseline_forecast_features, forecast_group_metadata,
+        )
+        if coastal_cell_logistic.calibrator is not None:
+            probabilities = coastal_cell_logistic.calibrator.transform(probabilities)
+    elif winner == "logistic_hierarchical":
+        probabilities, scopes = _predict_hierarchical_logistic_raw(
+            hierarchical_logistic, baseline_forecast_features, forecast_group_metadata,
+        )
+        if hierarchical_logistic.calibrator is not None:
+            probabilities = hierarchical_logistic.calibrator.transform(probabilities)
+    else:
+        probabilities = classifier.predict_proba(baseline_forecast_features)[:, 1]
+        if calibrator is not None:
+            probabilities = calibrator.transform(probabilities)
+    density_predictions = regressor.predict(baseline_forecast_features)
+    _VERY_HIGH_THRESHOLD = _CAL_VERY_HIGH
+    _DEGENERATE_VERY_HIGH_FRACTION = 0.30
+    if len(probabilities) > 0:
+        very_high_fraction = float((probabilities >= _VERY_HIGH_THRESHOLD).mean())
+        if very_high_fraction > _DEGENERATE_VERY_HIGH_FRACTION:
+            print(
+                f"[sanity guard] WARNING: {very_high_fraction:.1%} of beaches at Very High "
+                f"(>{_DEGENERATE_VERY_HIGH_FRACTION:.0%} threshold). "
+                "Possible degenerate calibrator — check env feature fill rates.",
+                file=sys.stderr, flush=True,
+            )
+    if not baseline_forecast_features.empty and hasattr(tree_classifier, "predict_proba"):
+        driver_baseline_probs = tree_classifier.predict_proba(baseline_forecast_features)[:, 1]
+    else:
+        driver_baseline_probs = probabilities
+    computed_drivers = _compute_local_drivers(tree_classifier, baseline_forecast_features, driver_baseline_probs)
+    settings = get_settings()
+    forecasts = []
+    forecast_lookup = (
+        forecast_candidates.drop_duplicates(subset=["beach_id"], keep="last").set_index("beach_id")
+        if not forecast_candidates.empty
+        else pd.DataFrame()
+    )
+    uv_lookup = _build_uv_lookup(uv_daily, forecast_date)
+    station_lookup = stations.set_index("beach_id")
+    if not forecast_metadata.empty:
+        forecast_generated_at = datetime.now(UTC).isoformat()
+        for i, (idx, probability, density_prediction, scope) in enumerate(zip(
+            forecast_metadata.index, probabilities, density_predictions, scopes, strict=False,
+        )):
+            meta_row = forecast_metadata.iloc[idx]
+            feature_row = forecast_feature_frame.iloc[idx]
+            beach_id = meta_row["beach_id"]
+            latest_row = forecast_lookup.loc[beach_id] if beach_id in forecast_lookup.index else None
+            station_row = station_lookup.loc[beach_id] if beach_id in station_lookup.index else None
+            uv_index = _safe_float(latest_row.get("uv_index")) if latest_row is not None else None
+            uv_alert = None
+            if station_row is not None and not uv_lookup.empty:
+                zip_code = station_row.get("zip_code")
+                if pd.notna(zip_code):
+                    zip_key = str(zip_code).zfill(5)
+                    if zip_key in uv_lookup.index:
+                        uv_index = _safe_float(uv_lookup.loc[zip_key].get("uv_index"))
+                        uv_alert = uv_lookup.loc[zip_key].get("uv_alert")
+            advisory_recent = _safe_float(feature_row.get("advisory_recent_active")) or 0.0
+            p_raw = float(probability)
+            p_final = max(p_raw, 0.20) if advisory_recent else p_raw
+            forecasts.append({
+                "beach_id": beach_id,
+                "forecast_date": forecast_date.isoformat(),
+                "risk_band": risk_band(p_final),
+                "p_exceed": p_final,
+                "p_exceed_raw": p_raw,
+                "predicted_log_enterococcus": float(density_prediction),
+                "lower_prediction_interval": (
+                    float(density_prediction - regression_interval_half_width)
+                    if regression_interval_half_width is not None else None
+                ),
+                "upper_prediction_interval": (
+                    float(density_prediction + regression_interval_half_width)
+                    if regression_interval_half_width is not None else None
+                ),
+                "prediction_interval_level": (0.9 if regression_interval_half_width is not None else None),
+                "top_drivers": computed_drivers[i],
+                "model_version": _forecast_model_version(winner, str(scope)),
+                "forecast_generated_at": forecast_generated_at,
+                "wave_height_m": _safe_float(latest_row.get("wave_height_m")) if latest_row is not None else None,
+                "dominant_period_s": _safe_float(latest_row.get("dominant_period_s")) if latest_row is not None else None,
+                "water_temperature_c": _safe_float(latest_row.get("water_temperature_c")) if latest_row is not None else None,
+                "salinity_psu": _safe_float(latest_row.get("salinity_psu")) if latest_row is not None else None,
+                "uv_index": uv_index,
+                "uv_alert": uv_alert,
+            })
+    pd.DataFrame(forecasts).to_parquet(curated_dir / "forecasts.parquet", index=False)
+    health_path = curated_dir / "system_health.json"
+    health_payload = json.loads(health_path.read_text()) if health_path.exists() else {}
+    promotion = _promotion_assessment(metrics, winner)
+    health_payload["model_registry"] = {
+        "production_model": _registry_model_version(winner),
+        "temporal_validation_winner": _registry_model_version(plan.research_winner),
+        "candidate_models": [_registry_model_version(m) for m in PRODUCTION_MODEL_NAMES],
+        "research_models": [_registry_model_version(m) for m in model_types_to_run],
+        "spatial_backtest_models": [_registry_model_version(m) for m in spatial_backtest_models],
+        "spatial_backtest_strategy": spatial_strategy if spatial_backtests else "disabled",
+        "production_metrics": metrics.get(winner, {}),
+        "validation_metrics": metrics.get(f"{winner}_valid", {}),
+        "temporal_validation_metrics": metrics.get(f"{plan.research_winner}_valid", {}),
+        "spatial_metrics": promotion["spatial_metrics"],
+        "deployment_stage": promotion["deployment_stage"],
+        "public_release_eligible": promotion["public_release_eligible"],
+        "promotion_blockers": promotion["promotion_blockers"],
+        "promotion_policy": {
+            "production_models": list(PRODUCTION_MODEL_NAMES),
+            "neural_model_status": "research_only",
+            "spatial_backtests_present": bool(promotion["spatial_metrics"]),
+            "spatial_backtest_strategy": spatial_strategy,
+            "fallback_order": ["coastal_cell", "county", "region", "global"],
+        },
+        "metrics": metrics,
+    }
+    health_payload["pipeline_freshness"] = datetime.now(UTC).isoformat()
+    health_path.write_text(json.dumps(health_payload, indent=2))
+    return TrainingArtifacts(winner=winner, metrics=metrics)
+
+
+def _run_winner_only(
+    curated_dir: Path,
+    forecast_date: date,
+    spatial_strategy: str,
+    registry: dict,
+) -> "TrainingArtifacts":
+    import sys
+    settings = get_settings()
+    full_frame = _load_curated_training_frame(curated_dir)
+    full_frame["sample_date"] = pd.to_datetime(full_frame["sample_date"])
+    max_date = full_frame["sample_date"].max()
+    frame = full_frame.loc[full_frame["sample_date"] > (max_date - pd.Timedelta(days=60))].copy()
+    stations = pd.read_parquet(curated_dir / "beaches.parquet")
+    uv_daily_path = curated_dir / "uv_daily.parquet"
+    uv_daily = pd.read_parquet(uv_daily_path) if uv_daily_path.exists() else pd.DataFrame()
+    advisories_path = curated_dir / "advisories.parquet"
+    advisories = pd.read_parquet(advisories_path) if advisories_path.exists() else pd.DataFrame()
+    dataset = build_sliding_windows(frame)
+    features = dataset.feature_frame.select_dtypes(include=["number"]).fillna(0.0)
+    features = _inject_agent_features(features, dataset.metadata, full_frame, advisories, stations)
+    labels = dataset.targets_exceed
+    densities = dataset.targets_log_density
+    metadata = _metadata_with_groups(dataset.metadata, frame)
+    if len(features) < 20:
+        return TrainingArtifacts(winner="insufficient-data", metrics={"warning": {"samples": float(len(features))}})
+    train_idx, valid_idx, test_idx = _blocked_indices(dataset.metadata)
+    eval_idx = test_idx if len(test_idx) else valid_idx
+    baselines = make_baselines(features)
+    metrics: dict[str, dict[str, float]] = {}
+
+    winner = registry["winner"]
+    regressor_type = registry.get("regressor", "elastic_net")
+    print(f"Winner-only mode: retraining {winner} + {regressor_type}", file=sys.stderr, flush=True)
+
+    # hist_gbm is always trained — local drivers always use it
+    print("Training hist GBM model...", file=sys.stderr, flush=True)
+    tree_classifier = baselines.tree_classifier.fit(features.iloc[train_idx], labels[train_idx])
+    tree_valid_raw = tree_classifier.predict_proba(features.iloc[valid_idx])[:, 1]
+    metrics["hist_gbm_valid"] = classification_metrics(labels[valid_idx], tree_valid_raw)
+    _, tree_calibrator = _identity_or_calibrated(tree_valid_raw, labels[valid_idx])
+    tree_eval = tree_classifier.predict_proba(features.iloc[eval_idx])[:, 1]
+    if tree_calibrator is not None and len(test_idx):
+        tree_eval = tree_calibrator.transform(tree_eval)
+    metrics["hist_gbm"] = classification_metrics(labels[eval_idx], tree_eval)
+
+    logistic = logistic_calibrator = None
+    coastal_cell_logistic = hierarchical_logistic = None
+    ensemble_weights: np.ndarray | None = None
+    classifier = calibrator = None
+
+    if winner == "logistic":
+        print("Training global logistic model...", file=sys.stderr, flush=True)
+        logistic = baselines.logistic.fit(features.iloc[train_idx], labels[train_idx])
+        logistic_valid_raw = logistic.predict_proba(features.iloc[valid_idx])[:, 1]
+        _, logistic_calibrator = _identity_or_calibrated(logistic_valid_raw, labels[valid_idx])
+        metrics["logistic_valid"] = classification_metrics(labels[valid_idx], logistic_valid_raw)
+        logistic_eval = logistic.predict_proba(features.iloc[eval_idx])[:, 1]
+        if logistic_calibrator is not None and len(test_idx):
+            logistic_eval = logistic_calibrator.transform(logistic_eval)
+        metrics["logistic"] = classification_metrics(labels[eval_idx], logistic_eval)
+        classifier, calibrator = logistic, logistic_calibrator
+
+    elif winner == "logistic_coastal_cells":
+        print("Training coastal cells logistic model...", file=sys.stderr, flush=True)
+        coastal_cell_logistic = _fit_coastal_cell_logistic_artifacts(features, labels, metadata, train_idx)
+        coastal_valid_raw, _, _ = _predict_coastal_cell_logistic_raw(
+            coastal_cell_logistic, features.iloc[valid_idx], metadata.iloc[valid_idx].reset_index(drop=True),
+        )
+        metrics["logistic_coastal_cells_valid"] = classification_metrics(labels[valid_idx], coastal_valid_raw)
+        _, coastal_calibrator = _identity_or_calibrated(coastal_valid_raw, labels[valid_idx])
+        coastal_cell_logistic.calibrator = coastal_calibrator
+
+    elif winner == "logistic_hierarchical":
+        print("Training hierarchical logistic model...", file=sys.stderr, flush=True)
+        hierarchical_logistic = _fit_hierarchical_logistic_artifacts(features, labels, metadata, train_idx)
+        hier_valid_raw, _ = _predict_hierarchical_logistic_raw(
+            hierarchical_logistic, features.iloc[valid_idx], metadata.iloc[valid_idx].reset_index(drop=True),
+        )
+        metrics["logistic_hierarchical_valid"] = classification_metrics(labels[valid_idx], hier_valid_raw)
+        _, hierarchical_calibrator = _identity_or_calibrated(hier_valid_raw, labels[valid_idx])
+        hierarchical_logistic.calibrator = hierarchical_calibrator
+
+    elif winner == "stacked_ensemble":
+        print("Training all base classifiers for stacked ensemble...", file=sys.stderr, flush=True)
+        logistic = baselines.logistic.fit(features.iloc[train_idx], labels[train_idx])
+        logistic_valid_raw = logistic.predict_proba(features.iloc[valid_idx])[:, 1]
+        _, logistic_calibrator = _identity_or_calibrated(logistic_valid_raw, labels[valid_idx])
+        metrics["logistic_valid"] = classification_metrics(labels[valid_idx], logistic_valid_raw)
+
+        coastal_cell_logistic = _fit_coastal_cell_logistic_artifacts(features, labels, metadata, train_idx)
+        coastal_valid_raw, _, _ = _predict_coastal_cell_logistic_raw(
+            coastal_cell_logistic, features.iloc[valid_idx], metadata.iloc[valid_idx].reset_index(drop=True),
+        )
+        metrics["logistic_coastal_cells_valid"] = classification_metrics(labels[valid_idx], coastal_valid_raw)
+        _, coastal_calibrator = _identity_or_calibrated(coastal_valid_raw, labels[valid_idx])
+        coastal_cell_logistic.calibrator = coastal_calibrator
+
+        hierarchical_logistic = _fit_hierarchical_logistic_artifacts(features, labels, metadata, train_idx)
+        hier_valid_raw, _ = _predict_hierarchical_logistic_raw(
+            hierarchical_logistic, features.iloc[valid_idx], metadata.iloc[valid_idx].reset_index(drop=True),
+        )
+        metrics["logistic_hierarchical_valid"] = classification_metrics(labels[valid_idx], hier_valid_raw)
+        _, hierarchical_calibrator = _identity_or_calibrated(hier_valid_raw, labels[valid_idx])
+        hierarchical_logistic.calibrator = hierarchical_calibrator
+
+        persisted_ew = registry.get("ensemble_weights")
+        if persisted_ew is not None:
+            ensemble_weights = np.array(persisted_ew)
+        else:
+            _aucs = np.array([
+                metrics.get("logistic_valid", {}).get("aucpr", 0.0),
+                metrics.get("logistic_coastal_cells_valid", {}).get("aucpr", 0.0),
+                metrics.get("logistic_hierarchical_valid", {}).get("aucpr", 0.0),
+                metrics.get("hist_gbm_valid", {}).get("aucpr", 0.0),
+            ])
+            _s = _aucs.sum()
+            ensemble_weights = _aucs / _s if _s > 0 else np.full(4, 0.25)
+
+    else:  # hist_gbm (default)
+        classifier, calibrator = tree_classifier, tree_calibrator
+
+    if regressor_type == "elastic_net":
+        print("Training elastic net model...", file=sys.stderr, flush=True)
+        baselines.linear.fit(features.iloc[train_idx], densities[train_idx])
+        regressor = baselines.linear
+        regressor_valid_predictions = baselines.linear.predict(features.iloc[valid_idx])
+        metrics["elastic_net_valid"] = regression_metrics(densities[valid_idx], regressor_valid_predictions)
+    else:
+        print("Training hist GBM regressor model...", file=sys.stderr, flush=True)
+        baselines.tree_regressor.fit(features.iloc[train_idx], densities[train_idx])
+        regressor = baselines.tree_regressor
+        regressor_valid_predictions = baselines.tree_regressor.predict(features.iloc[valid_idx])
+        metrics["hist_gbm_regressor_valid"] = regression_metrics(densities[valid_idx], regressor_valid_predictions)
+
+    plan = StageTwoTrainingPlan(
+        production_winner=winner, research_winner=winner, spatial_backtest_models=[winner],
+    )
+    return _export_forecasts(
+        curated_dir=curated_dir,
+        forecast_date=forecast_date,
+        frame=frame,
+        full_frame=full_frame,
+        features=features,
+        densities=densities,
+        valid_idx=valid_idx,
+        test_idx=test_idx,
+        stations=stations,
+        uv_daily=uv_daily,
+        advisories=advisories,
+        models=_TrainedModels(
+            winner=winner,
+            tree_classifier=tree_classifier,
+            tree_calibrator=tree_calibrator,
+            classifier=classifier,
+            calibrator=calibrator,
+            logistic=logistic,
+            logistic_calibrator=logistic_calibrator,
+            coastal_cell_logistic=coastal_cell_logistic,
+            hierarchical_logistic=hierarchical_logistic,
+            ensemble_weights=ensemble_weights,
+            regressor=regressor,
+            regressor_valid_predictions=regressor_valid_predictions,
+        ),
+        plan=plan,
+        metrics=metrics,
+        model_types_to_run=[],
+        spatial_backtests=False,
+        spatial_backtest_models=[winner],
+        spatial_strategy=spatial_strategy,
+    )
+
+
 def train_curated_and_export(
     curated_dir: Path,
     forecast_date: date,
@@ -1681,6 +2103,7 @@ def train_curated_and_export(
     spatial_jobs: int | None = None,
     model_type: str = "tcn",
     spatial_strategy: str = "shortlist",
+    winner_only: bool = False,
 ) -> TrainingArtifacts:
     import sys
     if spatial_strategy not in SPATIAL_BACKTEST_STRATEGIES:
@@ -1717,6 +2140,17 @@ def train_curated_and_export(
     baselines = make_baselines(features)
     metrics: dict[str, dict[str, float]] = {}
     eval_idx = test_idx if len(test_idx) else valid_idx
+
+    if winner_only:
+        registry = _read_production_model_registry(curated_dir)
+        if registry is not None:
+            return _run_winner_only(
+                curated_dir=curated_dir,
+                forecast_date=forecast_date,
+                spatial_strategy=spatial_strategy,
+                registry=registry,
+            )
+        print("production_model.json not found — running full comparison", file=sys.stderr, flush=True)
 
     print("Evaluating persistence baseline...", file=sys.stderr, flush=True)
     persistence = _persistence_probabilities(features, settings.epa_marine_enterococcus_stv)
@@ -1831,7 +2265,7 @@ def train_curated_and_export(
     tree_reg_eval = baselines.tree_regressor.predict(features.iloc[eval_idx])
     metrics["hist_gbm_regressor"] = regression_metrics(densities[eval_idx], tree_reg_eval)
 
-    model_types_to_run = list(SEQUENCE_MODEL_NAMES) if model_type == "all" else [model_type]
+    model_types_to_run = list(SEQUENCE_MODEL_NAMES) if model_type == "all" else ([] if model_type == "none" else [model_type])
     for mt in model_types_to_run:
         print(f"Training {mt.upper()} sequence model...", file=sys.stderr, flush=True)
         artifacts = train_sequence_model(
@@ -1883,236 +2317,47 @@ def train_curated_and_export(
     else:
         regressor = baselines.tree_regressor
         regressor_valid_predictions = tree_reg_valid
-    regression_interval_half_width = _split_conformal_half_width(
-        densities[valid_idx],
-        regressor_valid_predictions,
-    )
 
-    history, forecast_candidates = _build_forecast_candidates(
-        frame, stations, uv_daily, forecast_date, full_frame=full_frame, advisories=advisories
+    _write_production_model_registry(
+        curated_dir,
+        winner=winner,
+        regressor="elastic_net" if regressor is baselines.linear else "hist_gbm_regressor",
+        ensemble_weights=ensemble_weights.tolist() if winner == "stacked_ensemble" and ensemble_weights is not None else None,
     )
-    inference_input = (
-        pd.concat([history, forecast_candidates], ignore_index=True)
-        if not forecast_candidates.empty
-        else pd.DataFrame()
-    )
-    baseline_inference = build_inference_features(inference_input) if not inference_input.empty else None
-    baseline_feature_frame = (
-        baseline_inference.feature_frame
-        if baseline_inference is not None and not baseline_inference.feature_frame.empty
-        else pd.DataFrame()
-    )
-    baseline_forecast_features = (
-        baseline_feature_frame.select_dtypes(include=["number"]).fillna(0.0)
-        if not baseline_feature_frame.empty
-        else pd.DataFrame()
-    )
-    forecast_metadata = baseline_inference.metadata if baseline_inference is not None else pd.DataFrame()
-    forecast_feature_frame = baseline_feature_frame
-    baseline_forecast_features = baseline_forecast_features.reindex(columns=features.columns, fill_value=0.0)
-    baseline_forecast_features = _inject_agent_features(
-        baseline_forecast_features, forecast_metadata, inference_input, advisories, stations
-    )
-    forecast_group_metadata = forecast_metadata.merge(
-        stations.reindex(
-            columns=[
-                "beach_id",
-                "county",
-                "region",
-                "latitude",
-                "longitude",
-                "cdip_distance_km",
-                "erddap_distance_km",
-            ]
+    return _export_forecasts(
+        curated_dir=curated_dir,
+        forecast_date=forecast_date,
+        frame=frame,
+        full_frame=full_frame,
+        features=features,
+        densities=densities,
+        valid_idx=valid_idx,
+        test_idx=test_idx,
+        stations=stations,
+        uv_daily=uv_daily,
+        advisories=advisories,
+        models=_TrainedModels(
+            winner=winner,
+            tree_classifier=tree_classifier,
+            tree_calibrator=tree_calibrator,
+            classifier=classifier,
+            calibrator=calibrator,
+            logistic=logistic,
+            logistic_calibrator=logistic_calibrator,
+            coastal_cell_logistic=coastal_cell_logistic,
+            hierarchical_logistic=hierarchical_logistic,
+            ensemble_weights=ensemble_weights,
+            regressor=regressor,
+            regressor_valid_predictions=regressor_valid_predictions,
         ),
-        on="beach_id",
-        how="left",
-    ) if not forecast_metadata.empty else pd.DataFrame()
-    scopes = np.full(len(baseline_forecast_features), "global", dtype=object)
-    assigned_cells = np.full(len(baseline_forecast_features), "unknown", dtype=object)
-    if winner == "stacked_ensemble":
-        _ens_logistic = logistic.predict_proba(baseline_forecast_features)[:, 1]
-        if logistic_calibrator is not None:
-            _ens_logistic = logistic_calibrator.transform(_ens_logistic)
-        _ens_coastal, _, _ens_coastal_scopes = _predict_coastal_cell_logistic_raw(
-            coastal_cell_logistic, baseline_forecast_features, forecast_group_metadata,
-        )
-        if coastal_cell_logistic.calibrator is not None:
-            _ens_coastal = coastal_cell_logistic.calibrator.transform(_ens_coastal)
-        _ens_hier, _ens_hier_scopes = _predict_hierarchical_logistic_raw(
-            hierarchical_logistic, baseline_forecast_features, forecast_group_metadata,
-        )
-        if hierarchical_logistic.calibrator is not None:
-            _ens_hier = hierarchical_logistic.calibrator.transform(_ens_hier)
-        _ens_tree = tree_classifier.predict_proba(baseline_forecast_features)[:, 1]
-        if tree_calibrator is not None:
-            _ens_tree = tree_calibrator.transform(_ens_tree)
-        probabilities = (
-            np.stack([_ens_logistic, _ens_coastal, _ens_hier, _ens_tree], axis=1)
-            @ ensemble_weights
-        )
-        scopes = _ens_hier_scopes
-    elif winner == "logistic_coastal_cells":
-        probabilities, assigned_cells, scopes = _predict_coastal_cell_logistic_raw(
-            coastal_cell_logistic,
-            baseline_forecast_features,
-            forecast_group_metadata,
-        )
-        if coastal_cell_logistic.calibrator is not None:
-            probabilities = coastal_cell_logistic.calibrator.transform(probabilities)
-    elif winner == "logistic_hierarchical":
-        probabilities, scopes = _predict_hierarchical_logistic_raw(
-            hierarchical_logistic,
-            baseline_forecast_features,
-            forecast_group_metadata,
-        )
-        if hierarchical_logistic.calibrator is not None:
-            probabilities = hierarchical_logistic.calibrator.transform(probabilities)
-    else:
-        probabilities = classifier.predict_proba(baseline_forecast_features)[:, 1]
-        if calibrator is not None:
-            probabilities = calibrator.transform(probabilities)
-    density_predictions = regressor.predict(baseline_forecast_features)
-    # ── Risk-distribution sanity guard ──────────────────────────────────────
-    # A degenerate calibrator (e.g. trained on all-null env features) can push
-    # p_exceed to exactly 1.00 for most beaches, producing an implausible
-    # distribution like 41% Very High.  This guard logs loudly when that happens
-    # so CI catches the regression — but does NOT clamp, so that genuine Very
-    # High risk signals (e.g. post-storm first-flush) are never suppressed.
-    #
-    # Historical note: a hard np.clip to 0.69 was used while the CDIP feed was
-    # broken (wave_height_m = all-null → calibrator mass at p=1.00).  Removed
-    # 2026-04-25 once CDIP enrichment confirmed healthy (0 % Very High).
-    _VERY_HIGH_THRESHOLD = _CAL_VERY_HIGH
-    _DEGENERATE_VERY_HIGH_FRACTION = 0.30  # >30% Very High implies a broken calibrator
-    if len(probabilities) > 0:
-        very_high_fraction = float((probabilities >= _VERY_HIGH_THRESHOLD).mean())
-        if very_high_fraction > _DEGENERATE_VERY_HIGH_FRACTION:
-            print(
-                f"[sanity guard] WARNING: {very_high_fraction:.1%} of beaches at Very High "
-                f"(>{_DEGENERATE_VERY_HIGH_FRACTION:.0%} threshold). "
-                "Possible degenerate calibrator — check env feature fill rates.",
-                file=sys.stderr,
-                flush=True,
-            )
-    # ─────────────────────────────────────────────────────────────────────────
-    # Driver computation always uses hist_gbm (individual-beach sensitivity).
-    # logistic_hierarchical outputs cluster-level probs — zeroing one beach's
-    # features barely moves it, so drivers would all be the stub fallback if
-    # we used the hierarchical probs as the baseline.  Using hist_gbm probs for
-    # BOTH baseline and perturbation gives a self-consistent diff.
-    if not baseline_forecast_features.empty and hasattr(tree_classifier, "predict_proba"):
-        driver_baseline_probs = tree_classifier.predict_proba(baseline_forecast_features)[:, 1]
-    else:
-        driver_baseline_probs = probabilities
-    computed_drivers = _compute_local_drivers(tree_classifier, baseline_forecast_features, driver_baseline_probs)
-
-    forecasts = []
-    forecast_lookup = (
-        forecast_candidates.drop_duplicates(subset=["beach_id"], keep="last").set_index("beach_id")
-        if not forecast_candidates.empty
-        else pd.DataFrame()
+        plan=plan,
+        metrics=metrics,
+        model_types_to_run=model_types_to_run,
+        spatial_backtests=spatial_backtests,
+        spatial_backtest_models=spatial_backtest_models,
+        spatial_strategy=spatial_strategy,
     )
-    uv_lookup = _build_uv_lookup(uv_daily, forecast_date)
-    station_lookup = stations.set_index("beach_id")
-    if not forecast_metadata.empty:
-        forecast_generated_at = datetime.now(UTC).isoformat()
-        for i, (idx, probability, density_prediction, scope) in enumerate(zip(
-            forecast_metadata.index,
-            probabilities,
-            density_predictions,
-            scopes,
-            strict=False,
-        )):
-            meta_row = forecast_metadata.iloc[idx]
-            feature_row = forecast_feature_frame.iloc[idx]
-            beach_id = meta_row["beach_id"]
-            latest_row = forecast_lookup.loc[beach_id] if beach_id in forecast_lookup.index else None
-            station_row = station_lookup.loc[beach_id] if beach_id in station_lookup.index else None
-            uv_index = _safe_float(latest_row.get("uv_index")) if latest_row is not None else None
-            uv_alert = None
-            if station_row is not None and not uv_lookup.empty:
-                zip_code = station_row.get("zip_code")
-                if pd.notna(zip_code):
-                    zip_key = str(zip_code).zfill(5)
-                    if zip_key in uv_lookup.index:
-                        uv_index = _safe_float(uv_lookup.loc[zip_key].get("uv_index"))
-                        uv_alert = uv_lookup.loc[zip_key].get("uv_alert")
-            # Advisory floor: never call a beach with a recent active advisory Low.
-            # Floor at Moderate (0.20) for advisories started within 365 days or
-            # Tijuana River Associated (genuinely chronic).  Stale advisory
-            # bookkeeping artifacts (>365 days, non-Tijuana) get no floor so the
-            # audit metric remains diagnostic.  p_exceed_raw preserves the raw
-            # model output for audit/debugging.
-            advisory_recent = _safe_float(feature_row.get("advisory_recent_active")) or 0.0
-            p_raw = float(probability)
-            p_final = max(p_raw, 0.20) if advisory_recent else p_raw
-            forecasts.append(
-                {
-                    "beach_id": beach_id,
-                    "forecast_date": forecast_date.isoformat(),
-                    "risk_band": risk_band(p_final),
-                    "p_exceed": p_final,
-                    "p_exceed_raw": p_raw,
-                    "predicted_log_enterococcus": float(density_prediction),
-                    "lower_prediction_interval": (
-                        float(density_prediction - regression_interval_half_width)
-                        if regression_interval_half_width is not None
-                        else None
-                    ),
-                    "upper_prediction_interval": (
-                        float(density_prediction + regression_interval_half_width)
-                        if regression_interval_half_width is not None
-                        else None
-                    ),
-                    "prediction_interval_level": (
-                        0.9 if regression_interval_half_width is not None else None
-                    ),
-                    "top_drivers": computed_drivers[i],
-                    "model_version": _forecast_model_version(winner, str(scope)),
-                    "forecast_generated_at": forecast_generated_at,
-                    "wave_height_m": _safe_float(latest_row.get("wave_height_m")) if latest_row is not None else None,
-                    "dominant_period_s": _safe_float(latest_row.get("dominant_period_s")) if latest_row is not None else None,
-                    "water_temperature_c": _safe_float(latest_row.get("water_temperature_c")) if latest_row is not None else None,
-                    "salinity_psu": _safe_float(latest_row.get("salinity_psu")) if latest_row is not None else None,
-                    "uv_index": uv_index,
-                    "uv_alert": uv_alert,
-                }
-            )
 
-    pd.DataFrame(forecasts).to_parquet(curated_dir / "forecasts.parquet", index=False)
-
-    health_path = curated_dir / "system_health.json"
-    health_payload = json.loads(health_path.read_text()) if health_path.exists() else {}
-    promotion = _promotion_assessment(metrics, winner)
-    health_payload["model_registry"] = {
-        "production_model": _registry_model_version(winner),
-        "temporal_validation_winner": _registry_model_version(plan.research_winner),
-        "candidate_models": [
-            _registry_model_version(model_name) for model_name in PRODUCTION_MODEL_NAMES
-        ],
-        "research_models": [_registry_model_version(model_name) for model_name in model_types_to_run],
-        "spatial_backtest_models": [_registry_model_version(model_name) for model_name in spatial_backtest_models],
-        "spatial_backtest_strategy": spatial_strategy if spatial_backtests else "disabled",
-        "production_metrics": metrics.get(winner, {}),
-        "validation_metrics": metrics.get(f"{winner}_valid", {}),
-        "temporal_validation_metrics": metrics.get(f"{plan.research_winner}_valid", {}),
-        "spatial_metrics": promotion["spatial_metrics"],
-        "deployment_stage": promotion["deployment_stage"],
-        "public_release_eligible": promotion["public_release_eligible"],
-        "promotion_blockers": promotion["promotion_blockers"],
-        "promotion_policy": {
-            "production_models": list(PRODUCTION_MODEL_NAMES),
-            "neural_model_status": "research_only",
-            "spatial_backtests_present": bool(promotion["spatial_metrics"]),
-            "spatial_backtest_strategy": spatial_strategy,
-            "fallback_order": ["coastal_cell", "county", "region", "global"],
-        },
-        "metrics": metrics,
-    }
-    health_payload["pipeline_freshness"] = datetime.now(UTC).isoformat()
-    health_path.write_text(json.dumps(health_payload, indent=2))
-    return TrainingArtifacts(winner=winner, metrics=metrics)
 
 
 def train_all(
@@ -2125,6 +2370,7 @@ def train_all(
     spatial_jobs: int | None = None,
     model_type: str = "tcn",
     spatial_strategy: str = "shortlist",
+    winner_only: bool = False,
 ) -> TrainingArtifacts:
     settings = get_settings()
     if curated:
@@ -2137,6 +2383,7 @@ def train_all(
             spatial_jobs=spatial_jobs,
             model_type=model_type,
             spatial_strategy=spatial_strategy,
+            winner_only=winner_only,
         )
     if not sample_fixture:
         raise NotImplementedError("Training currently expects fixture-backed development data.")
@@ -2173,7 +2420,10 @@ def main() -> None:
         default="shortlist",
         choices=list(SPATIAL_BACKTEST_STRATEGIES),
     )
-    parser.add_argument("--model", type=str, default="tcn", choices=["tcn", "cnn", "lstm", "transformer", "pinn", "all"])
+    parser.add_argument("--model", type=str, default="tcn", choices=["tcn", "cnn", "lstm", "transformer", "pinn", "all", "none"])
+    parser.add_argument("--winner-only", action="store_true",
+                        help="Retrain only the persisted backtest winner (reads production_model.json). "
+                             "Falls back to full comparison if no registry exists.")
     args = parser.parse_args()
     forecast_date = date.fromisoformat(args.forecast_date) if args.forecast_date else None
     artifacts = train_all(
@@ -2186,6 +2436,7 @@ def main() -> None:
         spatial_jobs=args.spatial_jobs,
         model_type=args.model,
         spatial_strategy=args.spatial_strategy,
+        winner_only=args.winner_only,
     )
     print(json.dumps(asdict(artifacts), indent=2))
 
