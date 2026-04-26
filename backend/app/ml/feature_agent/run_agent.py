@@ -35,8 +35,8 @@ import numpy as np
 import pandas as pd
 import requests
 from sklearn.ensemble import HistGradientBoostingClassifier
-from sklearn.metrics import average_precision_score
-from sklearn.model_selection import StratifiedKFold
+from sklearn.metrics import average_precision_score, brier_score_loss
+from sklearn.model_selection import GroupKFold
 
 # ── project imports ──────────────────────────────────────────────────────────
 _BACKEND = Path(__file__).resolve().parent.parent.parent.parent
@@ -448,29 +448,35 @@ def _univariate_aucpr(features_with_feat: pd.DataFrame, feat_col: str) -> float:
         return 0.0
 
 
-def _cv_aucpr(features_df: pd.DataFrame, feat_col: str, baseline_aucpr: float, seed: int = 42) -> float:
+def _cv_metrics(features_df: pd.DataFrame, feat_col: str, seed: int = 42) -> tuple[float, float]:
     """
-    Stratified 3-fold CV with HistGradientBoostingClassifier.
-    Returns mean AUCPR across folds using ALL current features + the new one.
-    Pass feat_col that is NOT in features_df to evaluate without any new feature (baseline).
+    County-grouped 3-fold CV with HistGradientBoostingClassifier.
+    Returns (mean_aucpr, mean_brier) across folds using ALL current features + the new one.
+    Pass feat_col that is NOT in features_df to get baseline metrics.
+    GroupKFold on county ensures no county spans train and val — matches prod spatial CV.
+    Folds with zero positives in val are skipped (GroupKFold can produce imbalanced splits).
     """
     feature_cols = [c for c in features_df.columns
-                    if c not in {"beach_id", "sample_date", "exceeds_stv"}
+                    if c not in {"beach_id", "sample_date", "exceeds_stv", "county"}
                     and features_df[c].dtype.kind in "fi"]
     if feat_col in features_df.columns and feat_col not in feature_cols:
         feature_cols.append(feat_col)
 
-    labeled = features_df[feature_cols + ["exceeds_stv"]].replace([np.inf, -np.inf], np.nan)
+    labeled = features_df[feature_cols + ["exceeds_stv", "county"]].replace([np.inf, -np.inf], np.nan)
     labeled = labeled.dropna(subset=["exceeds_stv"])
     X = labeled[feature_cols].fillna(0.0).to_numpy(dtype=np.float32)
     y = labeled["exceeds_stv"].astype(int).to_numpy()
+    groups = labeled["county"].fillna("unknown").to_numpy()
 
     if len(y) < 100:
-        return 0.0
+        return 0.0, 1.0
 
-    skf = StratifiedKFold(n_splits=_CV_FOLDS, shuffle=True, random_state=seed)
-    aucprs = []
-    for train_idx, val_idx in skf.split(X, y):
+    gkf = GroupKFold(n_splits=_CV_FOLDS)
+    aucprs: list[float] = []
+    briers: list[float] = []
+    for train_idx, val_idx in gkf.split(X, y, groups=groups):
+        if y[val_idx].sum() == 0:
+            continue
         clf = HistGradientBoostingClassifier(
             max_iter=200,
             max_depth=4,
@@ -481,7 +487,10 @@ def _cv_aucpr(features_df: pd.DataFrame, feat_col: str, baseline_aucpr: float, s
         clf.fit(X[train_idx], y[train_idx])
         probs = clf.predict_proba(X[val_idx])[:, 1]
         aucprs.append(float(average_precision_score(y[val_idx], probs)))
-    return float(np.mean(aucprs))
+        briers.append(float(brier_score_loss(y[val_idx], probs)))
+    if not aucprs:
+        return 0.0, 1.0
+    return float(np.mean(aucprs)), float(np.mean(briers))
 
 
 # ── persist ────────────────────────────────────────────────────────────────────
@@ -507,7 +516,7 @@ def _build_base_features(beach_day: pd.DataFrame) -> pd.DataFrame:
     labeled = beach_day[beach_day["exceeds_stv"].notna()].copy()
     enriched = add_temporal_features(labeled)
     feat_cols = _model_feature_columns(enriched)
-    result = enriched[feat_cols + ["beach_id", "sample_date", "exceeds_stv"]].copy()
+    result = enriched[feat_cols + ["beach_id", "sample_date", "exceeds_stv", "county"]].copy()
     return result
 
 
@@ -536,8 +545,8 @@ def run_loop(max_iterations: int = 50, curated_dir: Path | None = None) -> None:
 
     print("\nBuilding base feature matrix (this takes ~60s)...")
     base_features = _build_base_features(beach_day)
-    baseline_aucpr = _cv_aucpr(base_features, feat_col="__dummy__", baseline_aucpr=_BASELINE_AUCPR)
-    print(f"   Baseline CV AUCPR (stratified 3-fold): {baseline_aucpr:.4f}")
+    baseline_aucpr, baseline_brier = _cv_metrics(base_features, feat_col="__dummy__")
+    print(f"   Baseline CV (county-grouped {_CV_FOLDS}-fold):  AUCPR {baseline_aucpr:.4f}  Brier {baseline_brier:.4f}")
 
     existing_fns = _existing_feature_names()
     print(f"   Existing agent features: {len(existing_fns)}")
@@ -546,6 +555,7 @@ def run_loop(max_iterations: int = 50, curated_dir: Path | None = None) -> None:
     failed_logs: list[str] = []
     current_features = base_features.copy()
     current_aucpr = baseline_aucpr
+    current_brier = baseline_brier
 
     for i in range(start, start + max_iterations):
         _cleanup_logs()
@@ -654,15 +664,25 @@ def run_loop(max_iterations: int = 50, curated_dir: Path | None = None) -> None:
                 _write_iter(i, idea, code, msg, "FAILED (correlation gate)")
                 continue
 
-        print(f"  🔄 Running {_CV_FOLDS}-fold CV (stratified)...")
-        new_aucpr = _cv_aucpr(augmented, feat_col, baseline_aucpr=current_aucpr)
-        delta = new_aucpr - current_aucpr
-        print(f"  📈 CV AUCPR: {current_aucpr:.4f} → {new_aucpr:.4f}  ({delta:+.4f})")
+        print(f"  🔄 Running {_CV_FOLDS}-fold CV (county-grouped)...")
+        new_aucpr, new_brier = _cv_metrics(augmented, feat_col)
+        delta_aucpr = new_aucpr - current_aucpr
+        delta_brier = new_brier - current_brier
+        print(f"  📈 AUCPR: {current_aucpr:.4f} → {new_aucpr:.4f}  ({delta_aucpr:+.4f})")
+        print(f"  📉 Brier: {current_brier:.4f} → {new_brier:.4f}  ({delta_brier:+.4f})")
 
         if new_aucpr < current_aucpr:
             msg = f"Degrades CV AUCPR ({current_aucpr:.4f} → {new_aucpr:.4f})"
             failed_logs.append(f"Idea:\n{idea}\nResult: {msg}")
-            _write_iter(i, idea, code, msg, "FAILED (CV gate)", f"Uni: {uni:.4f} | CV: {new_aucpr:.4f}")
+            _write_iter(i, idea, code, msg, "FAILED (CV gate)",
+                        f"Uni: {uni:.4f} | AUCPR: {new_aucpr:.4f} | Brier: {new_brier:.4f}")
+            continue
+
+        if new_brier > current_brier:
+            msg = f"Degrades Brier ({current_brier:.4f} → {new_brier:.4f})"
+            failed_logs.append(f"Idea:\n{idea}\nResult: {msg}")
+            _write_iter(i, idea, code, msg, "FAILED (Brier gate)",
+                        f"Uni: {uni:.4f} | AUCPR: {new_aucpr:.4f} | Brier: {new_brier:.4f}")
             continue
 
         # ── ACCEPT ──
@@ -670,10 +690,12 @@ def run_loop(max_iterations: int = 50, curated_dir: Path | None = None) -> None:
         _persist(code, i)
         current_features = augmented.copy()
         current_aucpr = new_aucpr
-        _write_iter(i, idea, code, "", "SUCCESS", f"Uni: {uni:.4f} | CV: {new_aucpr:.4f} (+{delta:.4f})")
+        current_brier = new_brier
+        _write_iter(i, idea, code, "", "SUCCESS",
+                    f"Uni: {uni:.4f} | AUCPR: {new_aucpr:.4f} ({delta_aucpr:+.4f}) | Brier: {new_brier:.4f} ({delta_brier:+.4f})")
         failed_logs.clear()
 
-    print(f"\n--- Done. Final CV AUCPR: {current_aucpr:.4f} (started {baseline_aucpr:.4f}) ---")
+    print(f"\n--- Done. Final AUCPR: {current_aucpr:.4f} (started {baseline_aucpr:.4f})  Brier: {current_brier:.4f} (started {baseline_brier:.4f}) ---")
 
 
 if __name__ == "__main__":
