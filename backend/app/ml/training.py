@@ -1385,7 +1385,7 @@ def _refresh_candidate_advisory_features(
     That row's advisory features reflect the state on the observation date, not
     on the forecast date — so we recompute them here from current advisory state.
     """
-    adv = advisories[["beach_id", "started_at", "ended_at"]].copy()
+    adv = advisories[["beach_id", "started_at", "ended_at", "cause"]].copy()
     adv["started_at"] = pd.to_datetime(adv["started_at"])
     adv["ended_at_ts"] = pd.to_datetime(adv["ended_at"])
     adv["ended_at_filled"] = adv["ended_at_ts"].fillna(pd.Timestamp("2099-01-01"))
@@ -1393,11 +1393,20 @@ def _refresh_candidate_advisory_features(
     forecast_ts = pd.Timestamp(forecast_date)
     window_start = forecast_ts - pd.Timedelta(days=14)
 
-    in_window = adv[
+    active_adv = adv[
         (adv["started_at"] < forecast_ts) & (adv["ended_at_filled"] > window_start)
-    ]["beach_id"]
-    active_ids = set(in_window.tolist())
+    ].copy()
+    active_ids = set(active_adv["beach_id"].tolist())
     candidates["advisory_active_prev_14d"] = candidates["beach_id"].isin(active_ids).astype(int)
+
+    # Recent advisories: started within 365 days OR Tijuana River (genuinely chronic).
+    # Used to gate the Moderate floor — stale bookkeeping advisories don't trigger it.
+    cutoff_365 = forecast_ts - pd.Timedelta(days=365)
+    is_recent = (active_adv["started_at"] >= cutoff_365) | (
+        active_adv["cause"].str.contains("Tijuana River", case=False, na=False)
+    )
+    recent_ids = set(active_adv.loc[is_recent, "beach_id"].tolist())
+    candidates["advisory_recent_active"] = candidates["beach_id"].isin(recent_ids).astype(int)
 
     closed = adv[adv["ended_at_ts"].notna()].copy()
     closed["_days"] = (forecast_ts - closed["ended_at_ts"]).dt.days
@@ -1983,20 +1992,22 @@ def train_curated_and_export(
                     if zip_key in uv_lookup.index:
                         uv_index = _safe_float(uv_lookup.loc[zip_key].get("uv_index"))
                         uv_alert = uv_lookup.loc[zip_key].get("uv_alert")
-            # Advisory floor: never say Low or Moderate when a public health
-            # advisory is active. An active DPH/CalState advisory is the
-            # ground-truth that swimming is unsafe; our model must agree at
-            # minimum High (p >= 0.45).  This is the LOTUS forecaster-in-the-
-            # loop rule applied to advisory disagreements identified in
-            # audit_forecasts_vs_advisories.py.
-            advisory_active = _safe_float(feature_row.get("advisory_active_prev_14d")) or 0.0
-            p_final = max(float(probability), 0.45) if advisory_active else float(probability)
+            # Advisory floor: never call a beach with a recent active advisory Low.
+            # Floor at Moderate (0.20) for advisories started within 365 days or
+            # Tijuana River Associated (genuinely chronic).  Stale advisory
+            # bookkeeping artifacts (>365 days, non-Tijuana) get no floor so the
+            # audit metric remains diagnostic.  p_exceed_raw preserves the raw
+            # model output for audit/debugging.
+            advisory_recent = _safe_float(feature_row.get("advisory_recent_active")) or 0.0
+            p_raw = float(probability)
+            p_final = max(p_raw, 0.20) if advisory_recent else p_raw
             forecasts.append(
                 {
                     "beach_id": beach_id,
                     "forecast_date": forecast_date.isoformat(),
                     "risk_band": risk_band(p_final),
                     "p_exceed": p_final,
+                    "p_exceed_raw": p_raw,
                     "predicted_log_enterococcus": float(density_prediction),
                     "lower_prediction_interval": (
                         float(density_prediction - regression_interval_half_width)
