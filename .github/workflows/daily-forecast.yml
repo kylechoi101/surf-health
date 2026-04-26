@@ -27,14 +27,14 @@ jobs:
         run: pip install -e ".[training]"
         working-directory: backend
 
-      - name: Restore raw-data cache
+      - name: Restore hydrology cache
         uses: actions/cache@v4
         with:
           path: |
             data/raw/usgs_streamflow
             data/raw/cnrfc
-          key: raw-${{ runner.os }}-${{ github.run_id }}
-          restore-keys: raw-${{ runner.os }}-
+          key: hydro-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: hydro-${{ runner.os }}-
 
       - name: Create data directories
         run: mkdir -p data/curated data/raw/cnrfc data/raw/usgs_streamflow data/raw/nhdplus

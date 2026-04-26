@@ -360,7 +360,7 @@ def main() -> None:
             from app.data.pipeline.precipitation import aggregate_precip_windows
             from app.data.pipeline.hydrology import aggregate_streamflow_windows, build_beach_hydrology_daily
 
-            start_date = _date.fromisoformat(args.start_date) if args.start_date else _date(2020, 1, 1)
+            _full_start_date = _date(2020, 1, 1)
             end_date = _date.fromisoformat(args.end_date) if args.end_date else _date.today()
 
             # --- Hydrologic beach links ---
@@ -377,7 +377,7 @@ def main() -> None:
                     hydrologic_links = build_hydrologic_beach_links(bundle["stations"])
                     hydrologic_links.to_parquet(hydrologic_links_path, index=False)
 
-            # --- Streamflow: fetch from USGS NWIS for mapped gages ---
+            # --- Streamflow: incremental fetch from USGS NWIS ---
             gage_ids = (
                 hydrologic_links["nearest_stream_gage_id"].dropna().unique().tolist()
                 if not hydrologic_links.empty and "nearest_stream_gage_id" in hydrologic_links.columns
@@ -385,21 +385,48 @@ def main() -> None:
             )
             if args.usgs_gages_csv:
                 raw_streamflow = pd.read_csv(args.usgs_gages_csv)
-            elif gage_ids:
-                raw_streamflow = asyncio.run(
-                    UsgsNwisConnector().fetch_streamflow(gage_ids, start_date, end_date)
-                )
+                streamflow_daily = aggregate_streamflow_windows(raw_streamflow)
             else:
-                raw_streamflow = pd.DataFrame()
-            streamflow_daily = aggregate_streamflow_windows(raw_streamflow)
+                _sf_path = Path(settings.curated_dir) / "streamflow_daily.parquet"
+                if not args.start_date and _sf_path.exists():
+                    # Incremental: fetch only from the last stored date (- 7 days overlap).
+                    _existing_sf = pd.read_parquet(_sf_path)
+                    _sf_max = pd.to_datetime(_existing_sf["sample_date"]).max().date() if "sample_date" in _existing_sf.columns else _full_start_date
+                    _sf_fetch_start = max(_full_start_date, (_sf_max - pd.Timedelta(days=7)).date())
+                    print(f"[hydrology] streamflow incremental fetch {_sf_fetch_start} → {end_date}")
+                else:
+                    _sf_fetch_start = _date.fromisoformat(args.start_date) if args.start_date else _full_start_date
+                    print(f"[hydrology] streamflow full fetch {_sf_fetch_start} → {end_date}")
+                if gage_ids:
+                    raw_streamflow_delta = asyncio.run(
+                        UsgsNwisConnector().fetch_streamflow(gage_ids, _sf_fetch_start, end_date)
+                    )
+                else:
+                    raw_streamflow_delta = pd.DataFrame()
+                # Merge delta on top of existing, deduplicate on (site_no, dateTime)
+                if _sf_path.exists() and not args.start_date:
+                    _existing_sf = pd.read_parquet(_sf_path)
+                    raw_streamflow_delta_agg = aggregate_streamflow_windows(raw_streamflow_delta)
+                    _key = [c for c in ("gage_id", "sample_date") if c in _existing_sf.columns and c in raw_streamflow_delta_agg.columns]
+                    if _key:
+                        streamflow_daily = (
+                            pd.concat([_existing_sf, raw_streamflow_delta_agg], ignore_index=True)
+                            .drop_duplicates(subset=_key, keep="last")
+                            .sort_values(_key)
+                            .reset_index(drop=True)
+                        )
+                    else:
+                        streamflow_daily = raw_streamflow_delta_agg
+                else:
+                    streamflow_daily = aggregate_streamflow_windows(raw_streamflow_delta)
             streamflow_daily.to_parquet(Path(settings.curated_dir) / "streamflow_daily.parquet", index=False)
             print(f"[hydrology] streamflow_daily: {len(streamflow_daily)} rows")
 
-            # --- Precipitation: CSV override → Open-Meteo ERA5 historical ---
+            # --- Precipitation: incremental fetch from Open-Meteo ERA5 ---
             if args.cnrfc_observed_csv:
                 raw_precip = pd.read_csv(args.cnrfc_observed_csv)
+                precip_daily = aggregate_precip_windows(raw_precip)
             elif not hydrologic_links.empty:
-                # Extract unique beach coordinates from hydrologic links
                 coords_df = (
                     hydrologic_links[["pour_point_latitude", "pour_point_longitude"]]
                     .dropna()
@@ -409,17 +436,40 @@ def main() -> None:
                     coords_df["pour_point_latitude"].tolist(),
                     coords_df["pour_point_longitude"].tolist(),
                 ))
+                _pr_path = Path(settings.curated_dir) / "precip_daily.parquet"
+                if not args.start_date and _pr_path.exists():
+                    _existing_pr = pd.read_parquet(_pr_path)
+                    _pr_max = pd.to_datetime(_existing_pr["sample_date"]).max().date() if "sample_date" in _existing_pr.columns else _full_start_date
+                    _pr_fetch_start = max(_full_start_date, (_pr_max - pd.Timedelta(days=7)).date())
+                    print(f"[hydrology] precip incremental fetch {_pr_fetch_start} → {end_date}")
+                else:
+                    _pr_fetch_start = _date.fromisoformat(args.start_date) if args.start_date else _full_start_date
+                    print(f"[hydrology] precip full fetch {_pr_fetch_start} → {end_date}")
                 raw_precip = asyncio.run(
                     OpenMeteoHistoricalPrecipConnector().fetch_historical_precip(
                         locations,
-                        start_date,
+                        _pr_fetch_start,
                         end_date,
                         cache_dir=settings.precip_cache_dir / "openmeteo",
                     )
                 )
+                new_precip_daily = aggregate_precip_windows(raw_precip)
+                if _pr_path.exists() and not args.start_date:
+                    _existing_pr = pd.read_parquet(_pr_path)
+                    _pr_key = [c for c in ("latitude", "longitude", "sample_date") if c in _existing_pr.columns and c in new_precip_daily.columns]
+                    if _pr_key:
+                        precip_daily = (
+                            pd.concat([_existing_pr, new_precip_daily], ignore_index=True)
+                            .drop_duplicates(subset=_pr_key, keep="last")
+                            .sort_values(_pr_key)
+                            .reset_index(drop=True)
+                        )
+                    else:
+                        precip_daily = new_precip_daily
+                else:
+                    precip_daily = new_precip_daily
             else:
-                raw_precip = pd.DataFrame()
-            precip_daily = aggregate_precip_windows(raw_precip)
+                precip_daily = pd.DataFrame()
             precip_daily.to_parquet(Path(settings.curated_dir) / "precip_daily.parquet", index=False)
             print(f"[hydrology] precip_daily: {len(precip_daily)} rows")
 
