@@ -47,7 +47,7 @@ from app.ml.feature_agent.validator import validate as ast_validate
 
 # ── constants ────────────────────────────────────────────────────────────────
 OLLAMA_URL = "http://localhost:11434/api/generate"
-OLLAMA_MODEL = "gemma3:27b"  # same model for all roles — avoids VRAM swapping
+OLLAMA_MODEL = os.environ.get("FEATURE_AGENT_MODEL", "gemma3:27b")  # override: FEATURE_AGENT_MODEL=gemma4:31b
 
 _UNIVARIATE_MIN_AUCPR = 0.15   # must beat this alone at base-rate 0.11
 _CV_FOLDS = 3
@@ -92,8 +92,12 @@ advisories_df columns:
   beach_id, started_at (datetime), ended_at (datetime or NaT), cause (str)
 
 stations_df columns (one row per unique beach_id):
-  beach_id, county, region, latitude, longitude,
-  cdip_distance_km, erddap_distance_km, historical_advisory_count
+  beach_id, name, county, region, latitude, longitude,
+  cdip_distance_km, erddap_distance_km,
+  cdip_station_id (str), cdip_station_name (str),
+  water_body_class (str), water_body_type (str)
+NOTE: stations_df has NO oceanographic measurements — do NOT access salinity, temperature,
+wave height, streamflow, or precip from stations_df; those are only in beach_day_df.
 
 IMPORTANT CONSTRAINTS:
 - base exceedance rate ~11% (1 in 9 samples exceeds STV)
@@ -171,15 +175,22 @@ def _call_ollama(prompt: str, temperature: float = 0.7, max_tokens: int | None =
     options: dict = {"temperature": temperature, "seed": 42}
     if max_tokens:
         options["num_predict"] = max_tokens
-    payload = {"model": OLLAMA_MODEL, "prompt": prompt, "stream": False, "options": options}
+    payload = {"model": OLLAMA_MODEL, "prompt": prompt, "stream": True, "options": options}
     for attempt in range(max_retries):
         try:
-            resp = requests.post(OLLAMA_URL, json=payload, timeout=300)
-            resp.raise_for_status()
-            data = resp.json()
-            if "error" in data:
-                raise RuntimeError(data["error"])
-            raw = data.get("response", "")
+            chunks: list[str] = []
+            with requests.post(OLLAMA_URL, json=payload, stream=True, timeout=(300, 3600)) as resp:
+                resp.raise_for_status()
+                for line in resp.iter_lines():
+                    if not line:
+                        continue
+                    data = json.loads(line)
+                    if "error" in data:
+                        raise RuntimeError(data["error"])
+                    chunks.append(data.get("response", ""))
+                    if data.get("done"):
+                        break
+            raw = "".join(chunks)
             # strip <think>...</think> blocks (qwen3 / gemma reasoning traces)
             return re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         except requests.Timeout:
@@ -240,7 +251,9 @@ HYPOTHESIS: [one sentence why this predicts enterococcus exceedance]
 IMPLEMENTATION: [3–5 bullet points describing the pandas operations, referencing exact column names]
 """
     try:
-        return _call_ollama(prompt, temperature=0.9, max_tokens=400)
+        # No max_tokens cap — the structured prompt format terminates naturally;
+        # gemma4 returns empty with num_predict on long schema prompts.
+        return _call_ollama(prompt, temperature=0.9)
     except Exception as exc:
         print(f"  [Ideator] error: {exc}")
         return None
@@ -272,16 +285,26 @@ RULES:
 Output ONLY a ```python code block with the complete function including imports.
 """
     try:
-        raw = _call_ollama(prompt, temperature=0.15, max_tokens=900)
+        raw = _call_ollama(prompt, temperature=0.15)  # no max_tokens — gemma4 returns empty on long prompts with num_predict
         match = re.search(r"```python(.*?)```", raw, re.DOTALL)
         if match:
-            return match.group(1).strip()
-        match = re.search(r"```(.*?)```", raw, re.DOTALL)
-        if match:
-            return match.group(1).strip()
-        # fallback: everything after "def build_novel_feature"
-        idx = raw.find("def build_novel_feature")
-        return raw[idx:].strip() if idx >= 0 else raw.strip()
+            code = match.group(1).strip()
+        else:
+            match = re.search(r"```(.*?)```", raw, re.DOTALL)
+            if match:
+                code = match.group(1).strip()
+            else:
+                idx = raw.find("def build_novel_feature")
+                code = raw[idx:].strip() if idx >= 0 else raw.strip()
+        # If the model used a different function name, rename it to the required one
+        if "def build_novel_feature(" not in code:
+            code = re.sub(
+                r"def\s+\w+\s*\(\s*beach_day_df",
+                "def build_novel_feature(beach_day_df",
+                code,
+                count=1,
+            )
+        return code
     except Exception as exc:
         print(f"  [Coder] error: {exc}")
         return None
@@ -308,7 +331,7 @@ CHECKLIST:
 Reply with exactly "PASS" if all checks pass, or "FAIL: <brief one-sentence reason>" if any check fails.
 """
     try:
-        raw = _call_ollama(prompt, temperature=0.1, max_tokens=80)
+        raw = _call_ollama(prompt, temperature=0.1)  # no max_tokens
         clean = raw.strip()
         if clean.upper().startswith("PASS"):
             return True, "PASS"
@@ -331,7 +354,7 @@ Identify: (1) common mathematical traps, (2) domain misunderstandings, (3) THREE
 Keep it brief and technical. Use Markdown headings.
 """
     try:
-        return _call_ollama(prompt, temperature=0.6, max_tokens=500)
+        return _call_ollama(prompt, temperature=0.6)  # no max_tokens
     except Exception as exc:
         return f"(analysis failed: {exc})"
 
@@ -387,7 +410,7 @@ def _exec_feature(code: str, iteration: int, beach_day_sample: pd.DataFrame,
     except _TimeoutError as exc:
         return None, str(exc) + " — check for hidden loops or non-vectorized operations."
     except Exception as exc:
-        return None, f"Runtime error: {traceback.format_exc()[-600:]}"
+        return None, f"Runtime error: {type(exc).__name__}: {exc}\n{traceback.format_exc()[-400:]}"
 
     # Shape checks
     if not isinstance(result, pd.DataFrame):
@@ -429,11 +452,12 @@ def _cv_aucpr(features_df: pd.DataFrame, feat_col: str, baseline_aucpr: float, s
     """
     Stratified 3-fold CV with HistGradientBoostingClassifier.
     Returns mean AUCPR across folds using ALL current features + the new one.
+    Pass feat_col that is NOT in features_df to evaluate without any new feature (baseline).
     """
     feature_cols = [c for c in features_df.columns
                     if c not in {"beach_id", "sample_date", "exceeds_stv"}
                     and features_df[c].dtype.kind in "fi"]
-    if feat_col not in feature_cols:
+    if feat_col in features_df.columns and feat_col not in feature_cols:
         feature_cols.append(feat_col)
 
     labeled = features_df[feature_cols + ["exceeds_stv"]].replace([np.inf, -np.inf], np.nan)
@@ -621,13 +645,14 @@ def run_loop(max_iterations: int = 50, curated_dir: Path | None = None) -> None:
                             if c not in {"beach_id", "sample_date", "exceeds_stv"}
                             and current_features[c].dtype.kind in "fi"]
         if numeric_existing:
-            max_corr = augmented[numeric_existing].corrwith(augmented[feat_col]).abs().max()
+            max_corr = float(np.nanmax(augmented[numeric_existing].corrwith(augmented[feat_col]).abs().fillna(0.0)))
+            print(f"  📐 Max correlation with existing features: {max_corr:.3f}")
             if max_corr > 0.85:
                 msg = f"High correlation ({max_corr:.2f}) with existing features — redundant."
+                print(f"  ❌ Correlation gate: {msg}")
                 failed_logs.append(f"Idea:\n{idea}\nResult: {msg}")
                 _write_iter(i, idea, code, msg, "FAILED (correlation gate)")
                 continue
-            print(f"  📐 Max correlation with existing features: {max_corr:.3f}")
 
         print(f"  🔄 Running {_CV_FOLDS}-fold CV (stratified)...")
         new_aucpr = _cv_aucpr(augmented, feat_col, baseline_aucpr=current_aucpr)
