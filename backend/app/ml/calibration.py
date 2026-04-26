@@ -16,12 +16,29 @@ class ProbabilityCalibrator:
         return self.model.predict(probabilities)
 
 
+# Thresholds calibrated for hist_gbm at ~11% base exceedance rate.
+# "High" at 0.30 means the model estimates 3× the average beach's risk —
+# not a certainty, but elevated enough to warrant caution.  "Very High"
+# at 0.70 indicates genuinely extreme conditions (post-storm, CSO event,
+# or active advisory near minimum-detection samples).
+_LOW_THRESHOLD = 0.20
+_HIGH_THRESHOLD = 0.30
+_VERY_HIGH_THRESHOLD = 0.70
+
+# Human-readable explanations shown in the app alongside each band.
+RISK_BAND_DESCRIPTIONS: dict[str, str] = {
+    "Low": "Water quality appears typical for this beach. Swim at your own discretion.",
+    "Moderate": "Slightly elevated risk. Conditions may be less ideal; consider checking again before swimming.",
+    "High": "Elevated risk — estimated exceedance probability is roughly 3× the average beach. Caution advised, especially for vulnerable groups.",
+    "Very High": "High likelihood of unsafe bacteria levels. Swimming is not recommended until conditions improve.",
+}
+
+
 def risk_band(probability: float) -> str:
-    if probability < 0.2:
+    if probability < _LOW_THRESHOLD:
         return "Low"
-    if probability < 0.45:
+    if probability < _HIGH_THRESHOLD:
         return "Moderate"
-    if probability < 0.7:
+    if probability < _VERY_HIGH_THRESHOLD:
         return "High"
     return "Very High"
-

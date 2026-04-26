@@ -28,7 +28,7 @@ from app.data.pipeline.features import (
     build_inference_windows,
     build_sliding_windows,
 )
-from app.ml.calibration import ProbabilityCalibrator, risk_band
+from app.ml.calibration import ProbabilityCalibrator, _VERY_HIGH_THRESHOLD as _CAL_VERY_HIGH, risk_band
 from app.ml.datasets import SequenceDataset
 from app.ml.evaluation import classification_metrics, regression_metrics
 from app.ml.models import (
@@ -1937,7 +1937,7 @@ def train_curated_and_export(
     # Historical note: a hard np.clip to 0.69 was used while the CDIP feed was
     # broken (wave_height_m = all-null → calibrator mass at p=1.00).  Removed
     # 2026-04-25 once CDIP enrichment confirmed healthy (0 % Very High).
-    _VERY_HIGH_THRESHOLD = 0.70  # must match risk_band() definition
+    _VERY_HIGH_THRESHOLD = _CAL_VERY_HIGH
     _DEGENERATE_VERY_HIGH_FRACTION = 0.30  # >30% Very High implies a broken calibrator
     if len(probabilities) > 0:
         very_high_fraction = float((probabilities >= _VERY_HIGH_THRESHOLD).mean())
