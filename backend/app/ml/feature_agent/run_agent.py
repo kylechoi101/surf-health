@@ -58,9 +58,6 @@ _LOGS_DIR = Path(__file__).parent / "agent_logs"
 _KB_FILE = _LOGS_DIR / "knowledge_base.md"
 _AGENT_FEATURES_FILE = Path(__file__).parent / "agent_features.py"
 
-_BASELINE_AUCPR: float = 0.327   # hist_gbm_valid post-b7c8254 — update if retrained
-_BASELINE_BRIER: float = 0.097
-
 _SCHEMA_BLOCK = """
 BEACH DATA SCHEMA
 beach_day_df columns (one row per actual beach sample):

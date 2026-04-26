@@ -136,6 +136,22 @@ class _BeachLeakageChecker(ast.NodeVisitor):
         )
         self.generic_visit(node)
 
+    def visit_Assign(self, node: ast.Assign) -> None:  # noqa: N802
+        # Catch in-place column writes: beach_day_df['col'] = ...
+        # These mutate the caller's frame across iterations — a hidden side-effect.
+        for target in node.targets:
+            if (
+                isinstance(target, ast.Subscript)
+                and isinstance(target.value, ast.Name)
+                and target.value.id == "beach_day_df"
+            ):
+                self.errors.append(
+                    "Direct column assignment on beach_day_df (e.g. beach_day_df['col'] = ...) "
+                    "mutates the caller's frame across agent iterations. "
+                    "Work on a copy: df = beach_day_df[cols].copy()"
+                )
+        self.generic_visit(node)
+
 
 def validate(code: str) -> tuple[bool, str]:
     """
