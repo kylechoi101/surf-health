@@ -9,6 +9,8 @@ jobs:
   refresh:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
       - uses: actions/checkout@v4
@@ -61,7 +63,7 @@ jobs:
       - name: Run ML training + forecasts
         run: |
           FORECAST_DATE=$(TZ=America/Los_Angeles date +%Y-%m-%d)
-          python -m app.ml.training --curated --forecast-date "$FORECAST_DATE"
+          python -m app.ml.training --curated --forecast-date "$FORECAST_DATE" --winner-only
         working-directory: backend
 
       - name: Audit forecasts vs advisories
