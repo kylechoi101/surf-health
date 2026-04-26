@@ -1374,6 +1374,48 @@ def _forecast_model_version(model_name: str, scope: str = "global") -> str:
     return _registry_model_version(model_name)
 
 
+def _inject_agent_features(
+    features: pd.DataFrame,
+    meta: pd.DataFrame,
+    source_df: pd.DataFrame,
+    advisories: pd.DataFrame,
+    stations: pd.DataFrame,
+) -> pd.DataFrame:
+    """Run all accepted agent-discovered feature builders and join their output
+    into the feature matrix.  Silently skips any builder that fails so a buggy
+    persisted feature can't break the whole training run.
+
+    ``meta`` must be aligned (by integer position) with ``features`` and contain
+    'beach_id' and 'sample_date' columns.
+    """
+    try:
+        from app.ml.feature_agent.agent_features import AGENT_BUILDERS
+    except ImportError:
+        return features
+
+    if not AGENT_BUILDERS:
+        return features
+
+    result = features.copy()
+    for builder in AGENT_BUILDERS:
+        try:
+            agent_df = builder(beach_day_df=source_df, advisories_df=advisories, stations_df=stations)
+            new_cols = [c for c in agent_df.columns if c not in ("beach_id", "sample_date")]
+            if not new_cols:
+                continue
+            feat_col = new_cols[0]
+            merged = meta[["beach_id", "sample_date"]].merge(
+                agent_df[["beach_id", "sample_date", feat_col]],
+                on=["beach_id", "sample_date"],
+                how="left",
+            )
+            result[feat_col] = merged[feat_col].fillna(0.0).to_numpy()
+        except Exception as exc:
+            import sys
+            print(f"[agent] {getattr(builder, '__name__', repr(builder))} failed: {exc}", file=sys.stderr)
+    return result
+
+
 def _refresh_candidate_advisory_features(
     candidates: pd.DataFrame,
     advisories: pd.DataFrame,
@@ -1662,6 +1704,7 @@ def train_curated_and_export(
     advisories = pd.read_parquet(advisories_path) if advisories_path.exists() else pd.DataFrame()
     dataset = build_sliding_windows(frame)
     features = dataset.feature_frame.select_dtypes(include=["number"]).fillna(0.0)
+    features = _inject_agent_features(features, dataset.metadata, full_frame, advisories, stations)
     labels = dataset.targets_exceed
     densities = dataset.targets_log_density
     metadata = _metadata_with_groups(dataset.metadata, frame)
@@ -1867,6 +1910,9 @@ def train_curated_and_export(
     forecast_metadata = baseline_inference.metadata if baseline_inference is not None else pd.DataFrame()
     forecast_feature_frame = baseline_feature_frame
     baseline_forecast_features = baseline_forecast_features.reindex(columns=features.columns, fill_value=0.0)
+    baseline_forecast_features = _inject_agent_features(
+        baseline_forecast_features, forecast_metadata, inference_input, advisories, stations
+    )
     forecast_group_metadata = forecast_metadata.merge(
         stations.reindex(
             columns=[
