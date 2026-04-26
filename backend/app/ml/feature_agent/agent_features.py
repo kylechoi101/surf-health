@@ -84,3 +84,53 @@ def build_novel_feature_1(beach_day_df, advisories_df, stations_df, **kwargs):
     # Return only the required columns
     return final_df[['beach_id', 'sample_date', 'regional_active_advisory_ratio']]
 AGENT_BUILDERS.append(build_novel_feature_1)
+
+
+import pandas as pd
+import numpy as np
+
+def build_novel_feature_2(beach_day_df, advisories_df, stations_df, **kwargs):
+    """
+    Engineers the 'freshwater_plume_intensity' feature.
+    
+    Hypothesis: A simultaneous drop in salinity and spike in streamflow indicates 
+    a concentrated freshwater plume reaching the beach, transporting land-based enterococcus.
+    """
+    # 1. Prepare a working copy with only necessary columns and sort for time-based rolling
+    df = beach_day_df[['beach_id', 'sample_date', 'salinity_psu', 'streamflow_cfs_latest']].copy()
+    df = df.sort_values(['beach_id', 'sample_date'])
+
+    # 2. Set sample_date as index to enable time-based rolling windows ('30D')
+    df = df.set_index('sample_date')
+
+    # 3. Calculate 30-day rolling means for salinity and streamflow
+    # closed='left' ensures the current sample is not included in its own window
+    rolling_stats = (
+        df.groupby('beach_id')[['salinity_psu', 'streamflow_cfs_latest']]
+        .rolling('30D', closed='left')
+        .mean()
+        .reset_index()
+    )
+
+    # 4. Rename rolling columns to avoid collisions during merge
+    rolling_stats = rolling_stats.rename(columns={
+        'salinity_psu': 'salinity_rolling_mean',
+        'streamflow_cfs_latest': 'streamflow_rolling_mean'
+    })
+
+    # 5. Merge rolling statistics back to the main dataframe
+    df = df.reset_index()
+    df = df.merge(rolling_stats, on=['beach_id', 'sample_date'], how='left')
+
+    # 6. Calculate Salinity Deficit: positive when current salinity is lower than the rolling mean
+    salinity_deficit = df['salinity_rolling_mean'] - df['salinity_psu']
+
+    # 7. Calculate Streamflow Surplus: positive when current streamflow is higher than the rolling mean
+    streamflow_surplus = df['streamflow_cfs_latest'] - df['streamflow_rolling_mean']
+
+    # 8. Calculate Feature: product of deficit and surplus, clipped at 0 to isolate co-occurrence
+    df['freshwater_plume_intensity'] = (salinity_deficit * streamflow_surplus).clip(lower=0)
+
+    # 9. Return only the required columns, ensuring sample_date remains datetime
+    return df[['beach_id', 'sample_date', 'freshwater_plume_intensity']]
+AGENT_BUILDERS.append(build_novel_feature_2)
