@@ -159,7 +159,7 @@ def aggregate_cdip_daily(frame: pd.DataFrame) -> pd.DataFrame:
     if frame.empty:
         return pd.DataFrame()
     enriched = frame.copy()
-    enriched["sample_date"] = pd.to_datetime(enriched["time"]).dt.date
+    enriched["sample_date"] = pd.to_datetime(enriched["time"]).dt.tz_convert(None).dt.normalize()
     grouped = (
         enriched.groupby(["cdip_station_id", "sample_date"], as_index=False)
         .agg(
@@ -340,7 +340,7 @@ async def fetch_erddap_daily_covariates(
     )
     frame["sea_water_temperature"] = pd.to_numeric(frame["sea_water_temperature"], errors="coerce")
     per_time = frame.sort_values(["time", "z"], ascending=[True, False]).groupby("time", as_index=False).first()
-    per_time["sample_date"] = per_time["time"].dt.date
+    per_time["sample_date"] = per_time["time"].dt.tz_convert(None).dt.normalize()
     daily = (
         per_time.groupby("sample_date", as_index=False)
         .agg(

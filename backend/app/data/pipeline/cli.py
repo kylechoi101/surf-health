@@ -426,6 +426,8 @@ def main() -> None:
             # --- Join hydrology onto beach-day ---
             beach_hydro = build_beach_hydrology_daily(hydrologic_links, streamflow_daily, precip_daily)
             if not beach_hydro.empty:
+                beach_hydro["sample_date"] = pd.to_datetime(beach_hydro["sample_date"])
+                bundle["beach_day"]["sample_date"] = pd.to_datetime(bundle["beach_day"]["sample_date"])
                 bundle["beach_day"] = bundle["beach_day"].merge(
                     beach_hydro, on=["beach_id", "sample_date"], how="left"
                 )
