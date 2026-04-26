@@ -1890,6 +1890,23 @@ def _export_forecasts(
                 "uv_alert": uv_alert,
             })
     pd.DataFrame(forecasts).to_parquet(curated_dir / "forecasts.parquet", index=False)
+
+    # Write latest_env.parquet — tiny lookup for the API server so it never has to
+    # load the full 446 MB beach_day.parquet at runtime (Render free-tier OOM fix).
+    _ENV_COLS = ["wave_height_m", "dominant_period_s", "water_temperature_c",
+                 "salinity_psu", "uv_index", "wind_speed_mps", "wind_direction_deg"]
+    _env_present = [c for c in _ENV_COLS if c in full_frame.columns]
+    _latest_env = (
+        full_frame[["beach_id", "sample_date"] + _env_present]
+        .sort_values("sample_date")
+        .groupby("beach_id", as_index=False)
+        .last()
+    )
+    for _col in _ENV_COLS:
+        if _col not in _latest_env.columns:
+            _latest_env[_col] = float("nan")
+    _latest_env[["beach_id"] + _ENV_COLS].to_parquet(curated_dir / "latest_env.parquet", index=False)
+
     health_path = curated_dir / "system_health.json"
     health_payload = json.loads(health_path.read_text()) if health_path.exists() else {}
     promotion = _promotion_assessment(metrics, winner)

@@ -9,6 +9,7 @@ from math import log10
 from pathlib import Path
 
 import pandas as pd
+import pyarrow.parquet as pq
 from fastapi import HTTPException
 
 from app.ml.calibration import risk_band
@@ -58,18 +59,28 @@ class CuratedBeachRepository(BeachRepository):
         return pd.read_parquet(self.curated_dir / "beaches.parquet")
 
     @cached_property
-    def observations_frame(self) -> pd.DataFrame:
-        return pd.read_parquet(self.curated_dir / "observations.parquet")
-
-    @cached_property
     def advisories_frame(self) -> pd.DataFrame:
         path = self.curated_dir / "advisories.parquet"
         return pd.read_parquet(path) if path.exists() else pd.DataFrame()
 
     @cached_property
-    def beach_day_frame(self) -> pd.DataFrame:
-        path = self.curated_dir / "beach_day.parquet"
+    def latest_env_frame(self) -> pd.DataFrame:
+        # One row per beach — written by training._export_forecasts (tiny, ~50 KB).
+        # Replaces the old beach_day_frame cached_property on the API path.
+        path = self.curated_dir / "latest_env.parquet"
         return pd.read_parquet(path) if path.exists() else pd.DataFrame()
+
+    def _obs_for_beach(self, beach_id: str) -> pd.DataFrame:
+        path = self.curated_dir / "observations.parquet"
+        if not path.exists():
+            return pd.DataFrame()
+        return pq.read_table(path, filters=[("beach_id", "==", beach_id)]).to_pandas()
+
+    def _beach_day_for_beach(self, beach_id: str) -> pd.DataFrame:
+        path = self.curated_dir / "beach_day.parquet"
+        if not path.exists():
+            return pd.DataFrame()
+        return pq.read_table(path, filters=[("beach_id", "==", beach_id)]).to_pandas()
 
     @cached_property
     def forecasts_frame(self) -> pd.DataFrame:
@@ -218,12 +229,12 @@ class CuratedBeachRepository(BeachRepository):
         return ForecastRecord.model_validate(row)
 
     def _latest_beach_day_env(self, beach_id: str) -> dict[str, float | None]:
-        if self.beach_day_frame.empty:
+        if self.latest_env_frame.empty:
             return {}
-        rows = self.beach_day_frame.loc[self.beach_day_frame["beach_id"] == beach_id]
+        rows = self.latest_env_frame.loc[self.latest_env_frame["beach_id"] == beach_id]
         if rows.empty:
             return {}
-        latest = rows.sort_values("sample_date", ascending=False).iloc[0]
+        latest = rows.iloc[0]
         return {
             key: _safe_float(latest.get(key))
             for key in (
@@ -238,7 +249,7 @@ class CuratedBeachRepository(BeachRepository):
         }
 
     def _derived_forecast(self, beach_id: str, forecast_date: date) -> ForecastRecord:
-        beach_obs = self.observations_frame.loc[self.observations_frame["beach_id"] == beach_id].copy()
+        beach_obs = self._obs_for_beach(beach_id)
         if beach_obs.empty:
             raise HTTPException(status_code=404, detail="Forecast data not available")
         beach_obs["sample_time"] = pd.to_datetime(beach_obs["sample_time"], errors="coerce")
@@ -252,10 +263,12 @@ class CuratedBeachRepository(BeachRepository):
             if latest_value > self.stv_threshold
             else "Latest official sample remains below the marine threshold"
         ]
-        if latest.get("weather"):
-            drivers.append(f"Field notes recorded weather as {latest['weather']}")
-        if latest.get("storm_drain_flow"):
-            drivers.append(f"Storm drain flow noted as {latest['storm_drain_flow']}")
+        weather = latest.get("weather")
+        if weather and str(weather).lower() not in ("nan", "none", ""):
+            drivers.append(f"Field notes recorded weather as {weather}")
+        storm = latest.get("storm_drain_flow")
+        if storm and str(storm).lower() not in ("nan", "none", ""):
+            drivers.append(f"Storm drain flow noted as {storm}")
 
         return ForecastRecord(
             beach_id=beach_id,
@@ -273,7 +286,7 @@ class CuratedBeachRepository(BeachRepository):
         )
 
     def get_observations(self, beach_id: str) -> ObservationResponse:
-        beach_obs = self.observations_frame.loc[self.observations_frame["beach_id"] == beach_id]
+        beach_obs = self._obs_for_beach(beach_id)
         if beach_obs.empty:
             raise HTTPException(status_code=404, detail="Observation history not available")
 
@@ -306,7 +319,7 @@ class CuratedBeachRepository(BeachRepository):
             )
 
         recent_environment = []
-        beach_day = self.beach_day_frame.loc[self.beach_day_frame["beach_id"] == beach_id]
+        beach_day = self._beach_day_for_beach(beach_id)
         if not beach_day.empty:
             for _, row in beach_day.sort_values("sample_date", ascending=False).head(10).iterrows():
                 recent_environment.append(

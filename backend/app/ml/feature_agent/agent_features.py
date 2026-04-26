@@ -134,3 +134,27 @@ def build_novel_feature_2(beach_day_df, advisories_df, stations_df, **kwargs):
     # 9. Return only the required columns, ensuring sample_date remains datetime
     return df[['beach_id', 'sample_date', 'freshwater_plume_intensity']]
 AGENT_BUILDERS.append(build_novel_feature_2)
+
+
+import pandas as pd
+import numpy as np
+
+def build_novel_feature_54(beach_day_df, advisories_df, stations_df, **kwargs):
+    df = beach_day_df[['beach_id', 'sample_date', 'streamflow_cfs_latest']].copy()
+    df = df.sort_values(['beach_id', 'sample_date'])
+    rolling_mean = (
+        df.groupby('beach_id')['streamflow_cfs_latest']
+        .rolling(window=7, min_periods=1, closed='left')
+        .mean()
+        .reset_index(level=0, drop=True)
+    )
+    ratio = df['streamflow_cfs_latest'] / (rolling_mean + 1e-9)
+    ratio = np.clip(ratio, 0, 10)
+    df['streamflow_spike_ratio_7d'] = (
+        df.assign(_ratio=ratio)
+        .groupby('beach_id')['_ratio']
+        .shift(1)
+        .values
+    )
+    return df[['beach_id', 'sample_date', 'streamflow_spike_ratio_7d']]
+AGENT_BUILDERS.append(build_novel_feature_54)
