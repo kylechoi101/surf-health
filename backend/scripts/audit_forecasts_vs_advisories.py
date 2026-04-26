@@ -22,8 +22,11 @@ from pathlib import Path
 
 import pandas as pd
 
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from app.ml.calibration import _HIGH_THRESHOLD
 
-_RISK_ALERT_THRESHOLD = 0.45  # High boundary: advisory beach should be flagged High+
+_RISK_ALERT_THRESHOLD = _HIGH_THRESHOLD  # synced with calibration.py risk_band()
 
 
 def _load(curated_dir: Path, name: str) -> pd.DataFrame:
