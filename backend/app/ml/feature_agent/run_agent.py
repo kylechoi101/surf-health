@@ -609,10 +609,10 @@ def _cv_metrics(features_df: pd.DataFrame, feat_col: str) -> tuple[float, float,
     gkf = GroupKFold(n_splits=_CV_FOLDS)
     splits = list(gkf.split(X, y, groups=groups))
 
-    aucprs: list[float] = []
-    briers: list[float] = []
-    oof_y: list[np.ndarray] = []   # one entry per valid fold (seed-averaged probs)
-    oof_p: list[np.ndarray] = []
+    fold_aucprs: list[float] = []      # one per (fold, seed-averaged) — matches mean stat
+    fold_briers: list[float] = []
+    oof_y: list[np.ndarray] = []        # one entry per valid fold
+    oof_p: list[np.ndarray] = []        # seed-averaged probs
 
     for train_idx, val_idx in splits:
         if y[val_idx].sum() == 0:
@@ -627,29 +627,34 @@ def _cv_metrics(features_df: pd.DataFrame, feat_col: str) -> tuple[float, float,
                 random_state=seed,
             )
             clf.fit(X[train_idx], y[train_idx])
-            p = clf.predict_proba(X[val_idx])[:, 1]
-            seed_probs.append(p)
-            aucprs.append(float(average_precision_score(y[val_idx], p)))
-            briers.append(float(brier_score_loss(y[val_idx], p)))
-        # Average across seeds so each sample appears once in the OOF pool
+            seed_probs.append(clf.predict_proba(X[val_idx])[:, 1])
+        avg_p = np.mean(seed_probs, axis=0)
+        fold_aucprs.append(float(average_precision_score(y[val_idx], avg_p)))
+        fold_briers.append(float(brier_score_loss(y[val_idx], avg_p)))
         oof_y.append(y[val_idx])
-        oof_p.append(np.mean(seed_probs, axis=0))
+        oof_p.append(avg_p)
 
-    if not aucprs:
+    if not fold_aucprs:
         return 0.0, 1.0, 0.0
 
-    # Bootstrap CI (1000 resamples of seed-averaged OOF predictions)
-    all_y = np.concatenate(oof_y)
-    all_p = np.concatenate(oof_p)
-    rng = np.random.default_rng(42)
-    boot_aucprs: list[float] = []
-    for _ in range(1000):
-        idx = rng.integers(0, len(all_y), len(all_y))
-        if all_y[idx].sum() > 0:
-            boot_aucprs.append(float(average_precision_score(all_y[idx], all_p[idx])))
-    ci_lower = float(np.percentile(boot_aucprs, 10)) if boot_aucprs else 0.0
+    mean_aucpr = float(np.mean(fold_aucprs))
+    mean_brier = float(np.mean(fold_briers))
 
-    return float(np.mean(aucprs)), float(np.mean(briers)), ci_lower
+    # Block bootstrap: resample within each fold, take per-fold AUCPR, average across folds.
+    # Matches the point statistic (mean-of-fold AUCPR) so CI is comparable to baseline.
+    rng = np.random.default_rng(42)
+    boot_means: list[float] = []
+    for _ in range(1000):
+        per_fold = []
+        for y_fold, p_fold in zip(oof_y, oof_p):
+            idx = rng.integers(0, len(y_fold), len(y_fold))
+            if y_fold[idx].sum() > 0:
+                per_fold.append(float(average_precision_score(y_fold[idx], p_fold[idx])))
+        if len(per_fold) == len(oof_y):
+            boot_means.append(float(np.mean(per_fold)))
+    ci_lower = float(np.percentile(boot_means, 10)) if boot_means else 0.0
+
+    return mean_aucpr, mean_brier, ci_lower
 
 
 # ── persist ────────────────────────────────────────────────────────────────────
