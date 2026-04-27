@@ -29,6 +29,12 @@ export function CaliforniaShelfMap({ beaches }: { beaches: BeachSummary[] }) {
 
   const active = plotted.find((beach) => beach.id === hovered) ?? plotted[0];
 
+  if (plotted.length === 0) return (
+    <div className="map-shell" style={{ minHeight: 200, display: "flex", alignItems: "center", justifyContent: "center", color: "#94a3b8" }}>
+      Loading map…
+    </div>
+  );
+
   return (
     <div className="map-shell">
       <div className="map-header">
@@ -70,16 +76,18 @@ export function CaliforniaShelfMap({ beaches }: { beaches: BeachSummary[] }) {
             </g>
           ))}
         </svg>
-        <div className="map-callout">
-          <p className="map-region">{active.region}</p>
-          <h4>{active.name}</h4>
-          <p>
-            {active.county} County • {active.support_status}
-          </p>
-          <Link href={`/beaches/${active.id}`} className="pill-link">
-            Open forecast
-          </Link>
-        </div>
+        {active && (
+          <div className="map-callout">
+            <p className="map-region">{active.region}</p>
+            <h4>{active.name}</h4>
+            <p>
+              {active.county} County • {active.support_status}
+            </p>
+            <Link href={`/b/?id=${active.id}`} className="pill-link">
+              Open forecast
+            </Link>
+          </div>
+        )}
       </div>
     </div>
   );

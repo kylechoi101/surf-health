@@ -1,9 +1,10 @@
-import { getBeaches } from "@/lib/api";
+"use client";
+import { useEffect, useState } from "react";
+import { getBeaches, type BeachSummary } from "@/lib/api";
 import SearchScreen from "./SearchScreen";
 
-export const revalidate = 300;
-
-export default async function SearchPage() {
-  const beaches = await getBeaches();
+export default function SearchPage() {
+  const [beaches, setBeaches] = useState<BeachSummary[]>([]);
+  useEffect(() => { getBeaches().then(setBeaches); }, []);
   return <SearchScreen beaches={beaches} />;
 }

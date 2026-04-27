@@ -1,18 +1,33 @@
+"use client";
+import { useEffect, useState } from "react";
 import { RiskBadge } from "@/components/RiskBadge";
-import { getBeaches, getForecast, getSystemHealth, preferredForecastDate } from "@/lib/api";
+import { getBeaches, getForecast, getSystemHealth, preferredForecastDate, type BeachSummary, type ForecastRecord, type HealthResponse } from "@/lib/api";
 
-export default async function ResearchPage() {
-  const forecastDate = preferredForecastDate();
-  const [health, beaches] = await Promise.all([getSystemHealth(), getBeaches()]);
-  const forecasts = await Promise.all(
-    beaches.map(async (beach) => ({
-      beach,
-      forecast: await getForecast(beach.id, forecastDate)
-    }))
-  );
+export default function ResearchPage() {
+  const [health, setHealth] = useState<HealthResponse | null>(null);
+  const [beaches, setBeaches] = useState<BeachSummary[]>([]);
+  const [forecasts, setForecasts] = useState<{ beach: BeachSummary; forecast: ForecastRecord | null }[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const productionCount = beaches.filter((beach) => beach.support_status === "production").length;
-  const betaCount = beaches.filter((beach) => beach.support_status === "beta").length;
+  useEffect(() => {
+    const date = preferredForecastDate();
+    Promise.all([getSystemHealth(), getBeaches()]).then(async ([h, bs]) => {
+      setHealth(h);
+      setBeaches(bs);
+      const fc = await Promise.all(
+        bs.map(async (b) => ({
+          beach: b,
+          forecast: await getForecast(b.id, date).catch(() => null),
+        }))
+      );
+      setForecasts(fc);
+    }).finally(() => setLoading(false));
+  }, []);
+
+  if (loading || !health) return <main className="page-shell"><p style={{ padding: 40, color: "#64748b" }}>Loading…</p></main>;
+
+  const productionCount = beaches.filter((b) => b.support_status === "production").length;
+  const betaCount = beaches.filter((b) => b.support_status === "beta").length;
   const productionMetrics = health.model_registry.production_metrics ?? {};
   const validationMetrics = health.model_registry.validation_metrics ?? {};
   const spatialMetrics = health.model_registry.spatial_metrics ?? {};
@@ -39,22 +54,20 @@ export default async function ResearchPage() {
         </div>
         <div className="value-grid">
           <article>
-            <h3>Current export model</h3>
+            <h3>Current model</h3>
             <p>{health.model_registry.production_model}</p>
           </article>
           <article>
             <h3>Test AUCPR</h3>
-            <p>{productionMetrics.aucpr ?? "n/a"}</p>
+            <p>{typeof productionMetrics.aucpr === "number" ? productionMetrics.aucpr.toFixed(4) : "n/a"}</p>
           </article>
           <article>
             <h3>Test Brier</h3>
-            <p>{productionMetrics.brier ?? "n/a"}</p>
+            <p>{typeof productionMetrics.brier === "number" ? productionMetrics.brier.toFixed(4) : "n/a"}</p>
           </article>
           <article>
             <h3>Coverage mix</h3>
-            <p>
-              {productionCount} production / {betaCount} beta
-            </p>
+            <p>{productionCount} production / {betaCount} beta</p>
           </article>
           <article>
             <h3>Public release</h3>
@@ -74,17 +87,11 @@ export default async function ResearchPage() {
           <div className="table-shell">
             <table>
               <thead>
-                <tr>
-                  <th>Source</th>
-                  <th>Freshness</th>
-                </tr>
+                <tr><th>Source</th><th>Freshness</th></tr>
               </thead>
               <tbody>
                 {Object.entries(health.source_freshness).map(([source, freshness]) => (
-                  <tr key={source}>
-                    <td>{source}</td>
-                    <td>{freshness}</td>
-                  </tr>
+                  <tr key={source}><td>{source}</td><td>{freshness}</td></tr>
                 ))}
               </tbody>
             </table>
@@ -98,16 +105,14 @@ export default async function ResearchPage() {
             </div>
           </div>
           <div className="spotlight-grid">
-            {forecasts.map(({ beach, forecast }) => (
+            {forecasts.filter(({ forecast }) => forecast).map(({ beach, forecast }) => (
               <article key={beach.id} className="spotlight-card">
                 <div className="card-topline">
                   <span>{beach.name}</span>
-                  <RiskBadge band={forecast.risk_band} ageHours={forecast.forecast_age_hours} />
+                  <RiskBadge band={forecast!.risk_band} ageHours={forecast!.forecast_age_hours} />
                 </div>
-                <p className="muted">
-                  {beach.support_status} • {beach.region}
-                </p>
-                <p>{forecast.model_version}</p>
+                <p className="muted">{beach.support_status} · {beach.region}</p>
+                <p>{forecast!.model_version}</p>
               </article>
             ))}
           </div>
@@ -128,49 +133,33 @@ export default async function ResearchPage() {
           </article>
           <article>
             <h3>Valid AUCPR</h3>
-            <p>{validationMetrics.aucpr ?? "n/a"}</p>
+            <p>{typeof validationMetrics.aucpr === "number" ? validationMetrics.aucpr.toFixed(4) : "n/a"}</p>
           </article>
           <article>
             <h3>Valid Brier</h3>
-            <p>{validationMetrics.brier ?? "n/a"}</p>
+            <p>{typeof validationMetrics.brier === "number" ? validationMetrics.brier.toFixed(4) : "n/a"}</p>
           </article>
           <article>
             <h3>Neural track</h3>
             <p>{health.model_registry.promotion_policy?.neural_model_status ?? "n/a"}</p>
           </article>
         </div>
-        {health.model_registry.promotion_blockers?.length ? (
+        {(health.model_registry.promotion_blockers?.length ?? 0) > 0 && (
           <ul className="driver-list">
-            {health.model_registry.promotion_blockers.map((blocker) => (
-              <li key={blocker}>{blocker}</li>
-            ))}
+            {health.model_registry.promotion_blockers!.map((b) => <li key={b}>{b}</li>)}
           </ul>
-        ) : null}
-        {Object.keys(spatialMetrics).length > 0 ? (
+        )}
+        {Object.keys(spatialMetrics).length > 0 && (
           <div className="table-shell">
             <table>
-              <thead>
-                <tr>
-                  <th>Spatial holdout</th>
-                  <th>AUCPR</th>
-                  <th>Brier</th>
-                </tr>
-              </thead>
+              <thead><tr><th>Spatial holdout</th><th>AUCPR</th><th>Brier</th></tr></thead>
               <tbody>
-                {Object.entries(spatialMetrics).map(([name, metrics]) => (
-                  <tr key={name}>
-                    <td>{name}</td>
-                    <td>{metrics.aucpr ?? "n/a"}</td>
-                    <td>{metrics.brier ?? "n/a"}</td>
-                  </tr>
+                {Object.entries(spatialMetrics).map(([name, m]) => (
+                  <tr key={name}><td>{name}</td><td>{m.aucpr ?? "n/a"}</td><td>{m.brier ?? "n/a"}</td></tr>
                 ))}
               </tbody>
             </table>
           </div>
-        ) : (
-          <p className="muted">
-            Spatial holdout metrics are only shown after an explicit spatial backtest run.
-          </p>
         )}
       </section>
     </main>

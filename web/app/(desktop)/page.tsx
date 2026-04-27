@@ -1,27 +1,37 @@
+"use client";
+import { useEffect, useState } from "react";
 import { BeachExplorer } from "@/components/BeachExplorer";
 import { CaliforniaShelfMap } from "@/components/CaliforniaShelfMap";
 import { RiskBadge } from "@/components/RiskBadge";
-import { getBeaches, getForecast, preferredForecastDate } from "@/lib/api";
+import { getBeaches, getForecast, preferredForecastDate, type BeachSummary, type ForecastRecord } from "@/lib/api";
 
-export default async function HomePage() {
-  const forecastDate = preferredForecastDate();
-  const beaches = await getBeaches();
-  const forecasts = await Promise.all(
-    beaches.map(async (beach) => {
-      try {
-        const forecast = await getForecast(beach.id, forecastDate);
-        return [beach.id, forecast] as const;
-      } catch {
-        return [beach.id, null] as const;
-      }
-    })
-  );
+export default function HomePage() {
+  const [beaches, setBeaches] = useState<BeachSummary[]>([]);
+  const [forecastMap, setForecastMap] = useState<Record<string, ForecastRecord | null>>({});
+  const [loading, setLoading] = useState(true);
 
-  const forecastMap = Object.fromEntries(forecasts);
+  useEffect(() => {
+    const date = preferredForecastDate();
+    getBeaches().then(async (bs) => {
+      setBeaches(bs);
+      const pairs = await Promise.all(
+        bs.map(async (b) => {
+          try {
+            const f = await getForecast(b.id, date);
+            return [b.id, f] as const;
+          } catch {
+            return [b.id, null] as const;
+          }
+        })
+      );
+      setForecastMap(Object.fromEntries(pairs));
+    }).finally(() => setLoading(false));
+  }, []);
+
   const riskLookup = Object.fromEntries(
-    forecasts
-      .filter((entry): entry is readonly [string, NonNullable<(typeof entry)[1]>] => entry[1] !== null)
-      .map(([beachId, forecast]) => [beachId, forecast.risk_band])
+    Object.entries(forecastMap)
+      .filter(([, f]) => f !== null)
+      .map(([id, f]) => [id, f!.risk_band])
   );
 
   return (
@@ -29,15 +39,15 @@ export default async function HomePage() {
       <section className="hero">
         <div className="hero-copy">
           <p className="eyebrow">Live Daily Forecasts</p>
-          <h1>Don&apos;t judge a session by swell alone.</h1>
+          <h1>Know before you paddle out.</h1>
           <p className="hero-lede">
-            Surf Health turns sparse official bacteria samples plus ocean and weather context into a
+            Shorelife turns sparse official bacteria samples plus ocean and weather context into a
             daily health-risk forecast for California marine beaches.
           </p>
           <div className="hero-stats">
             <div>
-              <span className="metric">{beaches.length}</span>
-              <span className="metric-label">fixture-backed stations live in the starter build</span>
+              <span className="metric">{beaches.length || "—"}</span>
+              <span className="metric-label">monitored beach stations in California</span>
             </div>
             <div>
               <span className="metric">5:00 AM PT</span>
@@ -45,7 +55,7 @@ export default async function HomePage() {
             </div>
             <div>
               <RiskBadge band="High" />
-              <span className="metric-label">bands calibrated for public-facing alerts</span>
+              <span className="metric-label">four risk bands calibrated for public alerts</span>
             </div>
           </div>
         </div>
@@ -78,8 +88,7 @@ export default async function HomePage() {
             <h3>For researchers</h3>
             <p>
               Compare official enterococcus labels against nearshore covariates, blocked backtests,
-              and calibrated exceedance forecasts from strong baselines plus an experimental neural
-              track.
+              and calibrated exceedance forecasts from strong baselines.
             </p>
           </article>
         </div>
@@ -87,43 +96,41 @@ export default async function HomePage() {
 
       <BeachExplorer beaches={beaches} risks={riskLookup} />
 
-      <section className="panel spotlight-panel">
-        <div className="panel-heading">
-          <div>
-            <p className="eyebrow">Today&apos;s forecast</p>
-            <h2>What the API is serving right now</h2>
+      {!loading && Object.keys(forecastMap).length > 0 && (
+        <section className="panel spotlight-panel">
+          <div className="panel-heading">
+            <div>
+              <p className="eyebrow">Today&apos;s forecast</p>
+              <h2>What&apos;s in the water right now</h2>
+            </div>
           </div>
-        </div>
-        <div className="spotlight-grid">
-          {beaches.map((beach) => {
-            const forecast = forecastMap[beach.id];
-            if (!forecast) return null;
-            return (
-              <article key={beach.id} className="spotlight-card">
-                <div className="card-topline">
-                  <span>{beach.name}</span>
-                  <RiskBadge band={forecast.risk_band} ageHours={forecast.forecast_age_hours} />
-                </div>
-                <p className="muted">{forecast.top_drivers.join(" • ")}</p>
-                <dl>
-                  <div>
-                    <dt>Chance of exceedance</dt>
-                    <dd>{Math.round(forecast.p_exceed * 100)}%</dd>
+          <div className="spotlight-grid">
+            {beaches.slice(0, 12).map((beach) => {
+              const forecast = forecastMap[beach.id];
+              if (!forecast) return null;
+              return (
+                <article key={beach.id} className="spotlight-card">
+                  <div className="card-topline">
+                    <span>{beach.name}</span>
+                    <RiskBadge band={forecast.risk_band} ageHours={forecast.forecast_age_hours} />
                   </div>
-                  <div>
-                    <dt>Wave height</dt>
-                    <dd>{forecast.environmental_summary.wave_height_m ?? "n/a"} m</dd>
-                  </div>
-                  <div>
-                    <dt>Salinity</dt>
-                    <dd>{forecast.environmental_summary.salinity_psu ?? "n/a"} PSU</dd>
-                  </div>
-                </dl>
-              </article>
-            );
-          })}
-        </div>
-      </section>
+                  <p className="muted">{forecast.top_drivers.slice(0, 2).join(" • ")}</p>
+                  <dl>
+                    <div>
+                      <dt>Exceed chance</dt>
+                      <dd>{Math.round(forecast.p_exceed * 100)}%</dd>
+                    </div>
+                    <div>
+                      <dt>Wave height</dt>
+                      <dd>{forecast.environmental_summary.wave_height_m != null ? `${(forecast.environmental_summary.wave_height_m * 3.28).toFixed(1)} ft` : "n/a"}</dd>
+                    </div>
+                  </dl>
+                </article>
+              );
+            })}
+          </div>
+        </section>
+      )}
     </main>
   );
 }

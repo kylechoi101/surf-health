@@ -1,8 +1,10 @@
-import Link from "next/link";
-import { getBeaches } from "@/lib/api";
+"use client";
+import { useEffect, useState } from "react";
+import { getBeaches, type BeachSummary } from "@/lib/api";
 import LocationScreen from "./LocationScreen";
 
-export default async function MobileHome() {
-  const beaches = await getBeaches();
+export default function MobileHome() {
+  const [beaches, setBeaches] = useState<BeachSummary[]>([]);
+  useEffect(() => { getBeaches().then(setBeaches); }, []);
   return <LocationScreen beaches={beaches} />;
 }

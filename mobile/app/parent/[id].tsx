@@ -6,7 +6,8 @@ import {
   getParentBeaches, getBeaches, getForecast, todayLA,
   type ParentBeachSummary, type BeachSummary, type ForecastRecord,
 } from "../../lib/api";
-import { RISK_COLORS, riskAdvice, daysSince } from "../../lib/utils";
+import { RISK_COLORS, riskAdvice, riskHead, daysSince } from "../../lib/utils";
+import { DropRow, SeverityBar, type RiskBand } from "../../components/RiskSystem";
 
 export default function ParentBeachScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -103,18 +104,23 @@ export default function ParentBeachScreen() {
           <View style={{ padding: 16, paddingBottom: 0 }}>
             <Text style={s.sectionLabel}>Overall forecast</Text>
             <View style={[s.riskBanner, { backgroundColor: colors.bg }]}>
-              <View style={[s.riskIcon, { backgroundColor: colors.hero[0] }]}>
-                <Text style={{ fontSize: 20 }}>💧</Text>
-              </View>
               <View style={{ flex: 1 }}>
-                <Text style={[s.riskBandText, { color: colors.deep }]}>{band}</Text>
-                <Text style={[s.riskAdviceText, { color: colors.deep }]}>{riskAdvice(band)}</Text>
-              </View>
-              <View style={{ alignItems: "flex-end" }}>
-                <Text style={[s.pctBig, { color: colors.deep }]}>
-                  {Math.round(parent.p_exceed * 100)}<Text style={{ fontSize: 14 }}>%</Text>
-                </Text>
-                <Text style={[s.pctSub, { color: colors.deep }]}>exceed chance</Text>
+                <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start" }}>
+                  <View>
+                    <Text style={[s.riskBandText, { color: colors.deep }]}>{riskHead(band)}</Text>
+                    <Text style={[s.riskAdviceText, { color: colors.deep }]}>{riskAdvice(band)}</Text>
+                  </View>
+                  <View style={{ alignItems: "flex-end", gap: 6 }}>
+                    <DropRow band={band as RiskBand} size={14} />
+                    <Text style={[s.pctBig, { color: colors.deep }]}>
+                      {Math.round(parent.p_exceed * 100)}<Text style={{ fontSize: 14 }}>%</Text>
+                    </Text>
+                    <Text style={[s.pctSub, { color: colors.deep }]}>exceed chance</Text>
+                  </View>
+                </View>
+                <View style={{ marginTop: 12 }}>
+                  <SeverityBar band={band as RiskBand} height={6} />
+                </View>
               </View>
             </View>
           </View>

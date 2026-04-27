@@ -5,12 +5,17 @@ export function riskVerdict(band: RiskBand | string): string {
   return m[band] ?? "Unknown.";
 }
 
+export function riskHead(band: RiskBand | string): string {
+  const m: Record<string, string> = { Low: "Clean.", Moderate: "Watch.", High: "Elevated.", "Very High": "Unsafe." };
+  return m[band] ?? "";
+}
+
 export function riskAdvice(band: RiskBand | string): string {
   const m: Record<string, string> = {
-    Low: "Bacteria levels are within safe limits. Enjoy the water.",
-    Moderate: "Elevated risk — swim with caution, especially near storm drains.",
-    High: "High bacteria likely. Consider staying out of the water today.",
-    "Very High": "Active contamination likely. Avoid water contact.",
+    Low: "Swim, surf, dunk under.",
+    Moderate: "Okay — just don't swallow.",
+    High: "Stay out if you're sensitive.",
+    "Very High": "County advisory — stay out.",
   };
   return m[band] ?? "";
 }
