@@ -272,6 +272,13 @@ def main() -> None:
     parser.add_argument("--max-ceden-rows", type=int, default=None)
     parser.add_argument("--with-external-covariates", action="store_true")
     parser.add_argument("--with-hydrology", action="store_true")
+    parser.add_argument(
+        "--with-solar-wind",
+        action="store_true",
+        help="Fetch hourly cloud / shortwave / UV / wind from Open-Meteo and merge "
+             "marine-microbiology features (shore_normal_wind, solar_inactivation_index, "
+             "days_since_sunny, pier/estuary proximity) into beach_day.",
+    )
     parser.add_argument("--usgs-gages-csv", type=Path)
     parser.add_argument("--cnrfc-observed-csv", type=Path)
     parser.add_argument("--cnrfc-qpf-csv", type=Path)
@@ -534,6 +541,116 @@ def main() -> None:
                     beach_hydro, on=["beach_id", "sample_date"], how="left"
                 )
                 print(f"[hydrology] beach_hydrology_daily joined: {len(beach_hydro)} rows")
+
+        if args.with_solar_wind:
+            from datetime import date as _date
+            from app.data.connectors.hydrology_sources import OpenMeteoHistoricalSolarWindConnector
+            from app.data.pipeline.solar_wind import aggregate_solar_wind_windows
+            from app.data.pipeline.marine_microbiology import (
+                compute_beach_shore_azimuth,
+                compute_beach_coastal_features,
+                build_marine_microbiology_daily,
+            )
+
+            _full_start_date = _date(2020, 1, 1)
+            end_date = _date.fromisoformat(args.end_date) if args.end_date else _date.today()
+            stations_df = bundle["stations"].copy()
+
+            # Per-beach static metadata (one-shot, lat/lon-derived)
+            shore_az = compute_beach_shore_azimuth(stations_df)
+            coastal_feat = compute_beach_coastal_features(stations_df)
+            print(f"[solar-wind] shore_azimuth computed for {len(shore_az)} beaches")
+            print(f"[solar-wind] coastal proximity flags: {int(coastal_feat['is_near_pier'].sum())} pier-adjacent, "
+                  f"{int(coastal_feat['is_near_estuary_mouth'].sum())} estuary-mouth-adjacent")
+
+            # Hourly solar/wind backfill, incremental on disk
+            station_locs = list({
+                (round(float(r['latitude']), 1), round(float(r['longitude']), 1))
+                for _, r in stations_df.iterrows()
+                if pd.notna(r.get('latitude')) and pd.notna(r.get('longitude'))
+            })
+            _sw_path = Path(settings.curated_dir) / "solar_wind_daily.parquet"
+            if not args.start_date and _sw_path.exists():
+                _existing_sw = pd.read_parquet(_sw_path)
+                _sw_max = pd.to_datetime(_existing_sw["sample_date"]).max().date() if "sample_date" in _existing_sw.columns else _full_start_date
+                _sw_fetch_start = max(_full_start_date, (pd.Timestamp(_sw_max) - pd.Timedelta(days=7)).date())
+                print(f"[solar-wind] incremental fetch {_sw_fetch_start} → {end_date}")
+            else:
+                _sw_fetch_start = _date.fromisoformat(args.start_date) if args.start_date else _full_start_date
+                print(f"[solar-wind] full fetch {_sw_fetch_start} → {end_date}")
+
+            raw_sw = asyncio.run(
+                OpenMeteoHistoricalSolarWindConnector().fetch_historical_solar_wind(
+                    station_locs,
+                    _sw_fetch_start,
+                    end_date,
+                    cache_dir=settings.precip_cache_dir / "openmeteo_solar_wind",
+                )
+            )
+            new_sw_daily = aggregate_solar_wind_windows(raw_sw)
+            if _sw_path.exists() and not args.start_date:
+                _existing_sw = pd.read_parquet(_sw_path)
+                _sw_key = [c for c in ("station_id", "sample_date") if c in _existing_sw.columns and c in new_sw_daily.columns]
+                if _sw_key and not new_sw_daily.empty:
+                    sw_daily = (
+                        pd.concat([_existing_sw, new_sw_daily], ignore_index=True)
+                        .drop_duplicates(subset=_sw_key, keep="last")
+                        .sort_values(_sw_key)
+                        .reset_index(drop=True)
+                    )
+                else:
+                    sw_daily = _existing_sw if new_sw_daily.empty else new_sw_daily
+            else:
+                sw_daily = new_sw_daily
+            if not sw_daily.empty:
+                sw_daily.to_parquet(_sw_path, index=False)
+                print(f"[solar-wind] solar_wind_daily: {len(sw_daily)} rows")
+
+                # Map each beach to its nearest open-meteo station_id, then join
+                from app.data.pipeline.external_covariates import haversine_km
+                sw_stations = (
+                    sw_daily[["station_id", "latitude", "longitude"]]
+                    .drop_duplicates("station_id")
+                    .dropna()
+                )
+                beach_to_station: dict[str, str] = {}
+                for _, b in stations_df.iterrows():
+                    if pd.isna(b.get("latitude")) or pd.isna(b.get("longitude")):
+                        continue
+                    nearest, min_d = None, float("inf")
+                    for _, s in sw_stations.iterrows():
+                        d = haversine_km(float(b["latitude"]), float(b["longitude"]),
+                                         float(s["latitude"]), float(s["longitude"]))
+                        if d < min_d:
+                            nearest, min_d = str(s["station_id"]), d
+                    if nearest:
+                        beach_to_station[str(b["beach_id"])] = nearest
+
+                sw_daily["sample_date"] = pd.to_datetime(sw_daily["sample_date"])
+                station_to_beaches: dict[str, list[str]] = {}
+                for bid, sid in beach_to_station.items():
+                    station_to_beaches.setdefault(sid, []).append(bid)
+                # Explode station rows per beach
+                exploded: list[pd.DataFrame] = []
+                for sid, bids in station_to_beaches.items():
+                    sub = sw_daily.loc[sw_daily["station_id"] == sid].copy()
+                    if sub.empty:
+                        continue
+                    for bid in bids:
+                        s = sub.copy()
+                        s["beach_id"] = bid
+                        exploded.append(s)
+                beach_sw = pd.concat(exploded, ignore_index=True) if exploded else pd.DataFrame()
+
+                if not beach_sw.empty:
+                    mm_daily = build_marine_microbiology_daily(beach_sw, shore_az)
+                    mm_daily["sample_date"] = pd.to_datetime(mm_daily["sample_date"])
+                    bundle["beach_day"]["sample_date"] = pd.to_datetime(bundle["beach_day"]["sample_date"])
+                    bundle["beach_day"] = bundle["beach_day"].merge(
+                        mm_daily, on=["beach_id", "sample_date"], how="left"
+                    )
+                    bundle["beach_day"] = bundle["beach_day"].merge(coastal_feat, on="beach_id", how="left")
+                    print(f"[solar-wind] marine_microbiology features joined: {len(mm_daily)} rows")
 
         import numpy as np
         if "beach_day" in bundle and not bundle["beach_day"].empty:
