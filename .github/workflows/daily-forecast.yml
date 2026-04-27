@@ -8,7 +8,7 @@ on:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
     permissions:
       contents: write
     env:
@@ -36,7 +36,7 @@ jobs:
             data/raw/usgs_streamflow
             data/raw/cnrfc
             data/raw/ceden_fib_enterococcus_beachwatch_subset_2020-present.csv
-          key: hydro-${{ runner.os }}-v2
+          key: hydro-${{ runner.os }}-v3
           restore-keys: hydro-${{ runner.os }}-
 
       - name: Create data directories
@@ -61,7 +61,8 @@ jobs:
             --merge-ceden \
             --max-ceden-rows 50000 \
             --with-external-covariates \
-            --with-hydrology
+            --with-hydrology \
+            --with-solar-wind
         working-directory: backend
 
       - name: Run ML training + forecasts
