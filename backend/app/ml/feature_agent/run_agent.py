@@ -8,8 +8,9 @@ Architecture:
   AST GATE → validator.py domain checks
   EXEC     → runs function in-memory, checks shape / no-row-explosion
   UNI GATE → univariate AUCPR > _UNIVARIATE_MIN_AUCPR
-  CV GATE  → county-grouped hist_gbm AUCPR > baseline + _MIN_AUCPR_DELTA
-             AND Brier < baseline + _MIN_BRIER_DELTA (strict improvement)
+  CV GATE  → multi-seed county-grouped GroupKFold
+             accept if bootstrap CI₁₀ of AUCPR > current baseline  (play #1+#2)
+             OR  AUCPR doesn't regress AND Brier improves ≥ 0.0003  (play #3)
   PERSIST  → appends winner to agent_features.py
 
 Usage:
@@ -66,11 +67,14 @@ _NIM_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
 _NIM_MODEL = os.environ.get("FEATURE_AGENT_MODEL", "meta/llama-3.3-70b-instruct")
 _NIM_KEYS: list[str] = [k.strip() for k in os.environ.get("NVIDIA_API_KEYS", "").split(",") if k.strip()]
 _nim_key_pool = itertools.cycle(_NIM_KEYS) if _NIM_KEYS else None
+_current_nim_key: str | None = None  # pinned per-iteration; advanced in run_loop
 
 _UNIVARIATE_MIN_AUCPR = 0.15   # must beat this alone at base-rate 0.11
-_MIN_AUCPR_DELTA = 0.001       # CV AUCPR must strictly improve by at least this
-_MIN_BRIER_DELTA = 0.0005      # Brier must not degrade by more than this
+_MIN_BRIER_DELTA = 0.0005      # Brier must not degrade by more than this (AUCPR gate)
+_BRIER_ONLY_MIN_IMPROVEMENT = 0.0003  # Brier must improve by at least this (Brier-only lane)
+_AUCPR_BRIER_ONLY_MAX_REGRESS = 0.001 # AUCPR may slip at most this much in Brier-only lane
 _CV_FOLDS = 3
+_CV_SEEDS = (42, 7, 13)  # multi-seed averaging: reduces HistGBM stochasticity noise
 _MAX_ITER_FILES = 100
 _EXEC_TIMEOUT_S = 45.0
 
@@ -223,7 +227,7 @@ def _call_ollama(prompt: str, temperature: float = 0.7, max_tokens: int | None =
 def _call_nim(prompt: str, temperature: float = 0.7, max_tokens: int | None = None, max_retries: int = 5) -> str:
     if not _nim_key_pool:
         raise RuntimeError("LLM_PROVIDER=nim but NVIDIA_API_KEYS is not set")
-    time.sleep(0.75)  # 80 RPM limit across keys
+    time.sleep(1.0)  # 60 RPM limit per key, distributed across pool
     current_key = next(_nim_key_pool)
     headers = {
         "Authorization": f"Bearer {current_key}",
@@ -303,13 +307,11 @@ def _check_llm() -> None:
 def _ideate(existing_features: str, failed_history: str, kb: str, iteration: int) -> str | None:
     seed_ideas = """
 SEED IDEA BANK (these are GOOD starting directions — explore variations):
-- precip × wave_height interaction: rain + swell together mobilize fecal bacteria
-- days_since_last_rain: first-flush window (highest risk in first 24h after dry spell)
-- CDIP-buoy-relative wave anomaly: current wave vs 30D mean for THAT buoy
-- county-level 7D exceedance rate: peer-beach pollution signal
-- streamflow surge ratio: latest / 30D baseline (flash-flood risk)
-- season × county: LA-county summer heat vs SF-county winter runoff
-- historical_advisory_count_log1p per region: chronic-pollution zones
+- tidal-phase interactions: spring/neap tides vs pollution dispersion
+- peer-beach exceedance: spatial correlation of pollution among nearby beaches
+- lag features: multi-day lagged water quality or weather variables
+- AWI × first-flush: atmospheric water index proxy combined with dry-spell breaking rain
+- rolling variance: instability of wave or temperature metrics as a predictor
 """
     prompt = f"""You are a marine-biology and hydrology expert brainstorming predictive features for a beach water quality model.
 
@@ -327,10 +329,10 @@ PAST FAILED ATTEMPTS THIS SESSION:
 {seed_ideas}
 
 Propose ONE novel numeric feature. Rules:
+- BE CREATIVE and explore genuinely different, orthogonal feature spaces. Don't restrict yourself to simple precip/wave combos.
 - Must be computable from beach_day_df, advisories_df, or stations_df alone
 - Must use per-beach or per-(beach, time-window) aggregations — no global stats
 - Must be computable without leaking future data (no sample at date T can see data after T)
-- No credit-risk concepts; this is ocean/hydrology/microbiology domain
 
 Reply in EXACTLY this format (no Python code):
 FEATURE NAME: [snake_case_name]
@@ -344,9 +346,34 @@ IMPLEMENTATION: [3–5 bullet points describing the pandas operations, referenci
         return None
 
 
+_APPLY_CORRECTION = """
+IMPORTANT — your previous attempt used .apply() or transform(lambda). These are HARD-BLOCKED.
+Rewrite using ONLY these patterns:
+  # Simple arithmetic (no .apply needed):
+  df['ratio'] = df['col_a'] / df['col_b'].replace(0, np.nan)
+  df['diff']  = df['col_a'] - df['col_b']
+  # Rolling per beach (no transform(lambda) needed):
+  df['roll'] = df.groupby('beach_id')['col'].rolling(7, min_periods=1, closed='left').mean().reset_index(level=0, drop=True)
+  # Z-score per beach (no transform(lambda) needed):
+  grp = df.groupby('beach_id')['col']
+  df['z'] = (df['col'] - grp.transform('mean')) / (grp.transform('std') + 1e-9)
+"""
+
 def _code(idea: str, existing_col_names: str, error_feedback: str = "", attempt: int = 0) -> str | None:
-    error_section = f"\nPREVIOUS ATTEMPT FAILED — fix this error:\n{error_feedback[:500]}\n" if error_feedback else ""
+    # Always re-inject the correction block on any retry so the model doesn't regress to .apply/transform(lambda)
+    extra_hint = _APPLY_CORRECTION if error_feedback else ""
+    error_section = (f"\nPREVIOUS ATTEMPT FAILED — fix this error:\n{error_feedback[:500]}\n{extra_hint}" if error_feedback else "")
     prompt = f"""Write a Python function that engineers a novel beach water-quality feature.
+
+⚠️ AUTO-REJECT PATTERNS — the AST validator will immediately reject code containing ANY of these:
+  .apply(...)                                  ← FORBIDDEN
+  .transform(lambda ...)                       ← FORBIDDEN
+
+USE THESE INSTEAD (copy verbatim):
+  df['ratio'] = df['a'] / df['b'].replace(0, np.nan)
+  df['roll']  = df.groupby('beach_id')['col'].rolling(7, min_periods=1, closed='left').mean().reset_index(level=0, drop=True)
+  grp = df.groupby('beach_id')['col']
+  df['z'] = (df['col'] - grp.transform('mean')) / (grp.transform('std') + 1e-9)
 
 SPEC:
 {idea[:800]}
@@ -366,7 +393,15 @@ CRITICAL PANDAS RULES (violations cause runtime failures or cross-beach data lea
      df['col'] = df.groupby('beach_id')['target_col'].shift(1)
      df['col'] = df.groupby('beach_id')['target_col'].rolling(window=7, min_periods=1, closed='left').mean().reset_index(level=0, drop=True)
    NEVER call .rolling() directly on a groupby object without first selecting a column.
-6. Do NOT use .apply() or transform(lambda ...) — use vectorized pandas ops only.
+   ALWAYS groupby('beach_id'). NEVER groupby('county'), groupby('region'), or groupby('cdip_station_id').
+6. NEVER use .apply() or transform(lambda ...) — these will be REJECTED by the AST validator.
+   FORBIDDEN → ALTERNATIVE (copy these patterns exactly):
+   ❌ df.groupby('beach_id')['col'].transform(lambda s: s.rolling(7).mean())
+   ✅ df.groupby('beach_id')['col'].rolling(7, min_periods=1, closed='left').mean().reset_index(level=0, drop=True)
+   ❌ df['x'] = df.apply(lambda r: r['a'] / r['b'] if r['b'] else 0, axis=1)
+   ✅ df['x'] = df['a'] / df['b'].replace(0, np.nan)
+   ❌ df.groupby('beach_id')['col'].transform(lambda s: (s - s.mean()) / (s.std() + 1e-9))
+   ✅ grp = df.groupby('beach_id')['col']; df['x'] = (df['col'] - grp.transform('mean')) / (grp.transform('std') + 1e-9)
 7. No for/while loops. No lambda inside .agg().
 8. Add 1e-9 to denominators. Use np.log1p() not np.log().
 9. sample_date MUST be preserved as datetime in the output.
@@ -411,12 +446,16 @@ def _critic(code: str, error_feedback: str = "") -> tuple[bool, str]:
 CHECKLIST:
 1. Signature exactly `def build_novel_feature(beach_day_df, advisories_df, stations_df, **kwargs):`?
 2. Returns DataFrame with beach_id, sample_date, and exactly ONE new numeric column?
-3. .shift()/.diff() chains off .groupby('beach_id')? (prevents cross-beach leakage)
+3. Any .shift(), .diff(), or .rolling() is chained off .groupby('beach_id') to prevent cross-beach leakage?
+   (e.g., df.groupby('beach_id')['col'].rolling(7).mean().reset_index(level=0, drop=True) is CORRECT)
 4. Any .rolling() uses closed='left'? (prevents current-sample leakage)
 5. No for/while loops or .apply()? (performance)
 6. No lambda inside .agg()? (performance)
 7. Denominators guarded against zero division?
 8. Does NOT output exceeds_stv or enterococcus_value columns?
+
+NOTE: advisories_df and stations_df do NOT need to be used in the function body.
+The function only needs to accept them in the signature. Do NOT fail for unused parameters.
 
 Reply with exactly "PASS" if all checks pass, or "FAIL: <brief one-sentence reason>" if any check fails.
 """
@@ -538,12 +577,18 @@ def _univariate_aucpr(features_with_feat: pd.DataFrame, feat_col: str) -> float:
         return 0.0
 
 
-def _cv_metrics(features_df: pd.DataFrame, feat_col: str, seed: int = 42) -> tuple[float, float]:
+def _cv_metrics(features_df: pd.DataFrame, feat_col: str) -> tuple[float, float, float]:
     """
-    County-grouped 3-fold CV with HistGradientBoostingClassifier.
-    Returns (mean_aucpr, mean_brier) across folds using ALL current features + the new one.
-    Pass feat_col that is NOT in features_df to get baseline metrics.
-    GroupKFold on county ensures no county spans train and val — matches prod spatial CV.
+    Multi-seed county-grouped CV with HistGradientBoostingClassifier.
+    Runs _CV_FOLDS folds × len(_CV_SEEDS) seeds.
+
+    Returns (mean_aucpr, mean_brier, boot_ci_10th) where:
+      mean_aucpr / mean_brier — averaged over all seeds × folds (reduces HistGBM noise)
+      boot_ci_10th — 10th-percentile of 1000-resample bootstrap on seed-averaged OOF probs.
+        Use as acceptance test: boot_ci_10th > current_baseline beats point-estimate +δ.
+
+    Pass feat_col NOT in features_df to get baseline metrics.
+    GroupKFold on county ensures no county spans train/val — matches prod spatial CV.
     Folds with zero positives in val are skipped (GroupKFold can produce imbalanced splits).
     """
     feature_cols = [c for c in features_df.columns
@@ -559,28 +604,52 @@ def _cv_metrics(features_df: pd.DataFrame, feat_col: str, seed: int = 42) -> tup
     groups = labeled["county"].fillna("unknown").to_numpy()
 
     if len(y) < 100:
-        return 0.0, 1.0
+        return 0.0, 1.0, 0.0
 
     gkf = GroupKFold(n_splits=_CV_FOLDS)
+    splits = list(gkf.split(X, y, groups=groups))
+
     aucprs: list[float] = []
     briers: list[float] = []
-    for train_idx, val_idx in gkf.split(X, y, groups=groups):
+    oof_y: list[np.ndarray] = []   # one entry per valid fold (seed-averaged probs)
+    oof_p: list[np.ndarray] = []
+
+    for train_idx, val_idx in splits:
         if y[val_idx].sum() == 0:
             continue
-        clf = HistGradientBoostingClassifier(
-            max_iter=200,
-            max_depth=4,
-            learning_rate=0.05,
-            min_samples_leaf=30,
-            random_state=seed,
-        )
-        clf.fit(X[train_idx], y[train_idx])
-        probs = clf.predict_proba(X[val_idx])[:, 1]
-        aucprs.append(float(average_precision_score(y[val_idx], probs)))
-        briers.append(float(brier_score_loss(y[val_idx], probs)))
+        seed_probs: list[np.ndarray] = []
+        for seed in _CV_SEEDS:
+            clf = HistGradientBoostingClassifier(
+                max_iter=200,
+                max_depth=4,
+                learning_rate=0.05,
+                min_samples_leaf=30,
+                random_state=seed,
+            )
+            clf.fit(X[train_idx], y[train_idx])
+            p = clf.predict_proba(X[val_idx])[:, 1]
+            seed_probs.append(p)
+            aucprs.append(float(average_precision_score(y[val_idx], p)))
+            briers.append(float(brier_score_loss(y[val_idx], p)))
+        # Average across seeds so each sample appears once in the OOF pool
+        oof_y.append(y[val_idx])
+        oof_p.append(np.mean(seed_probs, axis=0))
+
     if not aucprs:
-        return 0.0, 1.0
-    return float(np.mean(aucprs)), float(np.mean(briers))
+        return 0.0, 1.0, 0.0
+
+    # Bootstrap CI (1000 resamples of seed-averaged OOF predictions)
+    all_y = np.concatenate(oof_y)
+    all_p = np.concatenate(oof_p)
+    rng = np.random.default_rng(42)
+    boot_aucprs: list[float] = []
+    for _ in range(1000):
+        idx = rng.integers(0, len(all_y), len(all_y))
+        if all_y[idx].sum() > 0:
+            boot_aucprs.append(float(average_precision_score(all_y[idx], all_p[idx])))
+    ci_lower = float(np.percentile(boot_aucprs, 10)) if boot_aucprs else 0.0
+
+    return float(np.mean(aucprs)), float(np.mean(briers)), ci_lower
 
 
 # ── persist ────────────────────────────────────────────────────────────────────
@@ -639,8 +708,8 @@ def run_loop(max_iterations: int = 50, curated_dir: Path | None = None) -> None:
 
     print("\nBuilding base feature matrix (this takes ~60s)...")
     base_features = _build_base_features(beach_day)
-    baseline_aucpr, baseline_brier = _cv_metrics(base_features, feat_col="__dummy__")
-    print(f"   Baseline CV (county-grouped {_CV_FOLDS}-fold):  AUCPR {baseline_aucpr:.4f}  Brier {baseline_brier:.4f}")
+    baseline_aucpr, baseline_brier, baseline_ci = _cv_metrics(base_features, feat_col="__dummy__")
+    print(f"   Baseline CV ({_CV_FOLDS}-fold × {len(_CV_SEEDS)} seeds):  AUCPR {baseline_aucpr:.4f}  Brier {baseline_brier:.4f}  CI₁₀ {baseline_ci:.4f}")
 
     existing_fns = _existing_feature_names()
     print(f"   Existing agent features: {len(existing_fns)}")
@@ -758,35 +827,43 @@ def run_loop(max_iterations: int = 50, curated_dir: Path | None = None) -> None:
                 _write_iter(i, idea, code, msg, "FAILED (correlation gate)")
                 continue
 
-        print(f"  🔄 Running {_CV_FOLDS}-fold CV (county-grouped)...")
-        new_aucpr, new_brier = _cv_metrics(augmented, feat_col)
+        print(f"  🔄 Running {_CV_FOLDS}-fold × {len(_CV_SEEDS)}-seed CV (county-grouped)...")
+        new_aucpr, new_brier, new_ci = _cv_metrics(augmented, feat_col)
         delta_aucpr = new_aucpr - current_aucpr
         delta_brier = new_brier - current_brier
-        print(f"  📈 AUCPR: {current_aucpr:.4f} → {new_aucpr:.4f}  ({delta_aucpr:+.4f})")
+        print(f"  📈 AUCPR: {current_aucpr:.4f} → {new_aucpr:.4f}  ({delta_aucpr:+.4f})  [CI₁₀: {new_ci:.4f}]")
         print(f"  📉 Brier: {current_brier:.4f} → {new_brier:.4f}  ({delta_brier:+.4f})")
 
-        if new_aucpr < current_aucpr + _MIN_AUCPR_DELTA:
-            msg = f"Insufficient AUCPR gain ({current_aucpr:.4f} → {new_aucpr:.4f}, need +{_MIN_AUCPR_DELTA})"
+        # Gate 1 (AUCPR): bootstrap CI lower bound clears baseline + Brier doesn't degrade
+        aucpr_gate = (new_ci > current_aucpr) and (new_brier <= current_brier + _MIN_BRIER_DELTA)
+        # Gate 2 (Brier-only): calibration improves, ranking doesn't regress meaningfully
+        brier_gate = (new_aucpr >= current_aucpr - _AUCPR_BRIER_ONLY_MAX_REGRESS) and \
+                     (new_brier < current_brier - _BRIER_ONLY_MIN_IMPROVEMENT)
+
+        if not aucpr_gate and not brier_gate:
+            if brier_gate is False and new_ci <= current_aucpr:
+                msg = (f"CI₁₀ {new_ci:.4f} ≤ baseline {current_aucpr:.4f} "
+                       f"and Brier gain {-delta_brier:.4f} < {_BRIER_ONLY_MIN_IMPROVEMENT}")
+            elif new_brier > current_brier + _MIN_BRIER_DELTA:
+                msg = f"Degrades Brier ({current_brier:.4f} → {new_brier:.4f}, limit +{_MIN_BRIER_DELTA})"
+            else:
+                msg = (f"CI₁₀ {new_ci:.4f} ≤ baseline {current_aucpr:.4f} "
+                       f"({current_aucpr:.4f} → {new_aucpr:.4f}  {delta_aucpr:+.4f})")
             failed_logs.append(f"Idea:\n{idea}\nResult: {msg}")
             _write_iter(i, idea, code, msg, "FAILED (CV gate)",
-                        f"Uni: {uni:.4f} | AUCPR: {new_aucpr:.4f} | Brier: {new_brier:.4f}")
+                        f"Uni: {uni:.4f} | AUCPR: {new_aucpr:.4f} CI₁₀: {new_ci:.4f} | Brier: {new_brier:.4f}")
             continue
 
-        if new_brier > current_brier + _MIN_BRIER_DELTA:
-            msg = f"Degrades Brier ({current_brier:.4f} → {new_brier:.4f}, limit +{_MIN_BRIER_DELTA})"
-            failed_logs.append(f"Idea:\n{idea}\nResult: {msg}")
-            _write_iter(i, idea, code, msg, "FAILED (Brier gate)",
-                        f"Uni: {uni:.4f} | AUCPR: {new_aucpr:.4f} | Brier: {new_brier:.4f}")
-            continue
+        gate_label = "AUCPR+CI" if aucpr_gate else "Brier-only"
 
         # ── ACCEPT ──
-        print(f"  🎉 ACCEPTED: {feat_col}")
+        print(f"  🎉 ACCEPTED [{gate_label}]: {feat_col}")
         _persist(code, i)
         current_features = augmented.copy()
         current_aucpr = new_aucpr
         current_brier = new_brier
-        _write_iter(i, idea, code, "", "SUCCESS",
-                    f"Uni: {uni:.4f} | AUCPR: {new_aucpr:.4f} ({delta_aucpr:+.4f}) | Brier: {new_brier:.4f} ({delta_brier:+.4f})")
+        _write_iter(i, idea, code, "", f"SUCCESS ({gate_label})",
+                    f"Uni: {uni:.4f} | AUCPR: {new_aucpr:.4f} ({delta_aucpr:+.4f}) CI₁₀: {new_ci:.4f} | Brier: {new_brier:.4f} ({delta_brier:+.4f})")
         failed_logs.clear()
 
     print(f"\n--- Done. Final AUCPR: {current_aucpr:.4f} (started {baseline_aucpr:.4f})  Brier: {current_brier:.4f} (started {baseline_brier:.4f}) ---")
