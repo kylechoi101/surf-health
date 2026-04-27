@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
+import { useParams } from "next/navigation";
 import { getBeaches, getForecast, preferredForecastDate, type BeachSummary, type ForecastRecord } from "@/lib/api";
 import { RISK_COPY, RISK_TOKEN, DropRow, SeverityBar } from "@/components/Risk";
 
@@ -9,26 +10,26 @@ function mToFt(m: number | null | undefined) {
 }
 
 export default function BeachSharePage() {
+  const { id } = useParams();
   const [beach, setBeach] = useState<BeachSummary | null>(null);
   const [forecast, setForecast] = useState<ForecastRecord | null>(null);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
 
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const id = params.get("id");
     if (!id) { setNotFound(true); setLoading(false); return; }
+    const bid = Array.isArray(id) ? id[0] : id;
 
     const date = preferredForecastDate();
     Promise.all([
-      getBeaches().then((bs) => bs.find((b) => b.id === id) ?? null),
-      getForecast(id, date).catch(() => null),
+      getBeaches().then((bs) => bs.find((b) => b.id === bid) ?? null),
+      getForecast(bid, date).catch(() => null),
     ]).then(([b, f]) => {
       if (!b) setNotFound(true);
       setBeach(b);
       setForecast(f);
     }).finally(() => setLoading(false));
-  }, []);
+  }, [id]);
 
   if (loading) return (
     <div style={{ height: "100dvh", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--sl-muted)" }}>
@@ -174,7 +175,7 @@ export default function BeachSharePage() {
             <div style={{ marginTop: 14, fontFamily: 'var(--font-mono)', fontSize: 12,
               color: 'var(--sl-ink)', background: 'var(--sl-bone)',
               border: '1px solid var(--sl-line)', borderRadius: 12, padding: 16, lineHeight: 1.7 }}>
-              <div><span style={{ color: 'var(--sl-muted)' }}>url:</span> shorelife.app/b?id={beach.id}</div>
+              <div><span style={{ color: 'var(--sl-muted)' }}>url:</span> shorelife.app/b/{beach.id}</div>
               <div><span style={{ color: 'var(--sl-muted)' }}>og:title:</span> {beach.name} · {copy.head}</div>
               <div><span style={{ color: 'var(--sl-muted)' }}>og:desc:</span> {copy.sub}</div>
               <div><span style={{ color: 'var(--sl-muted)' }}>og:image:</span> /og/{beach.id}-{band.toLowerCase().replace(' ', '-')}.png</div>

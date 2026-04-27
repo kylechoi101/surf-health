@@ -51,8 +51,39 @@
   --accent-deep: var(--sl-teal-deep);
   --sun: var(--sl-sun);
   --danger: var(--sl-risk-high);
-  --shadow: 0 28px 90px rgba(11, 66, 102, 0.06);
+  /* Motion */
+  --transition: 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
+
+@keyframes fillBar {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pulse {
+  0% { transform: scale(1); opacity: 0.18; }
+  50% { transform: scale(1.4); opacity: 0.25; }
+  100% { transform: scale(1); opacity: 0.18; }
+}
+
+.animate-fill {
+  transform-origin: left;
+  animation: fillBar 0.8s cubic-bezier(0.2, 1, 0.3, 1) forwards;
+}
+
+.animate-fade {
+  animation: fadeIn 0.6s cubic-bezier(0.2, 1, 0.3, 1) forwards;
+}
+
+.animate-pulse-slow {
+  animation: pulse 2s infinite ease-in-out;
+}
+
 
 * {
   box-sizing: border-box;

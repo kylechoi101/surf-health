@@ -3,14 +3,19 @@ import { getBeaches, getForecast, preferredForecastDate } from "@/lib/api";
 import BeachSharePage from "./BeachSharePage";
 import { RISK_COPY } from "@/components/Risk";
 
-export async function generateMetadata({ searchParams }: { searchParams: { id?: string } }): Promise<Metadata> {
-  const id = searchParams.id;
-  if (!id) return { title: "Beach Forecast · Shorelife" };
+export async function generateStaticParams() {
+  const beaches = await getBeaches({ cache: 'force-cache' });
+  return beaches.map((b) => ({
+    id: b.id,
+  }));
+}
 
+export async function generateMetadata({ params }: { params: { id: string } }): Promise<Metadata> {
+  const id = params.id;
   const date = preferredForecastDate();
   try {
     const [beaches, forecast] = await Promise.all([
-      getBeaches(),
+      getBeaches({ cache: 'force-cache' }),
       getForecast(id, date).catch(() => null),
     ]);
     const beach = beaches.find(b => b.id === id);
