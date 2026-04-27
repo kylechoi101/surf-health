@@ -71,10 +71,11 @@ export default function HomeTab() {
     : sorted.slice(0, 8);
 
   function pick(b: ParentBeachSummary) {
-    // Single-station parent goes straight to the station detail.
-    // Multi-station: open the first (best-ranked) member station for now.
-    const targetId = b.member_beach_ids[0];
-    router.push(`/beach/${targetId}` as any);
+    if (b.station_count > 1) {
+      router.push(`/parent/${b.id}` as any);
+    } else {
+      router.push(`/beach/${b.member_beach_ids[0]}` as any);
+    }
   }
 
   return (
