@@ -46,7 +46,7 @@ COASTAL_CELL_MIN_BEACHES_PER_CLUSTER = 24
 COASTAL_CELL_MAX_CLUSTERS = 8
 PRODUCTION_MODEL_NAMES = ("logistic", "logistic_coastal_cells", "logistic_hierarchical", "hist_gbm", "stacked_ensemble")
 SEQUENCE_MODEL_NAMES = ("tcn", "cnn", "lstm", "transformer", "pinn")
-SPATIAL_BACKTEST_STRATEGIES = ("shortlist", "requested")
+SPATIAL_BACKTEST_STRATEGIES = ("shortlist", "requested", "quick")
 COASTAL_CELL_FEATURE_COLUMNS = [
     "coastal_x_km",
     "coastal_y_km",
@@ -2298,8 +2298,14 @@ def train_curated_and_export(
 
     plan = _two_stage_training_plan(metrics, model_types_to_run)
     spatial_backtest_models = [*PRODUCTION_MODEL_NAMES, *model_types_to_run]
-    if spatial_strategy == "shortlist":
+    effective_beach_limit = spatial_beach_limit
+    effective_county_limit = spatial_county_limit
+
+    if spatial_strategy in ("shortlist", "quick"):
         spatial_backtest_models = plan.spatial_backtest_models
+        if spatial_strategy == "quick":
+            effective_beach_limit = spatial_beach_limit or 5
+            effective_county_limit = spatial_county_limit or 3
 
     if spatial_backtests:
         print(
@@ -2316,8 +2322,8 @@ def train_curated_and_export(
                 labels,
                 metadata,
                 stv_threshold=settings.epa_marine_enterococcus_stv,
-                beach_group_limit=spatial_beach_limit,
-                county_group_limit=spatial_county_limit,
+                beach_group_limit=effective_beach_limit,
+                county_group_limit=effective_county_limit,
                 spatial_jobs=resolved_spatial_jobs,
                 dataset=dataset,
                 model_names_to_run=spatial_backtest_models,
