@@ -448,7 +448,11 @@ async def enrich_beach_day_with_external_covariates(
         cdip_summary = await fetch_cdip_summary(client)
         cdip_assignments = assign_nearest_cdip_station(stations, cdip_summary)
         if not cdip_assignments.empty:
+            _cdip_cols = [c for c in cdip_assignments.columns if c != "beach_id"]
+            stations = stations.drop(columns=[c for c in _cdip_cols if c in stations.columns])
             stations = stations.merge(cdip_assignments, on="beach_id", how="left")
+            _cdip_merge_cols = ["cdip_station_id", "cdip_distance_km"]
+            beach_day = beach_day.drop(columns=[c for c in _cdip_merge_cols if c in beach_day.columns])
             beach_day = beach_day.merge(
                 cdip_assignments[["beach_id", "cdip_station_id", "cdip_distance_km"]],
                 on="beach_id",
