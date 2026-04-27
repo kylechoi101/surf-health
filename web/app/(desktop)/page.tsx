@@ -24,7 +24,7 @@ export default function HomePage() {
               p: f?.p_exceed || 0,
               waveFt: f?.environmental_summary?.wave_height_m ? (f.environmental_summary.wave_height_m * 3.28).toFixed(1) : '--',
               temp: f?.environmental_summary?.water_temperature_c ? Math.round(f.environmental_summary.water_temperature_c * 9/5 + 32) : '--',
-              period: f?.environmental_summary?.wave_period_s ? Math.round(f.environmental_summary.wave_period_s) : '--',
+              period: f?.environmental_summary?.dominant_period_s ? Math.round(f.environmental_summary.dominant_period_s) : '--',
             };
           } catch {
             return { ...b, risk: 'Moderate', p: 0, waveFt: '--', temp: '--', period: '--' };

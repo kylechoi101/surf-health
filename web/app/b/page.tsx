@@ -49,7 +49,7 @@ export default function BeachSharePage() {
   const env = forecast?.environmental_summary;
 
   const conditions = [
-    { l: 'Surf',  v: mToFt(env?.wave_height_m), s: env?.wave_period_s ? `@ ${Math.round(env.wave_period_s)}s` : '—' },
+    { l: 'Surf',  v: mToFt(env?.wave_height_m), s: env?.dominant_period_s ? `@ ${Math.round(env.dominant_period_s)}s` : '—' },
     { l: 'Water', v: env?.water_temperature_c != null ? `${Math.round(env.water_temperature_c * 9/5 + 32)}°F` : '—', s: 'mild' },
     { l: 'Wind',  v: env?.wind_speed_mps != null ? `${Math.round(env.wind_speed_mps * 2.237)} mph` : '—', s: 'WSW' },
     { l: 'UV',    v: env?.uv_index != null ? String(Math.round(env.uv_index)) : '—', s: (env?.uv_index ?? 0) >= 7 ? 'high' : 'moderate' },
