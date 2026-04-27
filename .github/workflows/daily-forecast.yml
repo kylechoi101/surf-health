@@ -33,7 +33,8 @@ jobs:
           path: |
             data/raw/usgs_streamflow
             data/raw/cnrfc
-          key: hydro-${{ runner.os }}-${{ github.run_id }}
+            data/raw/ceden_fib_enterococcus_beachwatch_subset_2020-present.csv
+          key: hydro-${{ runner.os }}-v2
           restore-keys: hydro-${{ runner.os }}-
 
       - name: Create data directories
@@ -56,6 +57,7 @@ jobs:
             --results-csv /tmp/bw_results.csv \
             --advisories-csv /tmp/bw_advisories.csv \
             --merge-ceden \
+            --max-ceden-rows 50000 \
             --with-external-covariates \
             --with-hydrology
         working-directory: backend
