@@ -444,7 +444,7 @@ def main() -> None:
                     # Incremental: fetch only from the last stored date (- 7 days overlap).
                     _existing_sf = pd.read_parquet(_sf_path)
                     _sf_max = pd.to_datetime(_existing_sf["sample_date"]).max().date() if "sample_date" in _existing_sf.columns else _full_start_date
-                    _sf_fetch_start = max(_full_start_date, (_sf_max - pd.Timedelta(days=7)).date())
+                    _sf_fetch_start = max(_full_start_date, (pd.Timestamp(_sf_max) - pd.Timedelta(days=7)).date())
                     print(f"[hydrology] streamflow incremental fetch {_sf_fetch_start} → {end_date}")
                 else:
                     _sf_fetch_start = _date.fromisoformat(args.start_date) if args.start_date else _full_start_date
@@ -492,7 +492,7 @@ def main() -> None:
                 if not args.start_date and _pr_path.exists():
                     _existing_pr = pd.read_parquet(_pr_path)
                     _pr_max = pd.to_datetime(_existing_pr["sample_date"]).max().date() if "sample_date" in _existing_pr.columns else _full_start_date
-                    _pr_fetch_start = max(_full_start_date, (_pr_max - pd.Timedelta(days=7)).date())
+                    _pr_fetch_start = max(_full_start_date, (pd.Timestamp(_pr_max) - pd.Timedelta(days=7)).date())
                     print(f"[hydrology] precip incremental fetch {_pr_fetch_start} → {end_date}")
                 else:
                     _pr_fetch_start = _date.fromisoformat(args.start_date) if args.start_date else _full_start_date
