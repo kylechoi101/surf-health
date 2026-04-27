@@ -8,7 +8,7 @@ export default async function ResearchPage() {
   const healthPath = path.join(process.cwd(), '../data/curated/system_health.json');
   const healthData = JSON.parse(await fs.readFile(healthPath, 'utf8'));
   
-  const allBeaches = await getBeaches();
+  const allBeaches = await getBeaches({ cache: 'force-cache' });
   const stations = allBeaches.slice(0, 12);
 
   const model = healthData.model_registry.production_model;

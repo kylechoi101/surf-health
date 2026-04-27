@@ -90,9 +90,10 @@ function apiBaseUrl() {
   return process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 }
 
-async function request<T>(path: string): Promise<T> {
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${apiBaseUrl()}${path}`, {
-    cache: "no-store"
+    cache: "no-store",
+    ...init
   });
   if (!response.ok) {
     throw new Error(`API request failed: ${response.status}`);
@@ -100,8 +101,8 @@ async function request<T>(path: string): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export async function getBeaches() {
-  return request<BeachSummary[]>("/beaches");
+export async function getBeaches(init?: RequestInit) {
+  return request<BeachSummary[]>("/beaches", init);
 }
 
 export async function getForecast(beachId: string, date: string) {
