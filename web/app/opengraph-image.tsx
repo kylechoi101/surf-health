@@ -1,6 +1,7 @@
 import { ImageResponse } from "next/og";
 
 export const runtime = "edge";
+export const dynamic = "force-static";
 
 export const alt = "Shorelife — California beach health forecasts";
 export const size = {
