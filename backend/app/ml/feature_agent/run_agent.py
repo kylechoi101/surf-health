@@ -1,26 +1,35 @@
 """
 Meta-learning feature-discovery agent for surf_health beach water quality.
 
-Architecture (adapted from ~/Desktop/playground/src/run_agent.py):
+Architecture:
   IDEATOR  → proposes a hypothesis (English)
   CODER    → writes a pandas function implementing it
   CRITIC   → static review of the code
   AST GATE → validator.py domain checks
   EXEC     → runs function in-memory, checks shape / no-row-explosion
   UNI GATE → univariate AUCPR > _UNIVARIATE_MIN_AUCPR
-  CV GATE  → stratified-k-fold hist_gbm AUCPR ≥ baseline
+  CV GATE  → county-grouped hist_gbm AUCPR > baseline + _MIN_AUCPR_DELTA
+             AND Brier < baseline + _MIN_BRIER_DELTA (strict improvement)
   PERSIST  → appends winner to agent_features.py
 
 Usage:
   cd backend
-  python -m app.ml.feature_agent.run_agent [--iterations 50] [--curated PATH]
+  # Ollama (local)
+  python -m app.ml.feature_agent.run_agent [--iterations 100] [--curated PATH]
 
-Requirements: Ollama running locally with gemma3:27b pulled.
+  # NVIDIA NIM (fast, ~30s/iter)
+  NVIDIA_API_KEYS="key1,key2" LLM_PROVIDER=nim \
+    python -m app.ml.feature_agent.run_agent --iterations 100
+
+  # env: LLM_PROVIDER=ollama (default) | nim
+  #      FEATURE_AGENT_MODEL  — NIM model string, default minimaxai/minimax-m2.5
+  #      NVIDIA_API_KEYS      — comma-separated API keys for round-robin
 """
 from __future__ import annotations
 
 import ast
 import datetime
+import itertools
 import json
 import os
 import re
@@ -46,10 +55,21 @@ from app.data.pipeline.features import add_temporal_features, _model_feature_col
 from app.ml.feature_agent.validator import validate as ast_validate
 
 # ── constants ────────────────────────────────────────────────────────────────
+_LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "ollama").lower()  # "ollama" | "nim"
+
+# Ollama settings
 OLLAMA_URL = "http://localhost:11434/api/generate"
-OLLAMA_MODEL = os.environ.get("FEATURE_AGENT_MODEL", "gemma3:27b")  # override: FEATURE_AGENT_MODEL=gemma4:31b
+OLLAMA_MODEL = os.environ.get("FEATURE_AGENT_MODEL", "gemma3:27b")
+
+# NVIDIA NIM settings
+_NIM_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
+_NIM_MODEL = os.environ.get("FEATURE_AGENT_MODEL", "meta/llama-3.3-70b-instruct")
+_NIM_KEYS: list[str] = [k.strip() for k in os.environ.get("NVIDIA_API_KEYS", "").split(",") if k.strip()]
+_nim_key_pool = itertools.cycle(_NIM_KEYS) if _NIM_KEYS else None
 
 _UNIVARIATE_MIN_AUCPR = 0.15   # must beat this alone at base-rate 0.11
+_MIN_AUCPR_DELTA = 0.001       # CV AUCPR must strictly improve by at least this
+_MIN_BRIER_DELTA = 0.0005      # Brier must not degrade by more than this
 _CV_FOLDS = 3
 _MAX_ITER_FILES = 100
 _EXEC_TIMEOUT_S = 45.0
@@ -188,7 +208,6 @@ def _call_ollama(prompt: str, temperature: float = 0.7, max_tokens: int | None =
                     if data.get("done"):
                         break
             raw = "".join(chunks)
-            # strip <think>...</think> blocks (qwen3 / gemma reasoning traces)
             return re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         except requests.Timeout:
             print(f"  [Ollama] timeout attempt {attempt+1}/{max_retries}")
@@ -201,11 +220,82 @@ def _call_ollama(prompt: str, temperature: float = 0.7, max_tokens: int | None =
     raise RuntimeError(f"Ollama unreachable after {max_retries} retries")
 
 
+def _call_nim(prompt: str, temperature: float = 0.7, max_tokens: int | None = None, max_retries: int = 5) -> str:
+    if not _nim_key_pool:
+        raise RuntimeError("LLM_PROVIDER=nim but NVIDIA_API_KEYS is not set")
+    time.sleep(0.75)  # 80 RPM limit across keys
+    current_key = next(_nim_key_pool)
+    headers = {
+        "Authorization": f"Bearer {current_key}",
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+    payload: dict = {
+        "model": _NIM_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": temperature,
+    }
+    if max_tokens is not None:
+        payload["max_tokens"] = max_tokens
+    for attempt in range(max_retries):
+        try:
+            resp = requests.post(_NIM_URL, headers=headers, json=payload, timeout=900)
+            resp.raise_for_status()
+            choices = resp.json().get("choices", [])
+            if not choices:
+                raise ValueError("No choices in NIM response")
+            raw = choices[0].get("message", {}).get("content") or ""
+            return re.sub(r"<think>.*?(</think>|$)", "", raw, flags=re.DOTALL).strip()
+        except requests.exceptions.HTTPError as exc:
+            if exc.response.status_code == 429:
+                print(f"  [NIM] rate-limit 429 — sleeping 60s (attempt {attempt+1}/{max_retries})")
+                time.sleep(60)
+            elif exc.response.status_code in (400, 404):
+                raise RuntimeError(f"NIM API error (check model name): {exc.response.text}")
+            elif attempt < max_retries - 1:
+                time.sleep((attempt + 1) * 5)
+            else:
+                raise
+        except requests.exceptions.Timeout:
+            print(f"  [NIM] timeout attempt {attempt+1}/{max_retries}")
+            if attempt < max_retries - 1:
+                time.sleep((attempt + 1) * 5)
+        except Exception as exc:
+            print(f"  [NIM] error attempt {attempt+1}/{max_retries}: {exc}")
+            if attempt < max_retries - 1:
+                time.sleep((attempt + 1) * 5)
+    raise RuntimeError(f"NIM unreachable after {max_retries} retries")
+
+
+def _call_llm(prompt: str, temperature: float = 0.7, max_tokens: int | None = None) -> str:
+    if _LLM_PROVIDER == "nim":
+        return _call_nim(prompt, temperature=temperature, max_tokens=max_tokens)
+    return _call_ollama(prompt, temperature=temperature, max_tokens=max_tokens)
+
+
 def _check_ollama() -> None:
     try:
         requests.get(OLLAMA_URL.replace("/api/generate", "/"), timeout=5)
     except requests.ConnectionError:
         raise RuntimeError("Ollama not responding. Start it with: ollama serve")
+
+
+def _check_nim() -> None:
+    if not _NIM_KEYS:
+        raise RuntimeError("LLM_PROVIDER=nim but NVIDIA_API_KEYS is not set")
+    headers = {"Authorization": f"Bearer {_NIM_KEYS[0]}", "Accept": "application/json"}
+    try:
+        r = requests.get("https://integrate.api.nvidia.com/v1/models", headers=headers, timeout=10)
+        r.raise_for_status()
+    except Exception as exc:
+        raise RuntimeError(f"NIM health check failed: {exc}")
+
+
+def _check_llm() -> None:
+    if _LLM_PROVIDER == "nim":
+        _check_nim()
+    else:
+        _check_ollama()
 
 
 # ── LLM roles ────────────────────────────────────────────────────────────────
@@ -248,9 +338,7 @@ HYPOTHESIS: [one sentence why this predicts enterococcus exceedance]
 IMPLEMENTATION: [3–5 bullet points describing the pandas operations, referencing exact column names]
 """
     try:
-        # No max_tokens cap — the structured prompt format terminates naturally;
-        # gemma4 returns empty with num_predict on long schema prompts.
-        return _call_ollama(prompt, temperature=0.9)
+        return _call_llm(prompt, temperature=0.9)
     except Exception as exc:
         print(f"  [Ideator] error: {exc}")
         return None
@@ -267,22 +355,24 @@ SPEC:
 
 {error_section}
 RULES:
-- Function signature EXACTLY: def build_novel_feature(beach_day_df, advisories_df, stations_df, **kwargs):
-- Return a DataFrame with columns: beach_id, sample_date, <one_new_feature_column>
-- Do NOT include exceeds_stv or enterococcus_value in the output
-- ALL groupby on beach_day_df MUST be groupby('beach_id') — never global aggregations
-- .shift() or .diff() MUST chain directly off .groupby('beach_id') to avoid cross-beach leakage
-- .rolling() MUST use closed='left' (never include the current sample in its own window)
-- After .groupby().agg(), call .reset_index() before accessing columns
-- No for/while loops. No .apply(). No lambda inside .agg()
-- Add 1e-9 to denominators. Use np.log1p() not np.log()
-- sample_date MUST be preserved as datetime in the output
-- Avoid column names already in use: {existing_col_names[:200]}
+CRITICAL PANDAS RULES (violations cause runtime failures or cross-beach data leakage):
+1. Function signature EXACTLY: def build_novel_feature(beach_day_df, advisories_df, stations_df, **kwargs):
+2. Return a DataFrame with columns: beach_id, sample_date, <one_new_feature_column> ONLY.
+3. Do NOT include exceeds_stv or enterococcus_value in the output.
+4. ALL window functions (shift, diff, rolling) MUST be chained off .groupby('beach_id') like:
+     df['col'] = df.groupby('beach_id')['target_col'].shift(1)
+     df['col'] = df.groupby('beach_id')['target_col'].rolling(window=7, min_periods=1, closed='left').mean().reset_index(level=0, drop=True)
+   NEVER call .rolling() directly on a groupby object without first selecting a column.
+5. Do NOT use .apply() or transform(lambda ...) — use vectorized pandas ops only.
+6. No for/while loops. No lambda inside .agg().
+7. Add 1e-9 to denominators. Use np.log1p() not np.log().
+8. sample_date MUST be preserved as datetime in the output.
+9. Avoid column names already in use: {existing_col_names[:200]}
 
 Output ONLY a ```python code block with the complete function including imports.
 """
     try:
-        raw = _call_ollama(prompt, temperature=0.15)  # no max_tokens — gemma4 returns empty on long prompts with num_predict
+        raw = _call_llm(prompt, temperature=0.15)
         match = re.search(r"```python(.*?)```", raw, re.DOTALL)
         if match:
             code = match.group(1).strip()
@@ -328,7 +418,7 @@ CHECKLIST:
 Reply with exactly "PASS" if all checks pass, or "FAIL: <brief one-sentence reason>" if any check fails.
 """
     try:
-        raw = _call_ollama(prompt, temperature=0.1)  # no max_tokens
+        raw = _call_llm(prompt, temperature=0.1)
         clean = raw.strip()
         if clean.upper().startswith("PASS"):
             return True, "PASS"
@@ -351,7 +441,7 @@ Identify: (1) common mathematical traps, (2) domain misunderstandings, (3) THREE
 Keep it brief and technical. Use Markdown headings.
 """
     try:
-        return _call_ollama(prompt, temperature=0.6)  # no max_tokens
+        return _call_llm(prompt, temperature=0.6)
     except Exception as exc:
         return f"(analysis failed: {exc})"
 
@@ -521,9 +611,13 @@ def run_loop(max_iterations: int = 50, curated_dir: Path | None = None) -> None:
     if curated_dir is None:
         curated_dir = Path(__file__).resolve().parents[4] / "data" / "curated"
 
+    provider_label = _LLM_PROVIDER.upper()
+    model_label = _NIM_MODEL if _LLM_PROVIDER == "nim" else OLLAMA_MODEL
     print("\n--- SURF HEALTH FEATURE-DISCOVERY AGENT ---")
-    _check_ollama()
-    print(f"✅ Ollama OK  |  model: {OLLAMA_MODEL}")
+    _check_llm()
+    print(f"✅ {provider_label} OK  |  model: {model_label}")
+    if _LLM_PROVIDER == "nim":
+        print(f"   Keys loaded: {len(_NIM_KEYS)}")
     print(f"   Curated: {curated_dir}")
 
     _LOGS_DIR.mkdir(exist_ok=True)
@@ -668,15 +762,15 @@ def run_loop(max_iterations: int = 50, curated_dir: Path | None = None) -> None:
         print(f"  📈 AUCPR: {current_aucpr:.4f} → {new_aucpr:.4f}  ({delta_aucpr:+.4f})")
         print(f"  📉 Brier: {current_brier:.4f} → {new_brier:.4f}  ({delta_brier:+.4f})")
 
-        if new_aucpr < current_aucpr:
-            msg = f"Degrades CV AUCPR ({current_aucpr:.4f} → {new_aucpr:.4f})"
+        if new_aucpr < current_aucpr + _MIN_AUCPR_DELTA:
+            msg = f"Insufficient AUCPR gain ({current_aucpr:.4f} → {new_aucpr:.4f}, need +{_MIN_AUCPR_DELTA})"
             failed_logs.append(f"Idea:\n{idea}\nResult: {msg}")
             _write_iter(i, idea, code, msg, "FAILED (CV gate)",
                         f"Uni: {uni:.4f} | AUCPR: {new_aucpr:.4f} | Brier: {new_brier:.4f}")
             continue
 
-        if new_brier > current_brier:
-            msg = f"Degrades Brier ({current_brier:.4f} → {new_brier:.4f})"
+        if new_brier > current_brier + _MIN_BRIER_DELTA:
+            msg = f"Degrades Brier ({current_brier:.4f} → {new_brier:.4f}, limit +{_MIN_BRIER_DELTA})"
             failed_logs.append(f"Idea:\n{idea}\nResult: {msg}")
             _write_iter(i, idea, code, msg, "FAILED (Brier gate)",
                         f"Uni: {uni:.4f} | AUCPR: {new_aucpr:.4f} | Brier: {new_brier:.4f}")
