@@ -44,14 +44,19 @@ export function DropRow({ band, size = 14 }: { band: string, size?: number }) {
 export function SeverityBar({ band, width = '140px', height = 6 }: { band: string, width?: number | string, height?: number }) {
   const idx = RISK_ORDER.indexOf(band as any);
   return (
-    <div style={{ display: 'flex', gap: 3, width }}>
+    <div 
+      role="img" 
+      aria-label={`Risk level ${idx + 1} of 4: ${band}`}
+      style={{ display: 'flex', gap: 3, width }}
+    >
       {RISK_ORDER.map((b, i) => {
         const on = i <= idx;
         const c = `var(--sl-risk-${getBandColorName(b)})`;
-        return <div key={b} style={{
+        return <div key={b} className="animate-fill" style={{
           flex: 1, height, borderRadius: 2,
           background: on ? c : 'var(--sl-sand)',
           opacity: on ? (i === idx ? 1 : 0.55) : 1,
+          animationDelay: `${i * 0.1}s`,
         }}/>;
       })}
     </div>

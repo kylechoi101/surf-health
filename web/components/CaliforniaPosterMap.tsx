@@ -34,6 +34,8 @@ function project(lat: number, lon: number) {
 }
 
 export function CaliforniaPosterMap({ beaches, activeBeach, onSelect, height = 640 }: any) {
+  const [hoveredBeach, setHoveredBeach] = React.useState<any | null>(null);
+
   return (
     <div style={{
       position: 'relative', height, borderRadius: 14, overflow: 'hidden',
@@ -128,15 +130,23 @@ export function CaliforniaPosterMap({ beaches, activeBeach, onSelect, height = 6
           if (!b.lat || !b.lon) return null;
           const { x, y } = project(b.lat, b.lon);
           const isActive = activeBeach && activeBeach.id === b.id;
+          const isHovered = hoveredBeach && hoveredBeach.id === b.id;
           const tok = RISK_TOKEN[b.risk || 'Moderate'];
-          const r = isActive ? 6 : 3.5;
+          const r = (isActive || isHovered) ? 6 : 3.5;
           return (
             <g key={b.id} style={{ cursor: 'pointer' }}
-               onMouseEnter={() => onSelect && onSelect(b)}>
-              {isActive && <circle cx={x} cy={y} r={14} fill={tok.c} opacity="0.18"/>}
+               onMouseEnter={() => {
+                 setHoveredBeach(b);
+                 onSelect && onSelect(b);
+               }}
+               onMouseLeave={() => setHoveredBeach(null)}
+               className="animate-fade">
+              {(isActive || isHovered) && (
+                <circle cx={x} cy={y} r={14} fill={tok.c} className="animate-pulse-slow"/>
+              )}
               <circle cx={x} cy={y} r={r}
                 fill={tok.c}
-                stroke="var(--sl-bone)" strokeWidth={isActive ? 2 : 1}/>
+                stroke="var(--sl-bone)" strokeWidth={(isActive || isHovered) ? 2 : 1}/>
             </g>
           );
         })}
@@ -158,12 +168,13 @@ export function CaliforniaPosterMap({ beaches, activeBeach, onSelect, height = 6
             fill="var(--sl-muted)" letterSpacing="0.08em">100 MI</text>
         </g>
 
-        {activeBeach && (() => {
-          const p = project(activeBeach.lat, activeBeach.lon);
+        {(activeBeach || hoveredBeach) && (() => {
+          const displayBeach = hoveredBeach || activeBeach;
+          const p = project(displayBeach.lat, displayBeach.lon);
           const cx = Math.min(p.x + 30, 420);
           const cy = Math.max(40, Math.min(p.y - 20, 720));
           return (
-            <g>
+            <g style={{ pointerEvents: 'none' }}>
               <line x1={p.x} y1={p.y} x2={cx} y2={cy + 30}
                 stroke="var(--sl-navy)" strokeWidth="1" strokeDasharray="2 2" opacity="0.6"/>
               <foreignObject x={cx} y={cy} width="200" height="86">
@@ -175,15 +186,15 @@ export function CaliforniaPosterMap({ beaches, activeBeach, onSelect, height = 6
                   boxShadow: '0 4px 12px rgba(11,66,102,0.10)',
                 }}>
                   <div style={{ color: 'var(--sl-muted)', fontSize: 9, fontFamily: 'var(--font-mono)', letterSpacing: '0.1em', textTransform: 'uppercase' }}>
-                    {activeBeach.county?.toUpperCase()}
+                    {displayBeach.county?.toUpperCase()}
                   </div>
                   <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--sl-navy)', marginTop: 2 }}>
-                    {activeBeach.name}
+                    {displayBeach.name}
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
-                    <RiskChip band={activeBeach.risk}/>
+                    <RiskChip band={displayBeach.risk}/>
                     <span style={{ fontSize: 10, color: 'var(--sl-muted)', fontFamily: 'var(--font-mono)' }}>
-                      {activeBeach.waveFt}ft · {activeBeach.temp}°F
+                      {displayBeach.waveFt}ft · {displayBeach.temp}°F
                     </span>
                   </div>
                 </div>

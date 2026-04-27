@@ -10,6 +10,12 @@ const jetbrainsMono = JetBrains_Mono({ subsets: ["latin"], variable: "--font-jet
 export const metadata: Metadata = {
   title: "Shorelife — Know before you paddle out",
   description: "Daily bacteria + surf health forecasts for California beaches.",
+  metadataBase: new URL("https://shorelife.app"),
+  icons: {
+    icon: "/icon.svg",
+    apple: "/apple-icon.png",
+  },
+  manifest: "/manifest.json",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
