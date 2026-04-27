@@ -87,6 +87,7 @@ jobs:
           else
             FORECAST_DATE=$(TZ=America/Los_Angeles date +%Y-%m-%d)
             git commit -m "chore: daily forecast refresh ${FORECAST_DATE}"
+            git pull --rebase origin main
             git push
           fi
 
