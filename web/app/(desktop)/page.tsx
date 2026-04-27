@@ -51,239 +51,144 @@ export default function HomePage() {
   const featured = useMemo(() => beaches.filter(b => featuredIds.includes(b.id)).slice(0, 3), [beaches]);
 
   return (
-    <main className="page-shell" style={{ position: 'relative', zIndex: 1, paddingBottom: 0 }}>
-      {/* HERO */}
-      <section style={{ padding: '48px 64px 32px', display: 'grid',
-        gridTemplateColumns: '1fr 580px', gap: 48, alignItems: 'start' }}>
-        <div>
-          <div style={{ color: 'var(--sl-sun-deep)', fontFamily: 'var(--font-mono)', fontSize: '0.85rem', textTransform: 'uppercase', letterSpacing: '0.12em' }}>
-            ◐ Live forecast · {preferredForecastDate()}
-          </div>
-          <h1 style={{
-            fontFamily: 'var(--font-heading)', fontSize: 92, marginTop: 18, marginBottom: 0, fontWeight: 400, letterSpacing: '-0.02em',
-            color: 'var(--sl-navy-ink)', maxWidth: 720, lineHeight: 0.95
-          }}>
+    <main className="page-shell animate-fade" style={{ paddingTop: 48 }}>
+      {/* HERO SECTION — Academic Layout (0.28 / 0.72 split) */}
+      <section style={{ display: 'flex', gap: 48, marginBottom: 80, alignItems: 'flex-start' }}>
+        {/* Left Column — 28% width */}
+        <div style={{ flex: '0 0 380px' }}>
+          <div className="eyebrow">◐ Live forecast · {preferredForecastDate()}</div>
+          <h1 style={{ fontSize: 64, lineHeight: 1.0, marginBottom: 24 }}>
             Know before you<br/>paddle out.
           </h1>
-          <p style={{ fontSize: 18, color: 'var(--sl-ink)', lineHeight: 1.55,
-            maxWidth: 540, marginTop: 24, fontFamily: 'var(--font-text)' }}>
-            Shorelife turns sparse official bacteria samples plus ocean and weather context into a
-            daily health-risk forecast for <span style={{ color: 'var(--sl-navy)', fontWeight: 600 }}>
-            {loading ? '...' : beaches.length}+ California marine beaches</span>.
+          <p style={{ color: 'var(--sl-muted)', fontSize: 16, marginBottom: 32 }}>
+            Shorelife transforms official bacterial sampling and coastal physics into a daily predictive risk model for {loading ? '...' : beaches.length}+ California marine stations.
           </p>
 
-          <div style={{ marginTop: 36, display: 'inline-flex', alignItems: 'stretch',
-            background: 'var(--sl-bone)', border: '1px solid var(--sl-line)',
-            borderRadius: 14, overflow: 'hidden',
-            boxShadow: '0 1px 0 rgba(255,255,255,0.6) inset, 0 8px 24px rgba(11,66,102,0.06)',
-          }}>
-            {loading ? (
-              <div style={{ padding: 40, width: 480 }}>
-                <Skeleton style={{ width: '40%', height: 14, marginBottom: 12 }} />
-                <Skeleton style={{ width: '80%', height: 56, marginBottom: 20 }} />
-                <Skeleton style={{ width: '100%', height: 48 }} />
-              </div>
-            ) : (
-              <>
-                <div style={{ background: tok.bg, padding: '20px 24px',
-                  display: 'flex', flexDirection: 'column', justifyContent: 'space-between',
-                  minWidth: 200, borderRight: `1px solid var(--sl-line)` }}>
-                  <div style={{ color: tok.ink, fontFamily: 'var(--font-mono)', fontSize: 11, letterSpacing: '0.14em', fontWeight: 600 }}>{heroBand.toUpperCase()}</div>
-                  <div style={{
-                    fontFamily: 'var(--font-heading)', fontSize: 56, color: tok.ink, lineHeight: 0.9, marginTop: 18, letterSpacing: '-0.02em'
-                  }}>{copy.head}</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            {loading ? <Skeleton style={{ height: 200 }} /> : (
+              <div className="panel" style={{ padding: 24, background: tok.bg, borderColor: tok.c }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+                  <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 700, color: tok.ink }}>{heroBand.toUpperCase()}</div>
                   <DropRow band={heroBand} size={14}/>
                 </div>
-                <div style={{ padding: '20px 28px', display: 'flex', flexDirection: 'column', gap: 14, minWidth: 280 }}>
-                  <div>
-                    <div style={{ color: 'var(--sl-muted)', fontFamily: 'var(--font-mono)', fontSize: 11, letterSpacing: '0.14em', fontWeight: 600 }}>Today at {activeBeach?.name || '...'}</div>
-                    <div style={{ fontSize: 14, color: 'var(--sl-ink)', marginTop: 6, lineHeight: 1.5, maxWidth: 280, fontFamily: 'var(--font-text)' }}>
-                      {copy.sub}
-                    </div>
-                  </div>
-                  <SeverityBar band={heroBand} width="100%"/>
-                  <div style={{ display: 'flex', justifyContent: 'space-between',
-                    fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--sl-muted)',
-                    paddingTop: 10, borderTop: '1px dashed var(--sl-line)' }}>
-                    <span>ENT · {copy.cfu}</span>
-                    <span>SAMPLED · 2d ago</span>
-                  </div>
+                <div style={{ fontFamily: 'var(--font-heading)', fontSize: 42, color: tok.ink, marginBottom: 12 }}>{copy.head}</div>
+                <div style={{ fontSize: 14, color: tok.ink, opacity: 0.8, lineHeight: 1.5, marginBottom: 20 }}>{copy.sub}</div>
+                <SeverityBar band={heroBand} width="100%" height={5}/>
+                <div style={{ marginTop: 16, paddingTop: 12, borderTop: `1px dashed ${tok.c}`, display: 'flex', justifyContent: 'space-between', fontSize: 10, fontFamily: 'var(--font-mono)', color: tok.ink, opacity: 0.7 }}>
+                  <span>EXCEED {Math.round(activeBeach?.p * 100)}%</span>
+                  <span>SAMPLED 2D AGO</span>
                 </div>
-              </>
-            )}
-          </div>
-
-          <div style={{ display: 'flex', gap: 48, marginTop: 36 }}>
-            {[
-              { k: loading ? '--' : beaches.length, l: 'monitored stations' },
-              { k: '5:00a PT', l: 'daily publish' },
-              { k: '4', l: 'risk bands' },
-            ].map(s => (
-              <div key={s.l}>
-                <div style={{ fontFamily: 'var(--font-heading)', fontSize: 36, color: 'var(--sl-navy)' }}>{s.k}</div>
-                <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--sl-muted)', marginTop: 4, letterSpacing: '0.06em', textTransform: 'uppercase' }}>{s.l}</div>
               </div>
-            ))}
+            )}
           </div>
         </div>
 
-        <div>
+        {/* Right Column — Map & Visuals */}
+        <div style={{ flex: 1 }}>
           <CaliforniaPosterMap
-            band={heroBand}
             beaches={beaches}
             activeBeach={activeBeach}
             onSelect={setActiveBeach}
-            height={680}/>
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 12,
-            fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.12em',
-            textTransform: 'uppercase', color: 'var(--sl-muted)' }}>
-            <span>Fig. 01 · Statewide nearshore health board</span>
-            <span>Hover stations →</span>
+            height={720}/>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 16, fontFamily: 'var(--font-mono)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--sl-muted)' }}>
+            <span>Fig 01. Statewide Nearshore Monitoring Network</span>
+            <span>290+ Active Stations</span>
           </div>
         </div>
       </section>
 
-      {/* CROSS-SECTION INTERLUDE */}
-      <section style={{ padding: '32px 64px 0' }}>
-        <div style={{ color: 'var(--sl-sun-deep)', fontFamily: 'var(--font-mono)', fontSize: '0.85rem', textTransform: 'uppercase', letterSpacing: '0.12em' }}>02 · How we read the shoreline</div>
-        <h2 style={{ fontFamily: 'var(--font-heading)', fontSize: 48, marginTop: 12, marginBottom: 24, fontWeight: 400, letterSpacing: '-0.02em',
-          color: 'var(--sl-navy-ink)', maxWidth: 720 }}>
-          A model of the surf zone, not just a number.
-        </h2>
-        <div style={{ borderRadius: 14, overflow: 'hidden', border: '1px solid var(--sl-line)',
-          boxShadow: '0 1px 0 rgba(255,255,255,0.6) inset' }}>
-          <ShorelineCrossSection band={heroBand} height={340}/>
+      {/* CROSS-SECTION — Academic Illustration */}
+      <section style={{ marginBottom: 96 }}>
+        <div className="eyebrow">02 · System Model</div>
+        <h2 style={{ fontSize: 32, marginBottom: 32 }}>Physical modeling of the surf zone.</h2>
+        <div className="panel" style={{ padding: 0, overflow: 'hidden' }}>
+          <ShorelineCrossSection band={heroBand} height={380}/>
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 18, marginTop: 22 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 32, marginTop: 24 }}>
           {[
-            { k: 'A · Offshore',   v: 'NDBC buoy swell height, period, direction' },
-            { k: 'B · Mid-shelf',  v: 'CDIP nearshore wave model + SST' },
-            { k: 'C · Surf zone',  v: 'culture sample history + exceedance prior' },
-            { k: 'D · Swash',      v: 'tide stage, runoff index, last advisory' },
+            { k: 'Offshore', v: 'NDBC buoy swell height, period, direction' },
+            { k: 'Mid-shelf', v: 'CDIP nearshore wave model + SST' },
+            { k: 'Surf zone', v: 'Culture sample history + exceedance prior' },
+            { k: 'Swash', v: 'Tide stage, runoff index, last advisory' },
           ].map(c => (
-            <div key={c.k} style={{ paddingTop: 12, borderTop: '1px solid var(--sl-line)' }}>
-              <div style={{ color: 'var(--sl-navy)', fontFamily: 'var(--font-mono)', fontSize: 12, letterSpacing: '0.1em', fontWeight: 600, textTransform: 'uppercase' }}>{c.k}</div>
-              <div style={{ fontSize: 13, color: 'var(--sl-muted)', marginTop: 6, lineHeight: 1.5, fontFamily: 'var(--font-text)' }}>{c.v}</div>
+            <div key={c.k}>
+              <div style={{ color: 'var(--sl-navy)', fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', marginBottom: 6 }}>{c.k}</div>
+              <div style={{ fontSize: 13, color: 'var(--sl-muted)', lineHeight: 1.5 }}>{c.v}</div>
             </div>
           ))}
         </div>
       </section>
 
-      {/* WHY THIS MATTERS — three audience cards */}
-      <section style={{ padding: '64px 64px 0' }}>
-        <div style={{ color: 'var(--sl-sun-deep)', fontFamily: 'var(--font-mono)', fontSize: '0.85rem', textTransform: 'uppercase', letterSpacing: '0.12em' }}>03 · Who it's for</div>
-        <h2 style={{ fontFamily: 'var(--font-heading)', fontSize: 48, marginTop: 12, marginBottom: 36, fontWeight: 400, letterSpacing: '-0.02em',
-          color: 'var(--sl-navy-ink)' }}>
-          Health risk is the missing beach signal.
-        </h2>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 24 }}>
-          {[
-            { who: 'For surfers', body: 'Check a beach card that combines surf context and water-health risk before you paddle out with a cut, a weak immune system, or after rain.', icon: '◐' },
-            { who: 'For agencies', body: 'Use same-day probability estimates to prioritize field visits, spot persistent hot spots, and communicate uncertainty instead of waiting on the next lab run.', icon: '◑' },
-            { who: 'For researchers', body: 'Compare official enterococcus labels against nearshore covariates, blocked backtests, and calibrated exceedance forecasts from strong baselines.', icon: '◒' },
-          ].map(c => (
-            <article key={c.who} style={{
-              background: 'var(--sl-bone)', border: '1px solid var(--sl-line)',
-              borderRadius: 14, padding: 28,
-            }}>
-              <div style={{ fontSize: 28, color: 'var(--sl-sun-deep)', lineHeight: 1 }}>{c.icon}</div>
-              <h3 style={{ fontFamily: 'var(--font-heading)', fontSize: 24, marginTop: 18, marginBottom: 10, fontWeight: 400,
-                color: 'var(--sl-navy)' }}>{c.who}</h3>
-              <p style={{ fontSize: 14, color: 'var(--sl-ink)', lineHeight: 1.6, margin: 0, fontFamily: 'var(--font-text)' }}>{c.body}</p>
-            </article>
-          ))}
-        </div>
-      </section>
-
-      {/* TODAY'S FORECAST — spotlight grid */}
-      <section style={{ padding: '64px 64px 0' }}>
-        <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 28 }}>
+      {/* FEATURED GRID — Academic Precision */}
+      <section style={{ marginBottom: 96 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 40 }}>
           <div>
-            <div style={{ color: 'var(--sl-sun-deep)', fontFamily: 'var(--font-mono)', fontSize: '0.85rem', textTransform: 'uppercase', letterSpacing: '0.12em' }}>04 · Today's forecast</div>
-            <h2 style={{ fontFamily: 'var(--font-heading)', fontSize: 48, marginTop: 12, fontWeight: 400, letterSpacing: '-0.02em',
-              color: 'var(--sl-navy-ink)' }}>
-              What's in the water right now.
-            </h2>
+            <div className="eyebrow">03 · Today's forecast</div>
+            <h2 style={{ fontSize: 32 }}>Regional spotlight.</h2>
           </div>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <select style={{
-              fontFamily: 'var(--font-mono)', fontSize: 11, letterSpacing: '0.10em',
-              padding: '8px 14px', borderRadius: 999, border: '1px solid var(--sl-line)',
-              background: 'var(--sl-bone)', color: 'var(--sl-ink)', textTransform: 'uppercase', outline: 'none'
-            }}>
-              <option>All counties</option><option>Los Angeles</option><option>Orange</option>
-            </select>
-            <button style={{
-              fontFamily: 'var(--font-mono)', fontSize: 11, letterSpacing: '0.10em',
-              padding: '8px 14px', borderRadius: 999, border: '1px solid var(--sl-line)',
-              background: 'transparent', color: 'var(--sl-muted)', textTransform: 'uppercase', cursor: 'pointer',
-            }}>★ Favorites</button>
+          <div style={{ display: 'flex', gap: 12 }}>
+            <button>All Counties</button>
+            <button style={{ background: 'transparent', color: 'var(--sl-muted)' }}>Favorites</button>
           </div>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16 }}>
-          {loadingFeatured ? (
-            [...Array(3)].map((_, i) => <SkeletonCard key={i} />)
-          ) : (
-            featured.map(b => {
-              const tok2 = RISK_TOKEN[b.risk];
-              return (
-                <article key={b.id} style={{
-                  background: 'var(--sl-bone)', border: '1px solid var(--sl-line)', cursor: 'pointer',
-                  borderRadius: 14, padding: 22, display: 'flex', flexDirection: 'column', gap: 12,
-                }} onClick={() => window.location.href = `/beaches/${b.id}`}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                    <div>
-                      <div style={{ color: 'var(--sl-muted)', fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase' }}>{b.county}</div>
-                      <h3 style={{ fontFamily: 'var(--font-heading)', fontSize: 22, margin: '6px 0 0', color: 'var(--sl-navy)', fontWeight: 400 }}>{b.name}</h3>
-                    </div>
-                    <RiskChip band={b.risk}/>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 20 }}>
+          {loadingFeatured ? [...Array(3)].map((_, i) => <SkeletonCard key={i} />) : (
+            featured.map(b => (
+              <article key={b.id} className="card" onClick={() => window.location.href = `/beaches/${b.id}`}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
+                  <div>
+                    <div style={{ fontSize: 10, fontFamily: 'var(--font-mono)', color: 'var(--sl-muted)', textTransform: 'uppercase', marginBottom: 4 }}>{b.county}</div>
+                    <h3 style={{ fontSize: 20 }}>{b.name}</h3>
                   </div>
-                  <div style={{ paddingTop: 10, borderTop: '1px dashed var(--sl-line)',
-                    display: 'flex', justifyContent: 'space-between',
-                    fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--sl-muted)' }}>
-                    <span>{b.waveFt}ft @ {b.period}s</span>
-                    <span>{b.temp}°F</span>
-                    <span style={{ color: tok2?.ink }}>{Math.round(b.p * 100)}% exceed</span>
+                  <RiskChip band={b.risk}/>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, padding: '12px 0', borderTop: '1px solid var(--border-soft)', borderBottom: '1px solid var(--border-soft)', marginBottom: 16 }}>
+                  <div>
+                    <div style={{ fontSize: 9, fontFamily: 'var(--font-mono)', color: 'var(--sl-muted)' }}>SURF</div>
+                    <div style={{ fontSize: 14, fontWeight: 600 }}>{b.waveFt}ft</div>
                   </div>
-                  <SeverityBar band={b.risk} width="100%" height={4}/>
-                </article>
-              );
-            })
+                  <div>
+                    <div style={{ fontSize: 9, fontFamily: 'var(--font-mono)', color: 'var(--sl-muted)' }}>TEMP</div>
+                    <div style={{ fontSize: 14, fontWeight: 600 }}>{b.temp}°F</div>
+                  </div>
+                  <div style={{ textAlign: 'right' }}>
+                    <div style={{ fontSize: 9, fontFamily: 'var(--font-mono)', color: 'var(--sl-muted)' }}>EXCEED</div>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: RISK_TOKEN[b.risk]?.ink }}>{Math.round(b.p * 100)}%</div>
+                  </div>
+                </div>
+                <SeverityBar band={b.risk} width="100%" height={4}/>
+              </article>
+            ))
           )}
         </div>
       </section>
 
       {/* FOOTER */}
-      <footer style={{ padding: '80px 64px 48px', marginTop: 64, borderTop: '1px solid var(--sl-line)' }}>
-        <div style={{ gridTemplateColumns: '2fr 1fr 1fr 1fr', gap: 48, display: 'grid' }}>
+      <footer style={{ padding: '80px 0 48px', borderTop: '1px solid var(--sl-line)' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr', gap: 64 }}>
           <div>
             <LockupHorizontal size={24} subtitle="California Water Quality"/>
-            <p style={{ fontSize: 13, color: 'var(--sl-muted)', lineHeight: 1.6, marginTop: 18, maxWidth: 380, fontFamily: 'var(--font-text)' }}>
-              Daily marine-water health forecasts for California beaches. A model forecast — not an official lab result.
-              Treat advisories as advisory.
+            <p style={{ fontSize: 14, color: 'var(--sl-muted)', marginTop: 20, maxWidth: 360 }}>
+              Independent predictive modeling for marine public health. Shorelife uses machine learning to bridge the gap between weekly official lab samples.
             </p>
           </div>
           {[
-            { t: 'Product', l: ['Forecast', 'Beach explorer', 'iOS app', 'Share links'] },
-            { t: 'Science', l: ['Methodology', 'Research', 'Sources', 'Caveats'] },
-            { t: 'About', l: ['Mission', 'Team', 'Contact', 'Press kit'] },
+            { t: 'Analysis', l: ['Daily Forecast', 'Station Map', 'API Access'] },
+            { t: 'Science', l: ['Methodology', 'Validation', 'Data Sources'] },
+            { t: 'About', l: ['Project Team', 'Contact', 'Terms'] },
           ].map(c => (
             <div key={c.t}>
-              <div style={{ color: 'var(--sl-navy)', fontFamily: 'var(--font-mono)', fontSize: 12, letterSpacing: '0.1em', textTransform: 'uppercase', fontWeight: 600 }}>{c.t}</div>
-              <ul style={{ listStyle: 'none', padding: 0, margin: '14px 0 0',
-                display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {c.l.map(li => <li key={li} style={{ fontSize: 13, color: 'var(--sl-muted)', fontFamily: 'var(--font-text)' }}>{li}</li>)}
+              <div style={{ fontSize: 11, fontFamily: 'var(--font-mono)', fontWeight: 700, textTransform: 'uppercase', marginBottom: 20 }}>{c.t}</div>
+              <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {c.l.map(li => <li key={li} style={{ fontSize: 13, color: 'var(--sl-muted)' }}>{li}</li>)}
               </ul>
             </div>
           ))}
         </div>
-        <div style={{ marginTop: 48, paddingTop: 24, borderTop: '1px solid var(--sl-line)',
-          display: 'flex', justifyContent: 'space-between',
-          fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.16em',
-          textTransform: 'uppercase', color: 'var(--sl-muted)' }}>
-          <span>© 2026 Shorelife · v1.0</span>
-          <span>Made on the Pacific coast</span>
+        <div style={{ marginTop: 64, paddingTop: 24, borderTop: '1px solid var(--sl-line-soft)', display: 'flex', justifyContent: 'space-between', fontSize: 10, fontFamily: 'var(--font-mono)', color: 'var(--sl-muted)', textTransform: 'uppercase', letterSpacing: '0.15em' }}>
+          <span>© 2026 Shorelife · v1.4 Deployment</span>
+          <span>Scientific Computing · Pacific Coast</span>
         </div>
       </footer>
     </main>
