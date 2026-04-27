@@ -3,10 +3,30 @@ import React, { useEffect, useState, useMemo } from "react";
 import { useParams } from "next/navigation";
 import { getBeaches, getForecast, getObservations, preferredForecastDate, type BeachSummary, type ForecastRecord, type ObservationResponse } from "@/lib/api";
 import { RISK_COPY, RISK_TOKEN, DropRow, SeverityBar, RiskChip } from "@/components/Risk";
+import { Skeleton, SkeletonCard } from "@/components/Skeleton";
 
 function mToFt(m: number | null | undefined) {
   if (m == null) return "—";
   return (m * 3.281).toFixed(1) + " ft";
+}
+
+function TrendIndicator({ current, previous, reverse = false }: { current: number | null | undefined, previous: number | null | undefined, reverse?: boolean }) {
+  if (current == null || previous == null || current === previous) return null;
+  const isUp = current > previous;
+  const isGood = reverse ? !isUp : isUp;
+  return (
+    <span style={{ 
+      display: 'inline-flex', 
+      alignItems: 'center', 
+      marginLeft: 4, 
+      color: isGood ? 'var(--sl-teal-deep)' : 'var(--sl-risk-high)',
+      fontSize: 14,
+      transform: isUp ? 'rotate(0deg)' : 'rotate(180deg)',
+      transition: 'transform 0.3s ease'
+    }}>
+      ↑
+    </span>
+  );
 }
 
 export default function BeachDetailPage() {
@@ -32,25 +52,67 @@ export default function BeachDetailPage() {
     }).finally(() => setLoading(false));
   }, [id]);
 
-  if (loading) return <div style={{ padding: 64, color: 'var(--sl-muted)' }}>Loading...</div>;
+  if (loading) return (
+    <div style={{ padding: '48px 64px 64px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', paddingBottom: 32, borderBottom: '1px solid var(--sl-line)' }}>
+        <div>
+          <Skeleton style={{ width: 120, height: 14, marginBottom: 8 }} />
+          <Skeleton style={{ width: 400, height: 72 }} />
+        </div>
+        <Skeleton style={{ width: 100, height: 32 }} />
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: 48, marginTop: 48 }}>
+        <SkeletonCard />
+        <SkeletonCard />
+      </div>
+    </div>
+  );
+
   if (!beach) return <div style={{ padding: 64 }}>Beach not found.</div>;
 
   const band = forecast?.risk_band || 'Moderate';
   const tok = RISK_TOKEN[band];
   const copy = RISK_COPY[band];
   const env = forecast?.environmental_summary;
+  
+  // Basic trend comparison if history exists
+  const prevEnv = obs?.recent_environment && obs.recent_environment.length > 1 ? obs.recent_environment[1] : null;
 
   const conditions = [
-    { l: 'Wave Height', v: mToFt(env?.wave_height_m) },
-    { l: 'Period', v: env?.dominant_period_s ? `${Math.round(env.dominant_period_s)}s` : '—' },
-    { l: 'Water Temp', v: env?.water_temperature_c ? `${Math.round(env.water_temperature_c * 9/5 + 32)}°F` : '—' },
-    { l: 'UV Index', v: env?.uv_index ? Math.round(env.uv_index) : '—' },
-    { l: 'Wind Speed', v: env?.wind_speed_mps ? `${Math.round(env.wind_speed_mps * 2.237)} mph` : '—' },
-    { l: 'Salinity', v: env?.salinity_psu ? `${env.salinity_psu.toFixed(1)} psu` : '—' },
+    { 
+      l: 'Wave Height', 
+      v: mToFt(env?.wave_height_m),
+      trend: <TrendIndicator current={env?.wave_height_m} previous={Number(prevEnv?.wave_height_m)} />
+    },
+    { 
+      l: 'Period', 
+      v: env?.dominant_period_s ? `${Math.round(env.dominant_period_s)}s` : '—',
+      trend: <TrendIndicator current={env?.dominant_period_s} previous={Number(prevEnv?.dominant_period_s)} />
+    },
+    { 
+      l: 'Water Temp', 
+      v: env?.water_temperature_c ? `${Math.round(env.water_temperature_c * 9/5 + 32)}°F` : '—',
+      trend: <TrendIndicator current={env?.water_temperature_c} previous={Number(prevEnv?.water_temperature_c)} />
+    },
+    { 
+      l: 'UV Index', 
+      v: env?.uv_index ? Math.round(env.uv_index) : '—',
+      trend: <TrendIndicator current={env?.uv_index} previous={Number(prevEnv?.uv_index)} reverse={true} />
+    },
+    { 
+      l: 'Wind Speed', 
+      v: env?.wind_speed_mps ? `${Math.round(env.wind_speed_mps * 2.237)} mph` : '—',
+      trend: <TrendIndicator current={env?.wind_speed_mps} previous={Number(prevEnv?.wind_speed_mps)} reverse={true} />
+    },
+    { 
+      l: 'Salinity', 
+      v: env?.salinity_psu ? `${env.salinity_psu.toFixed(1)} psu` : '—',
+      trend: <TrendIndicator current={env?.salinity_psu} previous={Number(prevEnv?.salinity_psu)} />
+    },
   ];
 
   return (
-    <div style={{ padding: '48px 64px 64px' }}>
+    <div style={{ padding: '48px 64px 64px' }} className="animate-fade">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', paddingBottom: 32, borderBottom: '1px solid var(--sl-line)' }}>
         <div>
           <div style={{ color: 'var(--sl-sun-deep)', fontFamily: 'var(--font-mono)', fontSize: '0.85rem', textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: 8 }}>{beach.county} County · {beach.region}</div>
@@ -108,7 +170,12 @@ export default function BeachDetailPage() {
                 {obs.observations.slice(0, 5).map((o, i) => (
                   <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 120px 100px', padding: '16px 20px', borderBottom: i === 4 ? 'none' : '1px solid var(--sl-line-soft)', alignItems: 'center' }}>
                     <span style={{ fontFamily: 'var(--font-text)', fontSize: 14 }}>{new Date(o.sample_time).toLocaleDateString()}</span>
-                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 14, fontWeight: 500 }}>{o.value} <small style={{ fontWeight: 400, color: 'var(--sl-muted)' }}>{o.units}</small></span>
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 14, fontWeight: 500 }}>
+                      {o.value} <small style={{ fontWeight: 400, color: 'var(--sl-muted)' }}>{o.units}</small>
+                      {i < obs.observations.length - 1 && (
+                        <TrendIndicator current={o.value} previous={obs.observations[i+1].value} reverse={true} />
+                      )}
+                    </span>
                     <span style={{ 
                       color: o.exceeds_stv ? 'var(--sl-risk-high-ink)' : 'var(--sl-risk-low-ink)',
                       background: o.exceeds_stv ? 'var(--sl-risk-high-bg)' : 'var(--sl-risk-low-bg)',
@@ -131,11 +198,15 @@ export default function BeachDetailPage() {
               {conditions.map(c => (
                 <div key={c.l} style={{ padding: '16px 20px', background: 'var(--sl-ecru)', borderRadius: 12, border: '1px solid var(--sl-line-soft)' }}>
                   <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, textTransform: 'uppercase', color: 'var(--sl-muted)', letterSpacing: '0.05em' }}>{c.l}</div>
-                  <div style={{ fontFamily: 'var(--font-heading)', fontSize: 24, color: 'var(--sl-navy-ink)', marginTop: 8 }}>{c.v}</div>
+                  <div style={{ display: 'flex', alignItems: 'baseline' }}>
+                    <div style={{ fontFamily: 'var(--font-heading)', fontSize: 24, color: 'var(--sl-navy-ink)', marginTop: 8 }}>{c.v}</div>
+                    {c.trend}
+                  </div>
                 </div>
               ))}
             </div>
           </div>
+
 
           {/* Sidebar / Map Context */}
           <div style={{ marginTop: 32, padding: 32, background: 'var(--sl-bone)', border: '1px solid var(--sl-line)', borderRadius: 18 }}>

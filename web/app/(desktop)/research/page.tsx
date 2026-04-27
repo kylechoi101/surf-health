@@ -62,69 +62,66 @@ export default async function ResearchPage() {
         ))}
       </div>
 
-      {/* Two-column: source freshness + station coverage */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.4fr', gap: 32, marginTop: 32 }}>
-        {/* Source freshness */}
-        <div style={{ background: 'var(--sl-bone)', border: '1px solid var(--sl-line)',
-          borderRadius: 14, padding: 28 }}>
-          <div style={{ color: 'var(--sl-sun-deep)', fontFamily: 'var(--font-mono)', fontSize: '0.85rem', textTransform: 'uppercase', letterSpacing: '0.12em' }}>Source freshness</div>
+      {/* Validation / Spatial Metrics */}
+      {healthData.model_registry.spatial_metrics && (
+        <div style={{ marginTop: 32, background: 'var(--sl-bone)', border: '1px solid var(--sl-line)', borderRadius: 14, padding: 28 }}>
+          <div style={{ color: 'var(--sl-sun-deep)', fontFamily: 'var(--font-mono)', fontSize: '0.85rem', textTransform: 'uppercase', letterSpacing: '0.12em' }}>Spatial backtests</div>
           <h2 style={{ fontFamily: 'var(--font-heading)', fontSize: 28, margin: '8px 0 24px', color: 'var(--sl-navy-ink)', fontWeight: 400 }}>
-            Pipeline heartbeat
+            Performance on unobserved counties
           </h2>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
-            {sources.map(([src, ts], i) => {
-              const ageStr = timeSince(ts as string);
-              const isFresh = !ageStr.includes('d');
-              return (
-              <div key={src} style={{ display: 'flex', justifyContent: 'space-between',
-                padding: '14px 0', borderTop: i ? '1px solid var(--sl-line-soft)' : 'none' }}>
-                <span style={{ fontFamily: 'var(--font-text)', fontSize: 13, color: 'var(--sl-ink)' }}>{src}</span>
-                <span style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--sl-muted)' }}>{ageStr}</span>
-                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, fontWeight: 600,
-                    letterSpacing: '0.14em', textTransform: 'uppercase',
-                    padding: '3px 8px', borderRadius: 999,
-                    background: isFresh ? 'var(--sl-risk-low-bg)' : 'var(--sl-risk-mod-bg)',
-                    color: isFresh ? 'var(--sl-risk-low-ink)' : 'var(--sl-risk-mod-ink)' }}>
-                    {isFresh ? 'fresh' : 'stale'}
-                  </span>
-                </span>
-              </div>
-            )})}
-          </div>
-        </div>
-
-        {/* Station coverage */}
-        <div style={{ background: 'var(--sl-bone)', border: '1px solid var(--sl-line)',
-          borderRadius: 14, padding: 28 }}>
-          <div style={{ color: 'var(--sl-sun-deep)', fontFamily: 'var(--font-mono)', fontSize: '0.85rem', textTransform: 'uppercase', letterSpacing: '0.12em' }}>Station state</div>
-          <h2 style={{ fontFamily: 'var(--font-heading)', fontSize: 28, margin: '8px 0 24px', color: 'var(--sl-navy-ink)', fontWeight: 400 }}>
-            Current forecast coverage
-          </h2>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-            {stations.map(s => (
-              <div key={s.id} style={{
-                display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                padding: '11px 14px', borderRadius: 10,
-                background: 'var(--sl-ecru)', border: '1px solid var(--sl-line-soft)' }}>
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontFamily: 'var(--font-text)', fontSize: 12, fontWeight: 500, color: 'var(--sl-ink)',
-                    whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    {s.name}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 16 }}>
+            {Object.entries(healthData.model_registry.spatial_metrics).map(([name, m]: [string, any]) => (
+              <div key={name} style={{ padding: 18, background: 'var(--sl-ecru)', border: '1px solid var(--sl-line-soft)', borderRadius: 12 }}>
+                <div style={{ color: 'var(--sl-muted)', fontFamily: 'var(--font-mono)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.1em' }}>{name.replace(/_/g, ' ')}</div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 12 }}>
+                  <div>
+                    <div style={{ fontSize: 9, color: 'var(--sl-muted)', textTransform: 'uppercase', fontFamily: 'var(--font-mono)' }}>AUCPR</div>
+                    <div style={{ fontSize: 20, fontFamily: 'var(--font-mono)', color: 'var(--sl-navy-ink)' }}>{m.aucpr.toFixed(3)}</div>
                   </div>
-                  <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--sl-muted)',
-                    letterSpacing: '0.06em', marginTop: 2 }}>
-                    {model} · production
+                  <div style={{ textAlign: 'right' }}>
+                    <div style={{ fontSize: 9, color: 'var(--sl-muted)', textTransform: 'uppercase', fontFamily: 'var(--font-mono)' }}>Brier</div>
+                    <div style={{ fontSize: 20, fontFamily: 'var(--font-mono)', color: 'var(--sl-navy-ink)' }}>{m.brier.toFixed(3)}</div>
                   </div>
                 </div>
-                <RiskChip band="Moderate"/>
+                <div style={{ marginTop: 12, fontSize: 10, color: 'var(--sl-muted)', fontFamily: 'var(--font-text)' }}>
+                  {m.folds} folds · {m.heldout_rows} samples
+                </div>
               </div>
             ))}
           </div>
         </div>
+      )}
+
+      {/* Scientific Artifacts */}
+      <div style={{ marginTop: 32, padding: '0 0 64px' }}>
+        <div style={{ color: 'var(--sl-sun-deep)', fontFamily: 'var(--font-mono)', fontSize: '0.85rem', textTransform: 'uppercase', letterSpacing: '0.12em' }}>Scientific artifacts</div>
+        <h2 style={{ fontFamily: 'var(--font-heading)', fontSize: 28, margin: '8px 0 24px', color: 'var(--sl-navy-ink)', fontWeight: 400 }}>
+          Open data & peer review
+        </h2>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
+          {[
+            { t: 'Technical Methodology', d: 'Full mathematical derivation of the stacked ensemble blender and spatial holdout protocol.', f: 'PDF', a: 'Shorelife Team' },
+            { t: 'v1.4 Curated Dataset', d: 'Pre-processed hourly marine microbiology and environmental covariates for all CA stations.', f: 'CSV/Parquet', a: 'Automated Pipeline' },
+          ].map(a => (
+            <div key={a.t} style={{ padding: 24, background: 'var(--sl-bone)', border: '1px solid var(--sl-line)', borderRadius: 14, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <h3 style={{ fontFamily: 'var(--font-heading)', fontSize: 20, margin: '0 0 6px', color: 'var(--sl-navy)' }}>{a.t}</h3>
+                <p style={{ fontSize: 13, color: 'var(--sl-muted)', margin: '0 0 12px', maxWidth: 360, lineHeight: 1.5 }}>{a.d}</p>
+                <div style={{ display: 'flex', gap: 12, fontFamily: 'var(--font-mono)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                  <span style={{ color: 'var(--sl-navy)' }}>{a.f}</span>
+                  <span style={{ color: 'var(--sl-muted)' }}>·</span>
+                  <span style={{ color: 'var(--sl-muted)' }}>{a.a}</span>
+                </div>
+              </div>
+              <button style={{ 
+                padding: '10px 18px', borderRadius: 8, border: '1px solid var(--sl-line)', 
+                background: 'var(--sl-ecru)', color: 'var(--sl-navy)', fontFamily: 'var(--font-mono)', 
+                fontSize: 11, fontWeight: 600, cursor: 'pointer' 
+              }}>DOWNLOAD</button>
+            </div>
+          ))}
+        </div>
       </div>
-      
-      {/* Validation skipped per instructions until spatial_metrics propagation is fixed */}
     </div>
   );
 }

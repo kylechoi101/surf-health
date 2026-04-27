@@ -4,11 +4,13 @@ import { CaliforniaPosterMap } from "@/components/CaliforniaPosterMap";
 import { ShorelineCrossSection } from "@/components/ShorelineCrossSection";
 import { RiskChip, RISK_COPY, RISK_TOKEN, DropRow, SeverityBar } from "@/components/Risk";
 import { LockupHorizontal } from "@/components/Lockup";
+import { Skeleton, SkeletonCard } from "@/components/Skeleton";
 import { getBeaches, getForecast, preferredForecastDate, type BeachSummary, type ForecastRecord } from "@/lib/api";
 
 export default function HomePage() {
   const [beaches, setBeaches] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingFeatured, setLoadingFeatured] = useState(true);
   const [activeBeach, setActiveBeach] = useState<any | null>(null);
 
   useEffect(() => {
@@ -24,7 +26,7 @@ export default function HomePage() {
               lon: b.geometry?.longitude,
               risk: f?.risk_band || 'Moderate',
               p: f?.p_exceed || 0,
-              waveFt: f?.environmental_summary?.wave_height_m ? (f.environmental_summary.wave_height_m * 3.28).toFixed(1) : '--',
+              waveFt: f?.environmental_summary?.wave_height_m ? (f.environmental_summary.wave_height_m * 3.281).toFixed(1) : '--',
               temp: f?.environmental_summary?.water_temperature_c ? Math.round(f.environmental_summary.water_temperature_c * 9/5 + 32) : '--',
               period: f?.environmental_summary?.dominant_period_s ? Math.round(f.environmental_summary.dominant_period_s) : '--',
             };
@@ -35,7 +37,10 @@ export default function HomePage() {
       );
       setBeaches(pairs);
       setActiveBeach(pairs.find(b => b.id === 'ca298722-orange-aliso-county-beach-s8') || pairs[0]);
-    }).finally(() => setLoading(false));
+    }).finally(() => {
+      setLoading(false);
+      setLoadingFeatured(false);
+    });
   }, []);
 
   const heroBand = activeBeach?.risk || 'Low';
@@ -72,30 +77,40 @@ export default function HomePage() {
             borderRadius: 14, overflow: 'hidden',
             boxShadow: '0 1px 0 rgba(255,255,255,0.6) inset, 0 8px 24px rgba(11,66,102,0.06)',
           }}>
-            <div style={{ background: tok.bg, padding: '20px 24px',
-              display: 'flex', flexDirection: 'column', justifyContent: 'space-between',
-              minWidth: 200, borderRight: `1px solid var(--sl-line)` }}>
-              <div style={{ color: tok.ink, fontFamily: 'var(--font-mono)', fontSize: 11, letterSpacing: '0.14em', fontWeight: 600 }}>{heroBand.toUpperCase()}</div>
-              <div style={{
-                fontFamily: 'var(--font-heading)', fontSize: 56, color: tok.ink, lineHeight: 0.9, marginTop: 18, letterSpacing: '-0.02em'
-              }}>{copy.head}</div>
-              <DropRow band={heroBand} size={14}/>
-            </div>
-            <div style={{ padding: '20px 28px', display: 'flex', flexDirection: 'column', gap: 14, minWidth: 280 }}>
-              <div>
-                <div style={{ color: 'var(--sl-muted)', fontFamily: 'var(--font-mono)', fontSize: 11, letterSpacing: '0.14em', fontWeight: 600 }}>Today at {activeBeach?.name || '...'}</div>
-                <div style={{ fontSize: 14, color: 'var(--sl-ink)', marginTop: 6, lineHeight: 1.5, maxWidth: 280, fontFamily: 'var(--font-text)' }}>
-                  {copy.sub}
+            {loading ? (
+              <div style={{ padding: 40, width: 480 }}>
+                <Skeleton style={{ width: '40%', height: 14, marginBottom: 12 }} />
+                <Skeleton style={{ width: '80%', height: 56, marginBottom: 20 }} />
+                <Skeleton style={{ width: '100%', height: 48 }} />
+              </div>
+            ) : (
+              <>
+                <div style={{ background: tok.bg, padding: '20px 24px',
+                  display: 'flex', flexDirection: 'column', justifyContent: 'space-between',
+                  minWidth: 200, borderRight: `1px solid var(--sl-line)` }}>
+                  <div style={{ color: tok.ink, fontFamily: 'var(--font-mono)', fontSize: 11, letterSpacing: '0.14em', fontWeight: 600 }}>{heroBand.toUpperCase()}</div>
+                  <div style={{
+                    fontFamily: 'var(--font-heading)', fontSize: 56, color: tok.ink, lineHeight: 0.9, marginTop: 18, letterSpacing: '-0.02em'
+                  }}>{copy.head}</div>
+                  <DropRow band={heroBand} size={14}/>
                 </div>
-              </div>
-              <SeverityBar band={heroBand} width="100%"/>
-              <div style={{ display: 'flex', justifyContent: 'space-between',
-                fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--sl-muted)',
-                paddingTop: 10, borderTop: '1px dashed var(--sl-line)' }}>
-                <span>ENT · {copy.cfu}</span>
-                <span>SAMPLED · 2d ago</span>
-              </div>
-            </div>
+                <div style={{ padding: '20px 28px', display: 'flex', flexDirection: 'column', gap: 14, minWidth: 280 }}>
+                  <div>
+                    <div style={{ color: 'var(--sl-muted)', fontFamily: 'var(--font-mono)', fontSize: 11, letterSpacing: '0.14em', fontWeight: 600 }}>Today at {activeBeach?.name || '...'}</div>
+                    <div style={{ fontSize: 14, color: 'var(--sl-ink)', marginTop: 6, lineHeight: 1.5, maxWidth: 280, fontFamily: 'var(--font-text)' }}>
+                      {copy.sub}
+                    </div>
+                  </div>
+                  <SeverityBar band={heroBand} width="100%"/>
+                  <div style={{ display: 'flex', justifyContent: 'space-between',
+                    fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--sl-muted)',
+                    paddingTop: 10, borderTop: '1px dashed var(--sl-line)' }}>
+                    <span>ENT · {copy.cfu}</span>
+                    <span>SAMPLED · 2d ago</span>
+                  </div>
+                </div>
+              </>
+            )}
           </div>
 
           <div style={{ display: 'flex', gap: 48, marginTop: 36 }}>
@@ -207,37 +222,41 @@ export default function HomePage() {
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16 }}>
-          {featured.map(b => {
-            const tok2 = RISK_TOKEN[b.risk];
-            return (
-              <article key={b.id} style={{
-                background: 'var(--sl-bone)', border: '1px solid var(--sl-line)', cursor: 'pointer',
-                borderRadius: 14, padding: 22, display: 'flex', flexDirection: 'column', gap: 12,
-              }} onClick={() => window.location.href = `/b?id=${b.id}`}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                  <div>
-                    <div style={{ color: 'var(--sl-muted)', fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase' }}>{b.county}</div>
-                    <h3 style={{ fontFamily: 'var(--font-heading)', fontSize: 22, margin: '6px 0 0', color: 'var(--sl-navy)', fontWeight: 400 }}>{b.name}</h3>
+          {loadingFeatured ? (
+            [...Array(3)].map((_, i) => <SkeletonCard key={i} />)
+          ) : (
+            featured.map(b => {
+              const tok2 = RISK_TOKEN[b.risk];
+              return (
+                <article key={b.id} style={{
+                  background: 'var(--sl-bone)', border: '1px solid var(--sl-line)', cursor: 'pointer',
+                  borderRadius: 14, padding: 22, display: 'flex', flexDirection: 'column', gap: 12,
+                }} onClick={() => window.location.href = `/beaches/${b.id}`}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                    <div>
+                      <div style={{ color: 'var(--sl-muted)', fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase' }}>{b.county}</div>
+                      <h3 style={{ fontFamily: 'var(--font-heading)', fontSize: 22, margin: '6px 0 0', color: 'var(--sl-navy)', fontWeight: 400 }}>{b.name}</h3>
+                    </div>
+                    <RiskChip band={b.risk}/>
                   </div>
-                  <RiskChip band={b.risk}/>
-                </div>
-                <div style={{ paddingTop: 10, borderTop: '1px dashed var(--sl-line)',
-                  display: 'flex', justifyContent: 'space-between',
-                  fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--sl-muted)' }}>
-                  <span>{b.waveFt}ft @ {b.period}s</span>
-                  <span>{b.temp}°F</span>
-                  <span style={{ color: tok2?.ink }}>{Math.round(b.p * 100)}% exceed</span>
-                </div>
-                <SeverityBar band={b.risk} width="100%" height={4}/>
-              </article>
-            );
-          })}
+                  <div style={{ paddingTop: 10, borderTop: '1px dashed var(--sl-line)',
+                    display: 'flex', justifyContent: 'space-between',
+                    fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--sl-muted)' }}>
+                    <span>{b.waveFt}ft @ {b.period}s</span>
+                    <span>{b.temp}°F</span>
+                    <span style={{ color: tok2?.ink }}>{Math.round(b.p * 100)}% exceed</span>
+                  </div>
+                  <SeverityBar band={b.risk} width="100%" height={4}/>
+                </article>
+              );
+            })
+          )}
         </div>
       </section>
 
       {/* FOOTER */}
       <footer style={{ padding: '80px 64px 48px', marginTop: 64, borderTop: '1px solid var(--sl-line)' }}>
-        <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr', gap: 48 }}>
+        <div style={{ gridTemplateColumns: '2fr 1fr 1fr 1fr', gap: 48, display: 'grid' }}>
           <div>
             <LockupHorizontal size={24} subtitle="California Water Quality"/>
             <p style={{ fontSize: 13, color: 'var(--sl-muted)', lineHeight: 1.6, marginTop: 18, maxWidth: 380, fontFamily: 'var(--font-text)' }}>
