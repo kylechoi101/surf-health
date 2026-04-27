@@ -2165,6 +2165,10 @@ def train_curated_and_export(
                 curated_dir=curated_dir,
                 forecast_date=forecast_date,
                 spatial_strategy=spatial_strategy,
+                spatial_backtests=spatial_backtests,
+                spatial_beach_limit=spatial_beach_limit,
+                spatial_county_limit=spatial_county_limit,
+                spatial_jobs=spatial_jobs,
                 registry=registry,
             )
         print("production_model.json not found — running full comparison", file=sys.stderr, flush=True)
@@ -2446,6 +2450,27 @@ def main() -> None:
     parser.add_argument("--model", type=str, default="tcn", choices=["tcn", "cnn", "lstm", "transformer", "pinn", "all", "none"])
     parser.add_argument("--winner-only", action="store_true",
                         help="Retrain only the persisted backtest winner (reads production_model.json). "
+                             "Falls back to full comparison if no registry exists.")
+    args = parser.parse_args()
+    forecast_date = date.fromisoformat(args.forecast_date) if args.forecast_date else None
+    artifacts = train_all(
+        sample_fixture=args.sample_fixture,
+        curated=args.curated,
+        forecast_date=forecast_date,
+        spatial_backtests=args.spatial_backtests,
+        spatial_beach_limit=args.spatial_beach_limit,
+        spatial_county_limit=args.spatial_county_limit,
+        spatial_jobs=args.spatial_jobs,
+        model_type=args.model,
+        spatial_strategy=args.spatial_strategy,
+        winner_only=args.winner_only,
+    )
+    print(json.dumps(asdict(artifacts), indent=2))
+
+
+if __name__ == "__main__":
+    main()
+persisted backtest winner (reads production_model.json). "
                              "Falls back to full comparison if no registry exists.")
     args = parser.parse_args()
     forecast_date = date.fromisoformat(args.forecast_date) if args.forecast_date else None
