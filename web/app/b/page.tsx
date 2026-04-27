@@ -1,24 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { getBeaches, getForecast, preferredForecastDate, type BeachSummary, type ForecastRecord } from "@/lib/api";
-
-const RISK_COLORS: Record<string, { bg: string; ink: string; fill: string }> = {
-  Low:         { bg: "#dcfce7", ink: "#175d43", fill: "#10b981" },
-  Moderate:    { bg: "#fef3c7", ink: "#6d4a05", fill: "#f59e0b" },
-  High:        { bg: "#ffedd5", ink: "#7a2d15", fill: "#fb923c" },
-  "Very High": { bg: "#fee2e2", ink: "#561611", fill: "#f87171" },
-};
-
-const RISK_HEAD: Record<string, string> = {
-  Low: "Clean.", Moderate: "Watch.", High: "Elevated.", "Very High": "Unsafe.",
-};
-
-const RISK_SUB: Record<string, string> = {
-  Low: "Swim, surf, dunk under.",
-  Moderate: "Okay — just don't swallow.",
-  High: "Stay out if you're sensitive.",
-  "Very High": "County advisory — stay out.",
-};
+import { RISK_COPY, RISK_TOKEN, DropRow, SeverityBar } from "@/components/Risk";
 
 function mToFt(m: number | null | undefined) {
   if (m == null) return "—";
@@ -48,131 +31,237 @@ export default function BeachSharePage() {
   }, []);
 
   if (loading) return (
-    <div style={{ height: "100dvh", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "system-ui, sans-serif", color: "#64748b" }}>
+    <div style={{ height: "100dvh", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--sl-muted)" }}>
       Loading…
     </div>
   );
 
   if (notFound || !beach) return (
-    <div style={{ height: "100dvh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", fontFamily: "system-ui, sans-serif", gap: 12 }}>
-      <p style={{ fontSize: 16, color: "#64748b" }}>Beach not found.</p>
-      <a href="/" style={{ color: "#0b4266", fontWeight: 600 }}>← Go to Shorelife</a>
+    <div style={{ height: "100dvh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12 }}>
+      <p style={{ fontSize: 16, color: "var(--sl-muted)" }}>Beach not found.</p>
+      <a href="/" style={{ color: "var(--sl-navy)", fontWeight: 600 }}>← Go to Shorelife</a>
     </div>
   );
 
   const band = forecast?.risk_band ?? "Moderate";
-  const c = RISK_COLORS[band] ?? RISK_COLORS.Moderate;
+  const tok = RISK_TOKEN[band] ?? RISK_TOKEN.Moderate;
+  const copy = RISK_COPY[band] ?? RISK_COPY.Moderate;
   const env = forecast?.environmental_summary;
 
+  const conditions = [
+    { l: 'Surf',  v: mToFt(env?.wave_height_m), s: env?.wave_period_s ? `@ ${Math.round(env.wave_period_s)}s` : '—' },
+    { l: 'Water', v: env?.water_temperature_c != null ? `${Math.round(env.water_temperature_c * 9/5 + 32)}°F` : '—', s: 'mild' },
+    { l: 'Wind',  v: env?.wind_speed_mps != null ? `${Math.round(env.wind_speed_mps * 2.237)} mph` : '—', s: 'WSW' },
+    { l: 'UV',    v: env?.uv_index != null ? String(Math.round(env.uv_index)) : '—', s: (env?.uv_index ?? 0) >= 7 ? 'high' : 'moderate' },
+  ];
+
   return (
-    <div style={{ minHeight: "100dvh", fontFamily: "system-ui, -apple-system, sans-serif", backgroundColor: "#f2f4f7" }}>
-      {/* Hero */}
-      <div style={{ backgroundColor: c.fill, padding: "32px 24px 28px", position: "relative", overflow: "hidden" }}>
-        {/* Decorative circles */}
-        <div style={{ position: "absolute", top: -20, right: -20, width: 120, height: 120, borderRadius: 60, backgroundColor: "rgba(255,255,255,0.12)" }} />
-        <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: 24, backgroundColor: "rgba(255,255,255,0.08)", borderRadius: "60px 60px 0 0" }} />
-
-        <a href="/" style={{ display: "inline-block", color: "rgba(255,255,255,0.8)", fontSize: 12, fontWeight: 800, letterSpacing: 3, textDecoration: "none", marginBottom: 24 }}>
-          SHORELIFE
-        </a>
-        <p style={{ color: "rgba(255,255,255,0.8)", fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1.2, margin: 0 }}>
-          Can I swim today?
-        </p>
-        <h1 style={{ color: "#fff", fontSize: 52, fontWeight: 700, margin: "4px 0 8px", lineHeight: 1 }}>
-          {RISK_HEAD[band]}
+    <div style={{ padding: '48px 64px 64px' }}>
+      <div style={{ padding: '48px 0 24px' }}>
+        <div style={{ color: 'var(--sl-sun-deep)', margin: '0 0 10px', fontSize: '0.85rem', textTransform: 'uppercase', letterSpacing: '0.12em', fontFamily: 'var(--font-mono)' }}>Beach · share preview</div>
+        <h1 style={{ fontSize: 64, margin: '12px 0 12px', color: 'var(--sl-navy-ink)', fontFamily: 'var(--font-heading)', fontWeight: 400, letterSpacing: '-0.02em' }}>
+          {beach.name}
         </h1>
-        <p style={{ color: "rgba(255,255,255,0.9)", fontSize: 15, margin: "0 0 20px", lineHeight: 1.5 }}>
-          {RISK_SUB[band]}
-        </p>
-        <p style={{ color: "rgba(255,255,255,0.75)", fontSize: 13, fontWeight: 600, margin: 0 }}>
-          {beach.name} · {beach.county} County
-        </p>
-      </div>
-
-      {/* Risk card */}
-      <div style={{ padding: "16px 16px 0" }}>
-        <div style={{ backgroundColor: c.bg, borderRadius: 18, padding: 18 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-            <div>
-              <p style={{ color: c.ink, fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1, margin: "0 0 4px" }}>Water quality</p>
-              <p style={{ color: c.ink, fontSize: 22, fontWeight: 700, margin: "0 0 4px" }}>{band}</p>
-              <p style={{ color: c.ink, fontSize: 13, margin: 0, opacity: 0.85 }}>Enterococcus: {
-                band === "Low" ? "< 35 CFU/100mL" :
-                band === "Moderate" ? "35–104 CFU/100mL" :
-                band === "High" ? "104–320 CFU/100mL" : "> 320 CFU/100mL"
-              }</p>
-            </div>
-            {forecast && (
-              <div style={{ textAlign: "right" }}>
-                <p style={{ color: c.ink, fontSize: 32, fontWeight: 700, margin: 0, lineHeight: 1 }}>{Math.round(forecast.p_exceed * 100)}<span style={{ fontSize: 16 }}>%</span></p>
-                <p style={{ color: c.ink, fontSize: 10, fontWeight: 600, margin: "4px 0 0", opacity: 0.75 }}>exceed chance</p>
-              </div>
-            )}
-          </div>
-          {/* Severity bar */}
-          <div style={{ display: "flex", gap: 4, marginTop: 16 }}>
-            {(["Low", "Moderate", "High", "Very High"] as const).map((b, i) => {
-              const idx = ["Low", "Moderate", "High", "Very High"].indexOf(band);
-              const on = i <= idx;
-              return (
-                <div key={b} style={{ flex: 1, height: 7, borderRadius: 4, backgroundColor: on ? RISK_COLORS[b].fill : "#e2e8f0", opacity: on ? (i === idx ? 1 : 0.45) : 1 }} />
-              );
-            })}
-          </div>
+        <div style={{ display: 'flex', gap: 24, alignItems: 'baseline',
+          fontFamily: 'var(--font-mono)', fontSize: 11, letterSpacing: '0.14em',
+          color: 'var(--sl-muted)', textTransform: 'uppercase' }}>
+          <span>{beach.county} County</span>
+          <span>·</span>
+          <span>{beach.region ?? 'CA'}</span>
+          <span>·</span>
+          <span>{beach.lat.toFixed(3)}°N · {Math.abs(beach.lon).toFixed(3)}°W</span>
         </div>
       </div>
 
-      {/* Conditions */}
-      {env && (
-        <div style={{ padding: "16px 16px 0" }}>
-          <p style={{ fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: 1, margin: "0 0 10px" }}>Conditions</p>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-            {[
-              { icon: "🌊", label: "Surf", val: mToFt(env.wave_height_m) },
-              { icon: "🌡", label: "Water temp", val: env.water_temperature_c != null ? `${Math.round(env.water_temperature_c * 9/5 + 32)}°F` : "—" },
-              { icon: "💨", label: "Wind", val: env.wind_speed_mps != null ? `${Math.round(env.wind_speed_mps * 2.237)} mph` : "—" },
-              { icon: "☀️", label: "UV", val: env.uv_index != null ? String(Math.round(env.uv_index)) : "—" },
-            ].map(({ icon, label, val }) => (
-              <div key={label} style={{ backgroundColor: "#fff", borderRadius: 14, padding: 14, border: "1px solid #e5e7eb" }}>
-                <p style={{ fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: 0.5, margin: "0 0 6px" }}>{icon} {label}</p>
-                <p style={{ fontSize: 20, fontWeight: 700, color: "#0f172a", margin: 0 }}>{val}</p>
+      <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: 48, alignItems: 'start' }}>
+        {/* LEFT — full beach detail */}
+        <div>
+          {/* Big risk hero card */}
+          <div style={{
+            background: tok.bg, border: `1px solid ${tok.c}`, borderRadius: 18,
+            padding: '36px 40px', position: 'relative', overflow: 'hidden',
+          }}>
+            {/* Tide-line texture */}
+            <svg style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', opacity: 0.18 }}
+              viewBox="0 0 600 320" preserveAspectRatio="none">
+              {[60, 90, 130, 180, 240].map((y, i) => (
+                <path key={i} d={`M 0 ${y} C 150 ${y - 6}, 300 ${y + 8}, 450 ${y - 4} S 600 ${y}, 600 ${y}`}
+                  stroke={tok.ink} strokeWidth="1" fill="none" opacity={1 - i*0.15}/>
+              ))}
+            </svg>
+            <div style={{ position: 'relative' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                <DropRow band={band} size={18}/>
+                <div style={{ color: tok.ink, fontFamily: 'var(--font-mono)', fontSize: 11, letterSpacing: '0.14em', fontWeight: 600 }}>{band.toUpperCase()} · TODAY</div>
               </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Drivers */}
-      {forecast && forecast.top_drivers.length > 0 && (
-        <div style={{ padding: "16px 16px 0" }}>
-          <p style={{ fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: 1, margin: "0 0 10px" }}>What&apos;s driving this</p>
-          <div style={{ backgroundColor: "#fff", borderRadius: 18, border: "1px solid #e5e7eb", overflow: "hidden" }}>
-            {forecast.top_drivers.map((d, i) => (
-              <div key={i} style={{ padding: "12px 16px", borderTop: i ? "1px solid #f1f5f9" : "none", display: "flex", gap: 10, alignItems: "flex-start" }}>
-                <div style={{ width: 22, height: 22, borderRadius: 6, backgroundColor: band === "Low" ? "#dcfce7" : "#fee2e2", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, color: band === "Low" ? "#15803d" : "#b91c1c", flexShrink: 0 }}>
-                  {band === "Low" ? "✓" : "!"}
+              <div style={{ fontSize: 120, lineHeight: 0.85, color: tok.ink, marginTop: 20, marginBottom: 16, fontFamily: 'var(--font-heading)', fontWeight: 400, letterSpacing: '-0.04em' }}>
+                {copy.head}
+              </div>
+              <div style={{ fontSize: 17, color: tok.ink, opacity: 0.85, lineHeight: 1.5, maxWidth: 460, fontFamily: 'var(--font-mono)' }}>
+                {copy.sub}
+              </div>
+              <div style={{ marginTop: 28, paddingTop: 20,
+                borderTop: `1px dashed ${tok.c}`,
+                display: 'flex', justifyContent: 'space-between' }}>
+                <div>
+                  <div style={{ color: tok.ink, opacity: 0.7, fontFamily: 'var(--font-mono)', fontSize: 11, letterSpacing: '0.1em', textTransform: 'uppercase', fontWeight: 600 }}>Enterococcus</div>
+                  <div style={{ fontSize: 18, color: tok.ink, marginTop: 4, fontFamily: 'var(--font-mono)' }}>{copy.cfu}</div>
                 </div>
-                <p style={{ margin: 0, fontSize: 13, fontWeight: 500, color: "#0f172a", lineHeight: 1.5 }}>{d}</p>
+                <div style={{ textAlign: 'center' }}>
+                  <div style={{ color: tok.ink, opacity: 0.7, fontFamily: 'var(--font-mono)', fontSize: 11, letterSpacing: '0.1em', textTransform: 'uppercase', fontWeight: 600 }}>Exceed chance</div>
+                  <div style={{ fontSize: 36, color: tok.ink, marginTop: 4, lineHeight: 1, fontFamily: 'var(--font-heading)' }}>
+                    {forecast ? Math.round(forecast.p_exceed * 100) : '--'}<span style={{ fontSize: 18 }}>%</span>
+                  </div>
+                </div>
+                <div style={{ textAlign: 'right' }}>
+                  <div style={{ color: tok.ink, opacity: 0.7, fontFamily: 'var(--font-mono)', fontSize: 11, letterSpacing: '0.1em', textTransform: 'uppercase', fontWeight: 600 }}>Sampled</div>
+                  <div style={{ fontSize: 18, color: tok.ink, marginTop: 4, fontFamily: 'var(--font-mono)' }}>2d ago</div>
+                </div>
+              </div>
+              <div style={{ marginTop: 16 }}><SeverityBar band={band} width="100%" height={6}/></div>
+            </div>
+          </div>
+
+          {/* Conditions strip */}
+          <div style={{ marginTop: 24 }}>
+            <div style={{ color: 'var(--sl-sun-deep)', margin: '0 0 10px', fontSize: '0.85rem', textTransform: 'uppercase', letterSpacing: '0.12em', fontFamily: 'var(--font-mono)' }}>Conditions now</div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginTop: 14 }}>
+              {conditions.map(c => (
+                <div key={c.l} style={{
+                  background: 'var(--sl-bone)', border: '1px solid var(--sl-line)',
+                  borderRadius: 12, padding: '18px 20px',
+                }}>
+                  <div style={{ color: 'var(--sl-muted)', fontFamily: 'var(--font-mono)', fontSize: 11, letterSpacing: '0.1em', textTransform: 'uppercase', fontWeight: 600 }}>{c.l}</div>
+                  <div style={{ fontSize: 28, color: 'var(--sl-navy)', marginTop: 8, fontFamily: 'var(--font-heading)' }}>{c.v}</div>
+                  <div style={{ fontSize: 11, color: 'var(--sl-muted)', marginTop: 4, fontFamily: 'var(--font-mono)' }}>{c.s}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Drivers */}
+          {forecast && forecast.top_drivers.length > 0 && (
+            <div style={{ marginTop: 32 }}>
+              <div style={{ color: 'var(--sl-sun-deep)', margin: '0 0 10px', fontSize: '0.85rem', textTransform: 'uppercase', letterSpacing: '0.12em', fontFamily: 'var(--font-mono)' }}>What's driving this</div>
+              <div style={{ marginTop: 14, background: 'var(--sl-bone)', border: '1px solid var(--sl-line)',
+                borderRadius: 14, overflow: 'hidden' }}>
+                {forecast.top_drivers.map((d, i) => (
+                  <div key={i} style={{ padding: '16px 20px', display: 'flex', gap: 14,
+                    borderTop: i ? '1px solid var(--sl-line-soft)' : 'none' }}>
+                    <span style={{ width: 24, height: 24, borderRadius: 6, background: tok.bg,
+                      color: tok.ink, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 600, flexShrink: 0 }}>
+                      {String(i + 1).padStart(2, '0')}
+                    </span>
+                    <p style={{ margin: 0, fontSize: 14, color: 'var(--sl-ink)', lineHeight: 1.55, fontFamily: 'var(--font-mono)' }}>{d}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* RIGHT — phone preview + share metadata */}
+        <div>
+          <div style={{ color: 'var(--sl-sun-deep)', margin: '0 0 10px', fontSize: '0.85rem', textTransform: 'uppercase', letterSpacing: '0.12em', fontFamily: 'var(--font-mono)' }}>iOS share preview</div>
+          <div style={{ marginTop: 14, padding: 24, background: 'var(--sl-bone)',
+            border: '1px solid var(--sl-line)', borderRadius: 18 }}>
+            <PhoneMock beach={beach} band={band} tok={tok} copy={copy} p={forecast ? Math.round(forecast.p_exceed * 100) : 0} conditions={conditions} />
+          </div>
+
+          <div style={{ marginTop: 24 }}>
+            <div style={{ color: 'var(--sl-sun-deep)', margin: '0 0 10px', fontSize: '0.85rem', textTransform: 'uppercase', letterSpacing: '0.12em', fontFamily: 'var(--font-mono)' }}>Share link metadata</div>
+            <div style={{ marginTop: 14, fontFamily: 'var(--font-mono)', fontSize: 12,
+              color: 'var(--sl-ink)', background: 'var(--sl-bone)',
+              border: '1px solid var(--sl-line)', borderRadius: 12, padding: 16, lineHeight: 1.7 }}>
+              <div><span style={{ color: 'var(--sl-muted)' }}>url:</span> shorelife.app/b?id={beach.id}</div>
+              <div><span style={{ color: 'var(--sl-muted)' }}>og:title:</span> {beach.name} · {copy.head}</div>
+              <div><span style={{ color: 'var(--sl-muted)' }}>og:desc:</span> {copy.sub}</div>
+              <div><span style={{ color: 'var(--sl-muted)' }}>og:image:</span> /og/{beach.id}-{band.toLowerCase().replace(' ', '-')}.png</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PhoneMock({ beach, band, tok, copy, p, conditions }: any) {
+  return (
+    <div style={{ width: 340, margin: '0 auto', borderRadius: 38,
+      background: '#1a1a1a', padding: 8,
+      boxShadow: '0 20px 60px rgba(11,66,102,0.25)' }}>
+      <div style={{ borderRadius: 32, background: 'var(--sl-ecru)', overflow: 'hidden',
+        position: 'relative', height: 600 }}>
+        {/* Status bar */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', padding: '14px 22px 8px',
+          fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 600, color: 'var(--sl-ink)' }}>
+          <span>9:41</span>
+          <span>● ●</span>
+        </div>
+
+        {/* Hero band */}
+        <div style={{ background: tok.c, padding: '20px 22px 24px', position: 'relative', overflow: 'hidden' }}>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, fontWeight: 600,
+            letterSpacing: '0.18em', color: 'rgba(255,255,255,0.85)' }}>SHORELIFE</div>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'rgba(255,255,255,0.7)',
+            letterSpacing: '0.12em', textTransform: 'uppercase', marginTop: 16 }}>
+            Can I swim today?
+          </div>
+          <div style={{ fontFamily: 'var(--font-heading)', fontSize: 48, color: '#fff', lineHeight: 1, marginTop: 4, letterSpacing: '-0.02em' }}>
+            {copy.head}
+          </div>
+          <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.92)', marginTop: 6, lineHeight: 1.5, fontFamily: 'var(--font-text)' }}>
+            {copy.sub}
+          </div>
+          <div style={{ marginTop: 18, fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 600,
+            color: 'rgba(255,255,255,0.9)', letterSpacing: '0.06em' }}>
+            {beach.name.toUpperCase()} · {beach.county.toUpperCase()}
+          </div>
+        </div>
+
+        {/* Risk readout card */}
+        <div style={{ padding: '14px 14px 0' }}>
+          <div style={{ background: tok.bg, borderRadius: 14, padding: 16 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+              <div>
+                <div style={{ color: tok.ink, fontSize: 9, fontFamily: 'var(--font-mono)', textTransform: 'uppercase', fontWeight: 600, letterSpacing: '0.1em' }}>Water quality</div>
+                <div style={{ fontSize: 18, fontWeight: 600, color: tok.ink, marginTop: 4, fontFamily: 'var(--font-text)' }}>{band}</div>
+                <div style={{ fontSize: 11, color: tok.ink, opacity: 0.8, marginTop: 4, fontFamily: 'var(--font-text)' }}>Ent: {copy.cfu}</div>
+              </div>
+              <div style={{ textAlign: 'right' }}>
+                <div style={{ fontSize: 28, color: tok.ink, lineHeight: 1, fontFamily: 'var(--font-heading)' }}>
+                  {p}<span style={{ fontSize: 14 }}>%</span>
+                </div>
+                <div style={{ color: tok.ink, opacity: 0.7, fontSize: 9, marginTop: 2, fontFamily: 'var(--font-mono)', textTransform: 'uppercase', fontWeight: 600, letterSpacing: '0.1em' }}>EXCEED</div>
+              </div>
+            </div>
+            <div style={{ marginTop: 12 }}><SeverityBar band={band} width="100%" height={5}/></div>
+          </div>
+        </div>
+
+        {/* Conditions */}
+        <div style={{ padding: '14px 14px 0' }}>
+          <div style={{ color: 'var(--sl-muted)', fontSize: 9, fontFamily: 'var(--font-mono)', textTransform: 'uppercase', fontWeight: 600, letterSpacing: '0.1em' }}>Conditions</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginTop: 8 }}>
+            {conditions.map((c: any) => (
+              <div key={c.l} style={{ background: 'var(--sl-bone)', borderRadius: 10,
+                border: '1px solid var(--sl-line)', padding: '10px 12px' }}>
+                <div style={{ color: 'var(--sl-muted)', fontSize: 8, fontFamily: 'var(--font-mono)', textTransform: 'uppercase', fontWeight: 600, letterSpacing: '0.1em' }}>{c.l}</div>
+                <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--sl-navy)', marginTop: 2, fontFamily: 'var(--font-text)' }}>{c.v}</div>
               </div>
             ))}
           </div>
         </div>
-      )}
 
-      {/* App CTA */}
-      <div style={{ padding: 16, marginTop: 8 }}>
-        <div style={{ backgroundColor: "#0b4266", borderRadius: 18, padding: 20, textAlign: "center" }}>
-          <p style={{ color: "#fff", fontSize: 16, fontWeight: 700, margin: "0 0 6px" }}>Get the Shorelife app</p>
-          <p style={{ color: "rgba(255,255,255,0.75)", fontSize: 13, margin: "0 0 16px" }}>Daily forecasts for 300+ California beaches.</p>
-          <a href="https://apps.apple.com/app/shorelife/id0000000000" style={{ display: "inline-block", backgroundColor: "#fff", color: "#0b4266", fontSize: 14, fontWeight: 700, padding: "12px 28px", borderRadius: 12, textDecoration: "none" }}>
-            Download on iOS
-          </a>
+        {/* CTA */}
+        <div style={{ padding: 14, marginTop: 8 }}>
+          <div style={{ background: 'var(--sl-navy)', borderRadius: 14, padding: '14px 16px', textAlign: 'center' }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--sl-bone)', fontFamily: 'var(--font-text)' }}>Get the Shorelife app</div>
+            <div style={{ fontSize: 10, color: 'rgba(250,246,238,0.7)', marginTop: 2, fontFamily: 'var(--font-text)' }}>300+ California beaches</div>
+          </div>
         </div>
       </div>
-
-      <p style={{ textAlign: "center", fontSize: 11, color: "#94a3b8", padding: "0 16px 24px", lineHeight: 1.6 }}>
-        This is a model forecast, not an official lab result. Treat it as advisory. · <a href="/methodology/" style={{ color: "#64748b" }}>Methodology</a>
-      </p>
     </div>
   );
 }
