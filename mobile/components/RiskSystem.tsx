@@ -13,10 +13,10 @@ export const RISK_COPY: Record<RiskBand, { head: string; sub: string; cfu: strin
 };
 
 export const RISK_COLORS_DEEP: Record<RiskBand, { fill: string; bg: string; ink: string }> = {
-  Low:         { fill: "#10b981", bg: "#dcfce7", ink: "#175d43" },
-  Moderate:    { fill: "#f59e0b", bg: "#fef3c7", ink: "#6d4a05" },
-  High:        { fill: "#fb923c", bg: "#ffedd5", ink: "#7a2d15" },
-  "Very High": { fill: "#f87171", bg: "#fee2e2", ink: "#561611" },
+  Low:         { fill: "#2b9e79", bg: "#d8efe4", ink: "#175d43" },
+  Moderate:    { fill: "#c99b2d", bg: "#f3e6c1", ink: "#6d4a05" },
+  High:        { fill: "#c7552e", bg: "#f2d9ca", ink: "#7a2d15" },
+  "Very High": { fill: "#8a2a20", bg: "#ecc9c1", ink: "#561611" },
 };
 
 // Drop glyph — teardrop shape, filled/empty per severity
