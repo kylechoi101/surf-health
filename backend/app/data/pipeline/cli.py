@@ -173,17 +173,24 @@ def normalize_beachwatch_bundle(
     observations = normalize_bacteria_results(results_raw, settings.epa_marine_enterococcus_stv)
     advisories = normalize_advisories(advisories_raw)
 
-    observation_counts = observations.groupby("beach_id").size().rename("observation_count")
-    stations = stations.merge(observation_counts, on="beach_id", how="left")
-    stations = stations.loc[stations["observation_count"].fillna(0) > 0].copy()
-    stations["support_status"] = stations["observation_count"].fillna(0).map(
-        lambda count: "production" if count >= 10 else "beta"
-    )
-    stations = stations.drop(columns=["observation_count"])
+    if not observations.empty and "beach_id" in observations.columns:
+        observation_counts = observations.groupby("beach_id").size().rename("observation_count")
+        stations = stations.merge(observation_counts, on="beach_id", how="left")
+        stations = stations.loc[stations["observation_count"].fillna(0) > 0].copy()
+        stations["support_status"] = stations["observation_count"].fillna(0).map(
+            lambda count: "production" if count >= 10 else "beta"
+        )
+        stations = stations.drop(columns=["observation_count"])
+    else:
+        stations["support_status"] = "beta"
     advisories = advisories.loc[advisories["beach_id"].isin(stations["beach_id"])].reset_index(drop=True)
-    observations = observations.loc[observations["beach_id"].isin(stations["beach_id"])].reset_index(drop=True)
-
-    latest_samples = observations.groupby("beach_id")["sample_time"].max().rename("latest_official_sample_at")
+    if not observations.empty and "beach_id" in observations.columns:
+        observations = observations.loc[observations["beach_id"].isin(stations["beach_id"])].reset_index(drop=True)
+    latest_samples = (
+        observations.groupby("beach_id")["sample_time"].max().rename("latest_official_sample_at")
+        if not observations.empty and "beach_id" in observations.columns
+        else pd.Series(dtype="datetime64[ns]", name="latest_official_sample_at")
+    )
     if not latest_samples.empty:
         stations = stations.merge(latest_samples, on="beach_id", how="left", suffixes=("", "_new"))
         stations["latest_official_sample_at"] = stations["latest_official_sample_at_new"].fillna(
@@ -294,31 +301,34 @@ def main() -> None:
             raise SystemExit("--normalize-beachwatch requires --stations-csv, --results-csv, and --advisories-csv")
         settings = get_settings()
         raw_dir = Path(settings.data_dir) / "raw"
-        _obs_path = Path(settings.curated_dir) / "observations.parquet"
-        _incremental_bw = _obs_path.exists() and not args.start_date
+        _curated = Path(settings.curated_dir)
+        _obs_path = _curated / "observations.parquet"
+        _stn_path = _curated / "beaches.parquet"
+        _adv_path = _curated / "advisories.parquet"
+        _incremental_bw = _obs_path.exists() and _stn_path.exists() and not args.start_date
         if _incremental_bw:
+            # Incremental: keep existing stations + observations; only re-normalize new obs + advisories.
             _existing_obs = pd.read_parquet(_obs_path)
             _bw_cutoff = pd.to_datetime(_existing_obs["sample_time"]).max() - pd.Timedelta(days=7)
             print(f"[beachwatch] incremental results fetch from {_bw_cutoff.date()} (existing obs max - 7d)")
             _new_results_raw = load_beachwatch_results_incremental(args.results_csv, _bw_cutoff)
             print(f"[beachwatch] {len(_new_results_raw)} new result rows to normalize")
-        bundle = normalize_beachwatch_bundle(
-            stations_path=args.stations_csv,
-            results_path=args.results_csv if not _incremental_bw else None,
-            advisories_path=args.advisories_csv,
-            max_results_rows=args.max_results_rows,
-            results_raw=_new_results_raw if _incremental_bw else None,
-        )
-        if _incremental_bw:
-            _new_obs = bundle["observations"]
-            _merged = pd.concat([_existing_obs, _new_obs], ignore_index=True)
+            _new_obs = normalize_bacteria_results(_new_results_raw, settings.epa_marine_enterococcus_stv) if not _new_results_raw.empty else pd.DataFrame()
+            _merged = pd.concat([_existing_obs, _new_obs], ignore_index=True) if not _new_obs.empty else _existing_obs
             _key = [c for c in ("beach_id", "sample_time") if c in _merged.columns]
-            bundle["observations"] = (
-                _merged.drop_duplicates(subset=_key, keep="last")
-                .sort_values(_key)
-                .reset_index(drop=True)
+            _all_obs = _merged.drop_duplicates(subset=_key, keep="last").sort_values(_key).reset_index(drop=True)
+            print(f"[beachwatch] merged observations: {len(_all_obs)} rows")
+            _advisories_raw = load_beachwatch_csv(args.advisories_csv)
+            _all_adv = normalize_advisories(_advisories_raw)
+            _all_stn = pd.read_parquet(_stn_path)
+            bundle = {"stations": _all_stn, "observations": _all_obs, "advisories": _all_adv}
+        else:
+            bundle = normalize_beachwatch_bundle(
+                stations_path=args.stations_csv,
+                results_path=args.results_csv,
+                advisories_path=args.advisories_csv,
+                max_results_rows=args.max_results_rows,
             )
-            print(f"[beachwatch] merged observations: {len(bundle['observations'])} rows")
         if args.merge_ceden:
             ceden_sites_path = _resolve_ceden_resource_path(
                 requested_path=args.ceden_sites_csv,
