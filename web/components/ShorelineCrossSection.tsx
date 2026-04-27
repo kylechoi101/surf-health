@@ -33,7 +33,7 @@ export function ShorelineCrossSection({ band = 'Low', height = 360 }: { band?: s
     { id: 'D', x: W * 0.68, label: 'Swash',        sub: 'tide gauge' },
   ];
 
-  const partCount = { Low: 8, Moderate: 22, High: 50, 'Very High': 90 }[band as any] || 8;
+  const partCount = ({ Low: 8, Moderate: 22, High: 50, 'Very High': 90 } as Record<string, number>)[band || 'Low'] || 8;
 
   let wavePath = `M 0 ${surfaceY}`;
   for (let x = 0; x <= W * 0.62; x += 12) {
