@@ -359,15 +359,18 @@ CRITICAL PANDAS RULES (violations cause runtime failures or cross-beach data lea
 1. Function signature EXACTLY: def build_novel_feature(beach_day_df, advisories_df, stations_df, **kwargs):
 2. Return a DataFrame with columns: beach_id, sample_date, <one_new_feature_column> ONLY.
 3. Do NOT include exceeds_stv or enterococcus_value in the output.
-4. ALL window functions (shift, diff, rolling) MUST be chained off .groupby('beach_id') like:
+4. NEVER mutate beach_day_df in place. The very FIRST line of the function body MUST copy:
+     df = beach_day_df[['beach_id', 'sample_date', <other_needed_columns>]].copy()
+   Any line that writes back to beach_day_df['col'] will be REJECTED by the AST validator.
+5. ALL window functions (shift, diff, rolling) MUST be chained off .groupby('beach_id') like:
      df['col'] = df.groupby('beach_id')['target_col'].shift(1)
      df['col'] = df.groupby('beach_id')['target_col'].rolling(window=7, min_periods=1, closed='left').mean().reset_index(level=0, drop=True)
    NEVER call .rolling() directly on a groupby object without first selecting a column.
-5. Do NOT use .apply() or transform(lambda ...) — use vectorized pandas ops only.
-6. No for/while loops. No lambda inside .agg().
-7. Add 1e-9 to denominators. Use np.log1p() not np.log().
-8. sample_date MUST be preserved as datetime in the output.
-9. Avoid column names already in use: {existing_col_names[:200]}
+6. Do NOT use .apply() or transform(lambda ...) — use vectorized pandas ops only.
+7. No for/while loops. No lambda inside .agg().
+8. Add 1e-9 to denominators. Use np.log1p() not np.log().
+9. sample_date MUST be preserved as datetime in the output.
+10. Avoid column names already in use: {existing_col_names[:200]}
 
 Output ONLY a ```python code block with the complete function including imports.
 """
