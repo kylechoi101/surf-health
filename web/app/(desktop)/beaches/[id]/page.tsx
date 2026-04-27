@@ -8,6 +8,7 @@ export async function generateStaticParams() {
   }));
 }
 
-export default function Page() {
+export default async function Page(props: { params: Promise<{ id: string }> }) {
+  await props.params;
   return <BeachDetail />;
 }

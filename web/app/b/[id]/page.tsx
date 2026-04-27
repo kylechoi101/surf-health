@@ -10,7 +10,8 @@ export async function generateStaticParams() {
   }));
 }
 
-export async function generateMetadata({ params }: { params: { id: string } }): Promise<Metadata> {
+export async function generateMetadata(props: { params: Promise<{ id: string }> }): Promise<Metadata> {
+  const params = await props.params;
   const id = params.id;
   const date = preferredForecastDate();
   try {
@@ -43,6 +44,9 @@ export async function generateMetadata({ params }: { params: { id: string } }): 
   }
 }
 
-export default function Page() {
+export default async function Page(props: { params: Promise<{ id: string }> }) {
+  // Although the client component will handle its own loading, 
+  // awaiting here ensures compatibility with Next.js 15 routing.
+  await props.params;
   return <BeachSharePage />;
 }
