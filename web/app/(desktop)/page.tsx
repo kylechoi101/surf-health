@@ -20,6 +20,8 @@ export default function HomePage() {
             const f = await getForecast(b.id, date);
             return {
               ...b,
+              lat: b.geometry?.latitude,
+              lon: b.geometry?.longitude,
               risk: f?.risk_band || 'Moderate',
               p: f?.p_exceed || 0,
               waveFt: f?.environmental_summary?.wave_height_m ? (f.environmental_summary.wave_height_m * 3.28).toFixed(1) : '--',

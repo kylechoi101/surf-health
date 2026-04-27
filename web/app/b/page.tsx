@@ -69,7 +69,7 @@ export default function BeachSharePage() {
           <span>·</span>
           <span>{beach.region ?? 'CA'}</span>
           <span>·</span>
-          <span>{beach.lat.toFixed(3)}°N · {Math.abs(beach.lon).toFixed(3)}°W</span>
+          <span>{beach.geometry?.latitude?.toFixed(3)}°N · {Math.abs(beach.geometry?.longitude || 0).toFixed(3)}°W</span>
         </div>
       </div>
 
