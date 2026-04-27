@@ -328,6 +328,13 @@ def main() -> None:
             _advisories_raw = load_beachwatch_csv(args.advisories_csv)
             _all_adv = normalize_advisories(_advisories_raw)
             _all_stn = pd.read_parquet(_stn_path)
+            # Drop stale merge-suffix columns (cdip_station_id_x/_y, etc.) — the base
+            # columns are authoritative and reseeded each run by enrich_*. Leftover
+            # _x/_y from prior partial merges break the next merge.
+            _stale = [c for c in _all_stn.columns if c.endswith("_x") or c.endswith("_y")]
+            if _stale:
+                _all_stn = _all_stn.drop(columns=_stale)
+                print(f"[beachwatch] dropped {len(_stale)} stale suffixed columns from stations")
             bundle = {"stations": _all_stn, "observations": _all_obs, "advisories": _all_adv}
         else:
             bundle = normalize_beachwatch_bundle(
