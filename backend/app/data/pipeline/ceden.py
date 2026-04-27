@@ -144,6 +144,9 @@ def build_ceden_datastore_sql(
     )
 
 
+_STATION_BATCH_SIZE = 80  # keep URL well under server 414 limit (~8 KB)
+
+
 def fetch_ceden_datastore_subset(
     resource_id: str,
     station_codes: list[str],
@@ -155,36 +158,47 @@ def fetch_ceden_datastore_subset(
     if max_rows is not None and max_rows <= 0:
         return pd.DataFrame(columns=CEDEN_DATASTORE_COLUMNS)
 
+    cleaned_codes = sorted({_clean_text(c) for c in station_codes if _clean_text(c)})
+    station_batches = [
+        cleaned_codes[i : i + _STATION_BATCH_SIZE]
+        for i in range(0, len(cleaned_codes), _STATION_BATCH_SIZE)
+    ]
+
     owns_client = client is None
     client = client or httpx.Client(timeout=60.0, follow_redirects=True)
-    offset = 0
     frames: list[pd.DataFrame] = []
     try:
-        while True:
-            limit = batch_size if max_rows is None else min(batch_size, max_rows - offset)
-            if limit <= 0:
-                break
-            sql = build_ceden_datastore_sql(
-                resource_id=resource_id,
-                station_codes=station_codes,
-                limit=limit,
-                offset=offset,
-            )
-            response = client.get(CEDEN_DATASTORE_SQL_URL, params={"sql": sql}, timeout=60.0)
-            response.raise_for_status()
-            records = response.json().get("result", {}).get("records", [])
-            if not records:
-                break
-            frame = pd.DataFrame(records)
-            frames.append(frame)
-            offset += len(frame)
-            if len(frame) < limit:
-                break
+        for stn_batch in station_batches:
+            offset = 0
+            while True:
+                limit = batch_size if max_rows is None else min(batch_size, max_rows - len(frames) * batch_size)
+                if limit <= 0:
+                    break
+                sql = build_ceden_datastore_sql(
+                    resource_id=resource_id,
+                    station_codes=stn_batch,
+                    limit=limit,
+                    offset=offset,
+                )
+                response = client.get(CEDEN_DATASTORE_SQL_URL, params={"sql": sql}, timeout=60.0)
+                response.raise_for_status()
+                records = response.json().get("result", {}).get("records", [])
+                if not records:
+                    break
+                frame = pd.DataFrame(records)
+                frames.append(frame)
+                offset += len(frame)
+                if len(frame) < limit:
+                    break
     finally:
         if owns_client:
             client.close()
 
     subset = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=CEDEN_DATASTORE_COLUMNS)
+    # Dedup across station batches on (StationCode, SampleDateTime)
+    dedup_cols = [c for c in ("StationCode", "SampleDateTime") if c in subset.columns]
+    if dedup_cols:
+        subset = subset.drop_duplicates(subset=dedup_cols, keep="last").reset_index(drop=True)
     if cache_path is not None and not subset.empty:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         subset.to_csv(cache_path, index=False)
