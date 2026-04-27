@@ -9,6 +9,13 @@ function mToFt(m: number | null | undefined) {
   return (m * 3.281).toFixed(1) + " ft";
 }
 
+export async function generateStaticParams() {
+  const beaches = await getBeaches({ cache: 'force-cache' });
+  return beaches.map((b) => ({
+    id: b.id,
+  }));
+}
+
 export default function BeachDetailPage() {
   const { id } = useParams();
   const [beach, setBeach] = useState<BeachSummary | null>(null);

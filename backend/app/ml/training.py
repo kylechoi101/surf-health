@@ -892,6 +892,48 @@ def _spatial_holdout_fold_result(
             test_probabilities = calibrator.transform(test_probabilities)
         return labels[test_rows], test_probabilities
 
+    if model_name == "stacked_ensemble":
+        # Logistic
+        log_clf = make_baselines(features).logistic.fit(features.iloc[inner_train_rows], labels[inner_train_rows])
+        log_val = log_clf.predict_proba(features.iloc[inner_valid_rows])[:, 1]
+        _, log_cal = _identity_or_calibrated(log_val, labels[inner_valid_rows])
+        log_test = log_clf.predict_proba(features.iloc[test_rows])[:, 1]
+        if log_cal is not None: log_val = log_cal.transform(log_val); log_test = log_cal.transform(log_test)
+        
+        # Coastal
+        cc_art = _fit_coastal_cell_logistic_artifacts(features, labels, metadata, inner_train_rows)
+        cc_val, _, _ = _predict_coastal_cell_logistic_raw(cc_art, features.iloc[inner_valid_rows], metadata.iloc[inner_valid_rows].reset_index(drop=True))
+        _, cc_cal = _identity_or_calibrated(cc_val, labels[inner_valid_rows])
+        cc_test, _, _ = _predict_coastal_cell_logistic_raw(cc_art, features.iloc[test_rows], metadata.iloc[test_rows].reset_index(drop=True))
+        if cc_cal is not None: cc_val = cc_cal.transform(cc_val); cc_test = cc_cal.transform(cc_test)
+
+        # Hierarchical
+        h_art = _fit_hierarchical_logistic_artifacts(features, labels, metadata, inner_train_rows)
+        h_val, _ = _predict_hierarchical_logistic_raw(h_art, features.iloc[inner_valid_rows], metadata.iloc[inner_valid_rows].reset_index(drop=True))
+        _, h_cal = _identity_or_calibrated(h_val, labels[inner_valid_rows])
+        h_test, _ = _predict_hierarchical_logistic_raw(h_art, features.iloc[test_rows], metadata.iloc[test_rows].reset_index(drop=True))
+        if h_cal is not None: h_val = h_cal.transform(h_val); h_test = h_cal.transform(h_test)
+
+        # GBM
+        gbm_clf = make_baselines(features).tree_classifier.fit(features.iloc[inner_train_rows], labels[inner_train_rows])
+        gbm_val = gbm_clf.predict_proba(features.iloc[inner_valid_rows])[:, 1]
+        _, gbm_cal = _identity_or_calibrated(gbm_val, labels[inner_valid_rows])
+        gbm_test = gbm_clf.predict_proba(features.iloc[test_rows])[:, 1]
+        if gbm_cal is not None: gbm_val = gbm_cal.transform(gbm_val); gbm_test = gbm_cal.transform(gbm_test)
+
+        # ensemble weights based on AUCPR
+        from sklearn.metrics import average_precision_score
+        aucs = []
+        for v in [log_val, cc_val, h_val, gbm_val]:
+            try: aucs.append(average_precision_score(labels[inner_valid_rows], v))
+            except: aucs.append(0.0)
+        _aucs = np.array(aucs)
+        _s = _aucs.sum()
+        w = _aucs / _s if _s > 0 else np.full(4, 0.25)
+
+        test_probabilities = log_test * w[0] + cc_test * w[1] + h_test * w[2] + gbm_test * w[3]
+        return labels[test_rows], test_probabilities
+
     classifier = _fit_classifier_for_name(features, model_name)
     classifier.fit(features.iloc[inner_train_rows], labels[inner_train_rows])
     valid_raw = classifier.predict_proba(features.iloc[inner_valid_rows])[:, 1]
@@ -925,7 +967,7 @@ def _spatial_holdout_metrics(
     group_values = eligible_groups.index.tolist()
     # PyTorch sequence-model backtests retrain per fold and do not serialize
     # cleanly through joblib/loky worker processes on this stack.
-    effective_spatial_jobs = 1 if model_name in SEQUENCE_MODEL_NAMES else spatial_jobs
+    effective_spatial_jobs = 1
     if effective_spatial_jobs > 1 and len(group_values) > 1:
         with parallel_backend("loky", inner_max_num_threads=1):
             fold_results = Parallel(n_jobs=min(effective_spatial_jobs, len(group_values)))(

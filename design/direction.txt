@@ -1,0 +1,111 @@
+# Shorelife Web Redesign — Direction & handoff notes
+
+This file documents the design intent of `Shorelife Web Redesign.html` and lists
+recommended additions, polish items, and content gaps a developer should fill
+before this ships to production.
+
+—
+
+## What this redesign does
+
+The shipped web app currently uses a dark navy + gradient palette with Avenir
+Next, while the design system (`design/styles/foundations.css`,
+`design/components/*`) and the iOS app are built around a much warmer earthy
+palette: ecru/bone backgrounds, deep navy ink, sand/teal accents, Fraunces
+display + Inter text, JetBrains Mono for numerics. **This redesign ports the
+design-system aesthetic to desktop web and pushes it further toward a
+travel-poster feel** (illustrated coast map, sun, hand-drawn cross-section,
+warm grain).
+
+Four pages, all reachable via the chip strip at the top of the document:
+
+1. **01 · Home / Forecast** — public-facing landing. Hero answer card + the
+   travel-poster California coast map with all stations as dots; cross-section
+   interlude; "who it's for" cards; today's forecast spotlight grid; footer.
+2. **02 · Beach · Share** — the `/b?id=…` share-link surface. A magazine-scale
+   risk hero card, conditions strip, "what's driving this" drivers, and an iOS
+   share preview phone mock with OG metadata.
+3. **03 · Methodology** — editorial long-read of how the model is built, with
+   a risk-band reference table and limits/caveats section.
+4. **04 · Research / Ops** — denser operator surface: registry stats, source
+   freshness heartbeat, station coverage, spatial-holdout validation table.
+
+Tweaks panel exposes the **hero risk band** so you can preview Low / Moderate /
+High / Very High states.
+
+## What developers should add before ship
+
+**1. Real data wiring**
+- Replace `data/beaches.js` mock data with the live forecast API. Each card
+  expects: `{ id, name, county, region, lat, lon, risk, p, temp, waveFt,
+  period, wind, uv, tide }`.
+- Hero "Today at Malibu Surfrider" is hard-coded — wire it to either the
+  user's nearest station (geo) or a server-rendered popular default.
+- Source freshness panel pulls from real pipeline timestamps; right now the
+  ages and freshness states are hand-rolled.
+
+**2. Real photography**
+- The user opted to supply photos later. Beach cards in the spotlight grid,
+  the share page hero, and the home page can all accept beach photography.
+  Suggested treatment: 4:3 photo at top of each beach card with a duotone
+  filter (navy + ecru) so colors stay consistent. Add an `image` field to the
+  beach record.
+
+**3. Interactivity / motion**
+- Hover state on map dots: pulse + draw the callout (currently the callout
+  shows only for the active beach picked by `onMouseEnter`).
+- Animate severity bars filling on first paint.
+- Smooth transitions between risk-band states on the answer card (currently
+  swaps instantly via Tweaks).
+- Sticky on-scroll header that goes from ecru-on-paper to navy-on-bone.
+
+**4. Pages not in this file (out of scope but on the roadmap)**
+- /beaches — full searchable explorer (table view + map view toggle).
+- /beaches/[id] — single-beach detail page with 14-day history sparkline,
+  driver attributions, and embedded webcam.
+- /research/labels, /research/sources, /research/calibration — sub-pages of
+  the research surface (currently linked but not built).
+- Account / saved beaches / push-notification settings (consumer).
+
+**5. Brand mark**
+- `components/lockup.jsx` defines the `<ShorelifeMark>` (cresting wave + sand
+  S-form), `<ShorelifeWordmark>`, and `<LockupHorizontal>`. Today the live
+  app uses bare text "Shorelife" in the header — switch to the lockup.
+- Add favicon, OG default image, and PWA icons derived from the mark.
+
+**6. Accessibility audit**
+- Risk colors meet 4.5:1 against their `_bg` paired backgrounds, but verify
+  the navy CTA and muted body copy on ecru pass.
+- Severity bar needs aria-label with "X of 4 — High".
+- Map dots need keyboard focus order + screen-reader station list fallback.
+
+**7. Copy review**
+- "Know before you paddle out." is consumer-first per the brief. If you also
+  want to lead operators in (agencies / county staff), consider an
+  alt headline at /research that says "Forecasts that prioritize your day."
+- Risk-band words ("Clean. / Watch. / Elevated. / Unsafe.") should be
+  reviewed by legal — "Unsafe" is strong language and may need to align with
+  county advisory wording.
+
+**8. Print / PDF export**
+- The methodology page is structured for a future PDF download. Consider
+  wiring print styles + a "Download as PDF" CTA.
+
+## Tokens used
+
+All colors and type live in CSS variables at the top of the HTML file so the
+dev team can lift them straight into the production codebase:
+
+```
+--sl-navy / --sl-navy-deep / --sl-navy-ink     # ink + accent navy
+--sl-teal / --sl-teal-deep                     # secondary teal
+--sl-sun / --sl-sun-deep                       # travel-poster mustard
+--sl-ecru / --sl-ecru-deep / --sl-bone         # paper backgrounds
+--sl-sand / --sl-driftwood / --sl-kelp         # earth neutrals
+--sl-ink / --sl-muted / --sl-line              # text + dividers
+--sl-risk-{low,mod,high,vh}{,-bg,-ink}         # risk band tokens
+--sl-display (Fraunces) / --sl-text (Inter) / --sl-mono (JetBrains)
+```
+
+These match the tokens already in `design/styles/foundations.css` — pull them
+into the actual app codebase rather than redefining.
