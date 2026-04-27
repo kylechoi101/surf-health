@@ -323,6 +323,123 @@ class OpenMeteoHistoricalPrecipConnector:
 
 
 @dataclass
+class OpenMeteoHistoricalSolarWindConnector:
+    """
+    Fetches hourly historical UV / cloud-cover / shortwave radiation / wind from
+    the Open-Meteo archive API. Same source (ERA5-Land, ~9 km grid) as the precip
+    connector. No API key required.
+
+    Variables fetched per (rounded coord, date range):
+      cloud_cover            — % (0–100, total column)
+      shortwave_radiation    — W/m² hourly (proxy for UV at the surface)
+      uv_index               — Open-Meteo modeled UV index (1–11 scale)
+      wind_speed_10m         — m/s
+      wind_direction_10m     — degrees (meteorological convention: where wind is FROM)
+
+    Rationale: enterococci T₉₀ under full sun is ~1–2 hours; under overcast it
+    can be 24+ hours. Onshore vs offshore wind compresses or disperses runoff
+    plumes against the shoreline. These features capture the dominant
+    decay and transport terms not present in precip+wave alone.
+    """
+
+    BASE_URL: str = "https://archive-api.open-meteo.com/v1/archive"
+    concurrency: int = 5
+    HOURLY_VARS: tuple[str, ...] = (
+        "cloud_cover",
+        "shortwave_radiation",
+        "uv_index",
+        "wind_speed_10m",
+        "wind_direction_10m",
+    )
+
+    async def _fetch_coord(
+        self,
+        client: httpx.AsyncClient,
+        lat: float,
+        lon: float,
+        start: date,
+        end: date,
+        cache_dir: Path,
+    ) -> pd.DataFrame:
+        lat_r = round(lat, 1)
+        lon_r = round(lon, 1)
+        cache_key = f"openmeteo_solwind_{lat_r}_{lon_r}_{start.isoformat()}_{end.isoformat()}.parquet"
+        cache_file = cache_dir / cache_key
+        if cache_file.exists():
+            return pd.read_parquet(cache_file)
+
+        params = {
+            "latitude": lat_r,
+            "longitude": lon_r,
+            "start_date": start.isoformat(),
+            "end_date": end.isoformat(),
+            "hourly": ",".join(self.HOURLY_VARS),
+            "timezone": "UTC",
+            "wind_speed_unit": "ms",
+        }
+        try:
+            r = await client.get(self.BASE_URL, params=params, timeout=60.0)
+            r.raise_for_status()
+            payload = r.json()
+        except Exception as exc:
+            logger.error("Open-Meteo solar/wind fetch failed for (%.1f, %.1f): %s", lat_r, lon_r, exc)
+            return pd.DataFrame()
+
+        hourly = payload.get("hourly", {})
+        times = hourly.get("time", [])
+        if not times:
+            return pd.DataFrame()
+
+        station_id = f"{lat_r}_{lon_r}"
+        df = pd.DataFrame({
+            "station_id": station_id,
+            "time_utc": pd.to_datetime(times, utc=True),
+            "latitude": lat_r,
+            "longitude": lon_r,
+            "source_name": "open_meteo",
+        })
+        for var in self.HOURLY_VARS:
+            vals = hourly.get(var, [])
+            df[var] = [float(v) if v is not None else np.nan for v in vals]
+        df.to_parquet(cache_file, index=False)
+        return df
+
+    async def fetch_historical_solar_wind(
+        self,
+        locations: list[tuple[float, float]],
+        start: date,
+        end: date,
+        cache_dir: Path,
+    ) -> pd.DataFrame:
+        if not locations:
+            return pd.DataFrame()
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        unique_coords = list({(round(lat, 1), round(lon, 1)) for lat, lon in locations})
+
+        semaphore = asyncio.Semaphore(self.concurrency)
+
+        async def _bounded(client: httpx.AsyncClient, lat: float, lon: float) -> pd.DataFrame:
+            async with semaphore:
+                return await self._fetch_coord(client, lat, lon, start, end, cache_dir)
+
+        async with httpx.AsyncClient() as client:
+            tasks = [_bounded(client, lat, lon) for lat, lon in unique_coords]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        frames: list[pd.DataFrame] = []
+        for (lat, lon), result in zip(unique_coords, results):
+            if isinstance(result, Exception):
+                logger.error("Open-Meteo solar/wind gather failed for (%.1f, %.1f): %s", lat, lon, result)
+            elif isinstance(result, pd.DataFrame) and not result.empty:
+                frames.append(result)
+
+        if not frames:
+            logger.warning("Open-Meteo solar/wind returned no data for %d locations [%s, %s]", len(locations), start, end)
+            return pd.DataFrame()
+        return pd.concat(frames, ignore_index=True)
+
+
+@dataclass
 class CnrfcQpfConnector:
     """Stub for CNRFC QPF (gridded forecast precipitation). Deferred to Phase 2."""
 

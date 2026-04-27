@@ -35,6 +35,22 @@ HYDROLOGY_NUMERIC_COLUMNS = [
     "first_flush_flag",
 ]
 
+# Marine-microbiology features — captures UV inactivation, plume transport,
+# point-source proximity. Populated by --with-solar-wind in the curation CLI.
+MARINE_MICROBIOLOGY_NUMERIC_COLUMNS = [
+    "shore_normal_wind_ms",         # +ve = onshore, compresses plume; -ve = offshore, disperses
+    "solar_inactivation_index",     # shortwave × (1 - cloud%) — UV decay strength
+    "cloud_cover_24h_mean",
+    "shortwave_24h_sum",
+    "uv_index_24h_max",
+    "wind_speed_24h_max",
+    "days_since_sunny",              # capped at 30
+    "dist_to_pier_km",
+    "dist_to_estuary_km",
+    "is_near_pier",
+    "is_near_estuary_mouth",
+]
+
 PROSPECTIVE_EXOGENOUS_COLUMNS = [
     column for column in BASE_NUMERIC_COLUMNS if column != "enterococcus_value"
 ]
@@ -176,6 +192,11 @@ def add_temporal_features(frame: pd.DataFrame) -> pd.DataFrame:
     }
     if missing_hydro:
         enriched = enriched.assign(**missing_hydro)
+    missing_mmb = {
+        column: np.nan for column in MARINE_MICROBIOLOGY_NUMERIC_COLUMNS if column not in enriched.columns
+    }
+    if missing_mmb:
+        enriched = enriched.assign(**missing_mmb)
 
     for column in ("county", "region", "cdip_station_id", "erddap_source_name"):
         if column not in enriched.columns:
