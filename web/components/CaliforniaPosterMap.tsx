@@ -167,7 +167,7 @@ export function CaliforniaPosterMap({ beaches, activeBeach, onSelect, height = 6
               <line x1={p.x} y1={p.y} x2={cx} y2={cy + 30}
                 stroke="var(--sl-navy)" strokeWidth="1" strokeDasharray="2 2" opacity="0.6"/>
               <foreignObject x={cx} y={cy} width="200" height="86">
-                <div xmlns="http://www.w3.org/1999/xhtml" style={{
+                <div style={{
                   background: 'var(--sl-bone)',
                   border: '1px solid var(--sl-line)',
                   borderRadius: 10, padding: '10px 12px',
