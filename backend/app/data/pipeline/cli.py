@@ -135,15 +135,38 @@ def load_beachwatch_csv(path: Path, nrows: int | None = None) -> pd.DataFrame:
     )
 
 
+def load_beachwatch_results_incremental(path: Path, min_date: pd.Timestamp) -> pd.DataFrame:
+    """Read only rows from bw_results.csv with SampleDate >= min_date (chunked, low memory)."""
+    frames: list[pd.DataFrame] = []
+    for chunk in pd.read_csv(
+        path,
+        dtype=str,
+        encoding="utf-8-sig",
+        low_memory=False,
+        chunksize=50_000,
+        on_bad_lines="skip",
+    ):
+        if "SampleDate" not in chunk.columns:
+            frames.append(chunk)
+            continue
+        dates = pd.to_datetime(chunk["SampleDate"], format="mixed", errors="coerce")
+        mask = dates >= min_date
+        if mask.any():
+            frames.append(chunk[mask])
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
 def normalize_beachwatch_bundle(
     stations_path: Path,
-    results_path: Path,
+    results_path: Path | None,
     advisories_path: Path,
     max_results_rows: int | None = None,
+    results_raw: pd.DataFrame | None = None,
 ) -> dict[str, pd.DataFrame]:
     settings = get_settings()
     stations_raw = load_beachwatch_csv(stations_path)
-    results_raw = load_beachwatch_csv(results_path, nrows=max_results_rows)
+    if results_raw is None:
+        results_raw = load_beachwatch_csv(results_path, nrows=max_results_rows)
     advisories_raw = load_beachwatch_csv(advisories_path)
 
     stations = normalize_station_metadata(stations_raw)
@@ -271,12 +294,31 @@ def main() -> None:
             raise SystemExit("--normalize-beachwatch requires --stations-csv, --results-csv, and --advisories-csv")
         settings = get_settings()
         raw_dir = Path(settings.data_dir) / "raw"
+        _obs_path = Path(settings.curated_dir) / "observations.parquet"
+        _incremental_bw = _obs_path.exists() and not args.start_date
+        if _incremental_bw:
+            _existing_obs = pd.read_parquet(_obs_path)
+            _bw_cutoff = pd.to_datetime(_existing_obs["sample_time"]).max() - pd.Timedelta(days=7)
+            print(f"[beachwatch] incremental results fetch from {_bw_cutoff.date()} (existing obs max - 7d)")
+            _new_results_raw = load_beachwatch_results_incremental(args.results_csv, _bw_cutoff)
+            print(f"[beachwatch] {len(_new_results_raw)} new result rows to normalize")
         bundle = normalize_beachwatch_bundle(
             stations_path=args.stations_csv,
-            results_path=args.results_csv,
+            results_path=args.results_csv if not _incremental_bw else None,
             advisories_path=args.advisories_csv,
             max_results_rows=args.max_results_rows,
+            results_raw=_new_results_raw if _incremental_bw else None,
         )
+        if _incremental_bw:
+            _new_obs = bundle["observations"]
+            _merged = pd.concat([_existing_obs, _new_obs], ignore_index=True)
+            _key = [c for c in ("beach_id", "sample_time") if c in _merged.columns]
+            bundle["observations"] = (
+                _merged.drop_duplicates(subset=_key, keep="last")
+                .sort_values(_key)
+                .reset_index(drop=True)
+            )
+            print(f"[beachwatch] merged observations: {len(bundle['observations'])} rows")
         if args.merge_ceden:
             ceden_sites_path = _resolve_ceden_resource_path(
                 requested_path=args.ceden_sites_csv,
