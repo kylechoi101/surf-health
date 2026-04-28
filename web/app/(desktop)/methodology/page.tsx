@@ -1,13 +1,27 @@
 import React from 'react';
+import { promises as fs } from 'fs';
+import path from 'path';
 import { RiskChip, DropRow } from '@/components/RiskComponents';
 import { RISK_ORDER, RISK_COPY } from '@/lib/riskData';
 import { EditorialPage } from '@/components/EditorialPage';
 
-export default function MethodologyPage() {
+export default async function MethodologyPage() {
+  let versionLabel = 'v1.5';
+  let dateLabel = 'Apr 2026';
+  try {
+    const mvPath = path.join(process.cwd(), '../data/curated/model_version.json');
+    const mv = JSON.parse(await fs.readFile(mvPath, 'utf8'));
+    if (mv.ship_target) versionLabel = mv.ship_target;
+    if (mv.promoted_at) {
+      const d = new Date(mv.promoted_at);
+      dateLabel = d.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+    }
+  } catch {}
+
   return (
     <EditorialPage>
     <article style={{ padding: '64px 64px 96px', maxWidth: 1280, margin: '0 auto' }}>
-      <div style={{ color: 'var(--sl-sun-deep)', fontFamily: 'var(--font-mono)', fontSize: '0.85rem', textTransform: 'uppercase', letterSpacing: '0.12em' }}>Methodology · v1.5 · Apr 2026</div>
+      <div style={{ color: 'var(--sl-sun-deep)', fontFamily: 'var(--font-mono)', fontSize: '0.85rem', textTransform: 'uppercase', letterSpacing: '0.12em' }}>{`Methodology · ${versionLabel} · ${dateLabel}`}</div>
       <h1 style={{ fontFamily: 'var(--font-heading)', fontSize: 96, marginTop: 18, marginBottom: 32, fontWeight: 400, letterSpacing: '-0.02em',
         color: 'var(--sl-navy-ink)', maxWidth: 980 }}>
         How the forecast<br/>is built.
