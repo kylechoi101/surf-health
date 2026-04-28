@@ -156,10 +156,18 @@ def _sandbox_check(cmd: str) -> str | None:
     return None
 
 
-def _execute_bash(cmd: str, timeout: int = 60) -> str:
+# Bash commands that mutate repo state — blocked in --no-write mode.
+_BASH_MUTATING_RE = re.compile(
+    r"git\s+(commit|push|rm|add|stash\b)", re.IGNORECASE
+)
+
+
+def _execute_bash(cmd: str, timeout: int = 60, no_write: bool = False) -> str:
     deny = _sandbox_check(cmd)
     if deny:
         return deny
+    if no_write and _BASH_MUTATING_RE.search(cmd):
+        return f"DRY-RUN (--no-write): would execute: {cmd[:200]}"
     try:
         result = subprocess.run(
             cmd,
@@ -481,7 +489,7 @@ def _run_iteration(
                 cmd = args.get("cmd", "")
                 timeout = min(int(args.get("timeout", 60)), 300)
                 _log(f"    bash: {cmd[:120]!r}")
-                result = _execute_bash(cmd, timeout=timeout)
+                result = _execute_bash(cmd, timeout=timeout, no_write=no_write)
                 # Only count real execution errors, not sandbox denies.
                 # SANDBOX DENY is just "try a different command" feedback.
                 if result.startswith("ERROR") or result.startswith("TIMEOUT"):
