@@ -141,21 +141,21 @@ export function ShorelifeHero() {
             <div className="w-12 h-12 mx-auto mb-5 rounded-xl bg-bone border border-navy/10 flex items-center justify-center group-hover:border-sun/30 transition-colors shadow-sm">
               <Thermometer className="w-5 h-5 text-navy group-hover:text-sun transition-colors" />
             </div>
-            <h3 className="sl-label text-navy mb-2">Real-time Data</h3>
+            <p className="sl-label text-navy mb-2">Real-time Data</p>
             <p className="text-[13px] text-muted-foreground leading-relaxed">NDBC Buoys, CDIP models, and NWS grids updated hourly.</p>
           </div>
           <div className="text-center group">
             <div className="w-12 h-12 mx-auto mb-5 rounded-xl bg-bone border border-navy/10 flex items-center justify-center group-hover:border-sun/30 transition-colors shadow-sm">
               <ShieldCheck className="w-5 h-5 text-navy group-hover:text-sun transition-colors" />
             </div>
-            <h3 className="sl-label text-navy mb-2">Validated Risk</h3>
+            <p className="sl-label text-navy mb-2">Validated Risk</p>
             <p className="text-[13px] text-muted-foreground leading-relaxed">ML-driven probability estimates calibrated against culture samples.</p>
           </div>
           <div className="text-center group">
             <div className="w-12 h-12 mx-auto mb-5 rounded-xl bg-bone border border-navy/10 flex items-center justify-center group-hover:border-sun/30 transition-colors shadow-sm">
               <Waves className="w-5 h-5 text-navy group-hover:text-sun transition-colors" />
             </div>
-            <h3 className="sl-label text-navy mb-2">Surf Context</h3>
+            <p className="sl-label text-navy mb-2">Surf Context</p>
             <p className="text-[13px] text-muted-foreground leading-relaxed">Integrated swell, tide, and UV data for a complete beach profile.</p>
           </div>
         </div>

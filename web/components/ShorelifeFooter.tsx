@@ -50,16 +50,17 @@ export async function ShorelifeFooter() {
             </p>
             <div className="flex gap-6">
               {[
-                { Icon: Github, href: "https://github.com/kylechoi101" },
-                { Icon: Twitter, href: "#" },
-                { Icon: Mail, href: "mailto:kylechoidsc@gmail.com" },
-              ].map(({ Icon, href }, i) => (
+                { Icon: Github, href: "https://github.com/kylechoi101", label: "GitHub" },
+                { Icon: Twitter, href: "#", label: "Twitter" },
+                { Icon: Mail, href: "mailto:kylechoidsc@gmail.com", label: "Email" },
+              ].map(({ Icon, href, label }) => (
                 <a
-                  key={i}
+                  key={label}
                   href={href}
+                  aria-label={label}
                   className="w-10 h-10 rounded-full bg-bone/5 flex items-center justify-center hover:bg-sun hover:text-navy-ink transition-all border border-bone/10"
                 >
-                  <Icon className="w-4 h-4" />
+                  <Icon className="w-4 h-4" aria-hidden="true" />
                 </a>
               ))}
             </div>

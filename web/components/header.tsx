@@ -48,9 +48,9 @@ export function Header() {
               <Link
                 key={link.href}
                 href={link.href}
-                className={`sl-label text-[10px] transition-colors ${
-                  scrolled 
-                    ? "text-bone/70 hover:text-bone" 
+                className={`sl-label text-[10px] transition-colors py-2 px-1 ${
+                  scrolled
+                    ? "text-bone/70 hover:text-bone"
                     : "text-muted-foreground hover:text-navy"
                 }`}
               >

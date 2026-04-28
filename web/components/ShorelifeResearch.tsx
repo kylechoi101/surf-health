@@ -58,7 +58,7 @@ export function ShorelifeResearch() {
                     <item.icon className="w-5 h-5 text-navy" />
                   </div>
                   <div>
-                    <h4 className="sl-label text-navy mb-1 lowercase font-semibold">{item.title}</h4>
+                    <h3 className="sl-label text-navy mb-1 lowercase font-semibold">{item.title}</h3>
                     <p className="text-[13px] text-muted-foreground leading-relaxed">{item.desc}</p>
                   </div>
                 </div>
@@ -93,7 +93,7 @@ export function ShorelifeResearch() {
                 <div className="p-8 space-y-6">
                   {!error && (
                     <div>
-                      <h5 className="sl-label text-muted-foreground mb-4 lowercase">Source Freshness</h5>
+                      <p className="sl-label text-muted-foreground mb-4 lowercase">Source Freshness</p>
                       <div className="space-y-4">
                         {sources ? (
                           Object.entries(sources).map(([src, age]) => (
@@ -118,7 +118,7 @@ export function ShorelifeResearch() {
                     <div className="pt-6 border-t border-navy/5">
                       <div className="flex justify-between items-center">
                         <div>
-                          <h5 className="sl-label text-muted-foreground mb-1 lowercase">Public Eligibility</h5>
+                          <p className="sl-label text-muted-foreground mb-1 lowercase">Public Eligibility</p>
                           <div className="text-xl sl-display text-navy">
                             {eligible ? "Eligible for Release" : "Pending Validation"}
                           </div>
