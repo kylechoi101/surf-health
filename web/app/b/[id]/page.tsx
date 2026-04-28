@@ -1,7 +1,7 @@
 import { Metadata } from "next";
 import { getBeaches, getForecast, preferredForecastDate } from "@/lib/api";
 import BeachSharePage from "./BeachSharePage";
-import { RISK_COPY } from "@/components/Risk";
+import { RISK_COPY } from "@/components/RiskComponents";
 
 export async function generateStaticParams() {
   const beaches = await getBeaches({ cache: 'force-cache' });

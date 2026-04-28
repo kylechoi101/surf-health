@@ -97,14 +97,19 @@ export function DropRow({ band, size = 14 }: { band: RiskBand; size?: number }) 
 export function SeverityBar({
   band,
   className = "",
+  width,
+  height,
 }: {
   band: RiskBand;
   className?: string;
+  width?: string | number;
+  height?: number;
 }) {
   const idx = RISK_ORDER.indexOf(band);
   return (
     <div
       className={`flex gap-1 ${className}`}
+      style={width != null ? { width } : undefined}
       aria-label={`${idx + 1} of 4 — ${band}`}
     >
       {RISK_ORDER.map((b, i) => {
@@ -113,8 +118,9 @@ export function SeverityBar({
         return (
           <div
             key={b}
-            className="flex-1 h-1.5 rounded-[2px]"
+            className="flex-1 rounded-[2px]"
             style={{
+              height: height ?? 6,
               background: on ? c : "var(--sl-line-soft)",
               opacity: on ? (i === idx ? 1 : 0.55) : 1,
             }}

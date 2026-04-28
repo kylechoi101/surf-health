@@ -2,7 +2,7 @@
 import React, { useEffect, useState, useMemo } from "react";
 import { useParams } from "next/navigation";
 import { getBeaches, getForecast, getObservations, preferredForecastDate, type BeachSummary, type ForecastRecord, type ObservationResponse } from "@/lib/api";
-import { RISK_COPY, RISK_TOKEN, DropRow, SeverityBar, RiskChip } from "@/components/Risk";
+import { RISK_COPY, RISK_TOKEN, DropRow, SeverityBar, RiskChip } from "@/components/RiskComponents";
 import { Skeleton, SkeletonCard } from "@/components/Skeleton";
 
 function mToFt(m: number | null | undefined) {

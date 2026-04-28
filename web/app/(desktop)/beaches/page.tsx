@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState, useMemo } from 'react';
 import { getBeaches, preferredForecastDate, type BeachSummary } from '@/lib/api';
-import { RiskChip, RISK_TOKEN } from '@/components/Risk';
+import { RiskChip, RISK_TOKEN } from '@/components/RiskComponents';
 
 export default function BeachesDirectoryPage() {
   const [beaches, setBeaches] = useState<BeachSummary[]>([]);

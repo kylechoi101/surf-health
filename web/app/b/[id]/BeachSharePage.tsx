@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { getBeaches, getForecast, preferredForecastDate, type BeachSummary, type ForecastRecord } from "@/lib/api";
-import { RISK_COPY, RISK_TOKEN, DropRow, SeverityBar } from "@/components/Risk";
+import { RISK_COPY, RISK_TOKEN, DropRow, SeverityBar } from "@/components/RiskComponents";
 
 function mToFt(m: number | null | undefined) {
   if (m == null) return "—";

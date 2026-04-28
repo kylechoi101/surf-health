@@ -1,5 +1,5 @@
 import React from 'react';
-import { RiskChip, DropRow, RISK_ORDER, RISK_COPY } from '@/components/Risk';
+import { RiskChip, DropRow, RISK_ORDER, RISK_COPY } from '@/components/RiskComponents';
 
 export default function MethodologyPage() {
   return (
@@ -69,7 +69,7 @@ export default function MethodologyPage() {
               textTransform: 'uppercase', color: 'var(--sl-muted)', fontWeight: 600 }}>
               <span>Band</span><span>Headline</span><span>Guidance</span><span>Enterococcus</span><span>Drops</span>
             </div>
-            {RISK_ORDER.map((band: any) => {
+            {RISK_ORDER.map((band) => {
               const c = RISK_COPY[band];
               if (!c) return null;
               return (

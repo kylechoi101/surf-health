@@ -2,7 +2,7 @@ import React from 'react';
 import { promises as fs } from 'fs';
 import path from 'path';
 import { getBeaches } from '@/lib/api';
-import { RiskChip } from '@/components/Risk';
+import { RiskChip } from '@/components/RiskComponents';
 import { EditorialPage } from '@/components/EditorialPage';
 import Link from 'next/link';
 
