@@ -1,4 +1,4 @@
-# Model Card: Shorelife `gbdt-marine-v1.4`
+# Model Card: Shorelife `hist-gbm-curated-v0`
 
 ## Feature List & Biological Rationale
 The model incorporates standard hydrologic covariates alongside new marine-microbiology features:
@@ -12,10 +12,17 @@ To ensure the model generalizes across unobserved stretches of coastline, we uti
 - **County GroupKFold**: Data is grouped by county to prevent spatial leakage (e.g., adjacent beaches in the same county sharing identical weather/ocean patterns).
 - **Multi-Seed Evaluation**: We employ 3 folds × 3 random seeds to generate stable, bootstrapped confidence intervals.
 
-### v1.4 Performance (Stacked Ensemble)
+### hist-gbm-curated-v0 Performance (365-day training window, HistGBM winner)
+- **Temporal AUCPR**: 0.487 (Validation: 0.812)
+- **Spatial County AUCPR**: 0.524 (Baseline persistence: 0.224) — exceeds 0.51 target
+- **Spatial Beach AUCPR**: 0.789 (Baseline persistence: 0.224)
+- **Spatial County Brier Score**: 0.144 (Baseline persistence: 0.225)
+- **Lift**: ~2.3× improvement over persistence baseline at county level.
+- **Training window**: 365 days (25,897 rows vs 2,918 on prior 60-day window).
+
+#### Prior v1.4 Performance (60-day window, Stacked Ensemble)
 - **Spatial County AUCPR**: 0.325 (Baseline persistence: 0.160)
-- **Spatial County Brier Score**: 0.124 (Baseline persistence: 0.160)
-- **Lift**: ~2x improvement in precision-recall area over baseline when predicting water quality at entirely new, unobserved counties.
+- **Spatial County Brier Score**: 0.124
 
 ## Known Failure Modes
 - **Low Base-Rate Counties**: Counties with historically pristine water quality (very low advisory frequency) exhibit high variance in precision and are prone to false positives due to class imbalance.

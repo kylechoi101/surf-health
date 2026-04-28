@@ -68,7 +68,7 @@ jobs:
       - name: Run ML training + forecasts
         run: |
           FORECAST_DATE=$(TZ=America/Los_Angeles date +%Y-%m-%d)
-          python -m app.ml.training --curated --forecast-date "$FORECAST_DATE" --winner-only --spatial-backtests --spatial-strategy quick
+          python -m app.ml.training --curated --forecast-date "$FORECAST_DATE" --winner-only --spatial-backtests --spatial-strategy quick --training-window-days 365
         working-directory: backend
 
       - name: Audit forecasts vs advisories
