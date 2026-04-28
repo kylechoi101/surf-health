@@ -102,6 +102,7 @@ _BASH_ALLOW_PREFIXES = (
     "git diff",
     "git show",
     "git add",
+    "git rm",
     "git commit",
     "git push",
     "git branch",
@@ -481,7 +482,9 @@ def _run_iteration(
                 timeout = min(int(args.get("timeout", 60)), 300)
                 _log(f"    bash: {cmd[:120]!r}")
                 result = _execute_bash(cmd, timeout=timeout)
-                if result.startswith("SANDBOX DENY") or result.startswith("ERROR") or result.startswith("TIMEOUT"):
+                # Only count real execution errors, not sandbox denies.
+                # SANDBOX DENY is just "try a different command" feedback.
+                if result.startswith("ERROR") or result.startswith("TIMEOUT"):
                     bash_failures += 1
                 _log(f"    → {result[:200]!r}")
             elif fn == "read_file":
