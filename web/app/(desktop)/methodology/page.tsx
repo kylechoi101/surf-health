@@ -1,5 +1,6 @@
 import React from 'react';
-import { RiskChip, DropRow, RISK_ORDER, RISK_COPY } from '@/components/RiskComponents';
+import { RiskChip, DropRow } from '@/components/RiskComponents';
+import { RISK_ORDER, RISK_COPY } from '@/lib/riskData';
 import { EditorialPage } from '@/components/EditorialPage';
 
 export default function MethodologyPage() {
