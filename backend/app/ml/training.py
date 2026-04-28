@@ -1984,6 +1984,10 @@ def _run_winner_only(
     curated_dir: Path,
     forecast_date: date,
     spatial_strategy: str,
+    spatial_backtests: bool,
+    spatial_beach_limit: int | None,
+    spatial_county_limit: int | None,
+    spatial_jobs: int | None,
     registry: dict,
 ) -> "TrainingArtifacts":
     import sys
@@ -2117,6 +2121,30 @@ def _run_winner_only(
     plan = StageTwoTrainingPlan(
         production_winner=winner, research_winner=winner, spatial_backtest_models=[winner],
     )
+
+    if spatial_backtests:
+        print(f"Running stage 2 spatial backtests for {winner.upper()}...", file=sys.stderr, flush=True)
+        
+        effective_beach_limit = spatial_beach_limit
+        effective_county_limit = spatial_county_limit
+        if spatial_strategy == "quick":
+            effective_beach_limit = spatial_beach_limit or 5
+            effective_county_limit = spatial_county_limit or 3
+
+        resolved_spatial_jobs = spatial_jobs or _default_spatial_jobs()
+        metrics.update(
+            _spatial_backtest_metrics(
+                features,
+                labels,
+                metadata,
+                stv_threshold=settings.epa_marine_enterococcus_stv,
+                beach_group_limit=effective_beach_limit,
+                county_group_limit=effective_county_limit,
+                spatial_jobs=resolved_spatial_jobs,
+                dataset=dataset,
+                model_names_to_run=[winner],
+            )
+        )
     return _export_forecasts(
         curated_dir=curated_dir,
         forecast_date=forecast_date,
@@ -2146,8 +2174,8 @@ def _run_winner_only(
         plan=plan,
         metrics=metrics,
         model_types_to_run=[],
-        spatial_backtests=False,
-        spatial_backtest_models=[winner],
+        spatial_backtests=spatial_backtests,
+        spatial_backtest_models=["persistence", winner],
         spatial_strategy=spatial_strategy,
     )
 

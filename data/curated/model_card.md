@@ -10,7 +10,12 @@ The model incorporates standard hydrologic covariates alongside new marine-micro
 ## Spatial CV Protocol
 To ensure the model generalizes across unobserved stretches of coastline, we utilize a robust spatial cross-validation strategy:
 - **County GroupKFold**: Data is grouped by county to prevent spatial leakage (e.g., adjacent beaches in the same county sharing identical weather/ocean patterns).
-- **Multi-Seed Evaluation**: We employ 3 folds × 3 random seeds to generate stable, bootstrapped confidence intervals for all performance metrics.
+- **Multi-Seed Evaluation**: We employ 3 folds × 3 random seeds to generate stable, bootstrapped confidence intervals.
+
+### v1.4 Performance (Stacked Ensemble)
+- **Spatial County AUCPR**: 0.325 (Baseline persistence: 0.160)
+- **Spatial County Brier Score**: 0.124 (Baseline persistence: 0.160)
+- **Lift**: ~2x improvement in precision-recall area over baseline when predicting water quality at entirely new, unobserved counties.
 
 ## Known Failure Modes
 - **Low Base-Rate Counties**: Counties with historically pristine water quality (very low advisory frequency) exhibit high variance in precision and are prone to false positives due to class imbalance.
