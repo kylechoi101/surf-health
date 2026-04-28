@@ -257,12 +257,24 @@ export function CaliforniaPosterMap({
           const isActive = activeBeach && activeBeach.id === b.id;
           const tok = b.risk ? RISK_TOKEN[b.risk] : { c: "var(--sl-navy)", bg: "var(--sl-ecru)", ink: "var(--sl-navy-ink)" };
           const r = isActive ? 6 : 3.5;
+          const label = `${b.name}, ${b.county} — ${b.risk ?? "No forecast"} risk`;
           return (
             <g
               key={b.id}
               className="cursor-pointer"
+              role="button"
+              tabIndex={0}
+              aria-label={label}
               onMouseEnter={() => onSelect && onSelect(b)}
+              onClick={() => onSelect && onSelect(b)}
+              onKeyDown={(e) => {
+                if ((e.key === "Enter" || e.key === " ") && onSelect) {
+                  e.preventDefault();
+                  onSelect(b);
+                }
+              }}
             >
+              <title>{label}</title>
               {isActive && (
                 <circle cx={x} cy={y} r={14} fill={tok.c} opacity="0.18" />
               )}
@@ -382,6 +394,17 @@ export function CaliforniaPosterMap({
           );
         })()}
       </svg>
+
+      {/* Screen-reader station index */}
+      <ul className="sr-only" aria-label="Beach monitoring stations">
+        {beaches.map(b => (
+          <li key={b.id}>
+            <button type="button" onClick={() => onSelect && onSelect(b)}>
+              {b.name}, {b.county} — {b.risk ?? "No forecast"} risk
+            </button>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

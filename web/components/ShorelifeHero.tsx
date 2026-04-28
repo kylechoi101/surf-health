@@ -1,10 +1,89 @@
 "use client";
 
-import React from "react";
+import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { LockupHorizontal } from "@/components/Lockup";
-import { ChevronDown, Thermometer, Waves, ShieldCheck } from "lucide-react";
+import { ChevronDown, Thermometer, Waves, ShieldCheck, ArrowRight } from "lucide-react";
+import { RiskChip, RISK_TOKEN, type RiskBand } from "@/components/RiskComponents";
+
+const SPOTLIGHT_ID = "ca738498-los-angeles-surfrider-beach-dph-002";
+const SPOTLIGHT_NAME = "Surfrider Beach";
+const SPOTLIGHT_LOCATION = "Malibu · Los Angeles County";
+
+interface SpotlightData {
+  beach_id: string;
+  risk_band: RiskBand;
+  p_exceed: number;
+  wave_height_m: number | null;
+  water_temperature_c: number | null;
+}
+
+function mToFt(m: number | null): string {
+  if (m == null) return "—";
+  return (m * 3.281).toFixed(1) + " ft";
+}
+
+function cToF(c: number | null): string {
+  if (c == null) return "—";
+  return Math.round(c * 9 / 5 + 32) + "°F";
+}
+
+function SpotlightCard() {
+  const [data, setData] = useState<SpotlightData | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetch("/forecast_summary.json")
+      .then(r => r.json())
+      .then((rows: SpotlightData[]) => {
+        const match = rows.find(r => r.beach_id === SPOTLIGHT_ID) ?? rows[0];
+        setData(match ?? null);
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, []);
+
+  const tok = data ? RISK_TOKEN[data.risk_band] : null;
+
+  return (
+    <Link
+      href={`/beaches/${SPOTLIGHT_ID}`}
+      className="group inline-flex items-center gap-5 mt-12 mb-10 px-6 py-4 rounded-2xl border border-navy/10 bg-bone/60 hover:bg-bone hover:border-navy/20 backdrop-blur-sm transition-all shadow-sm hover:shadow-md"
+    >
+      <div className="text-left">
+        <div className="sl-eyebrow text-navy/40 text-[9px] mb-0.5">Today at</div>
+        <div className="sl-display text-base text-navy leading-tight">{SPOTLIGHT_NAME}</div>
+        <div className="sl-label text-muted-foreground text-[10px] mt-0.5 lowercase">{SPOTLIGHT_LOCATION}</div>
+      </div>
+
+      <div className="w-px h-10 bg-navy/10 mx-1 shrink-0" />
+
+      {loading ? (
+        <div className="flex gap-3 items-center">
+          <div className="h-6 w-16 bg-navy/5 rounded-full animate-pulse" />
+          <div className="h-3 w-20 bg-navy/5 rounded animate-pulse" />
+        </div>
+      ) : data ? (
+        <>
+          <RiskChip band={data.risk_band} />
+          <div className="text-left">
+            <div className="sl-mono text-xs font-semibold" style={{ color: tok?.c }}>
+              {Math.round(data.p_exceed * 100)}% exceedance
+            </div>
+            <div className="sl-mono text-[10px] text-muted-foreground mt-0.5">
+              {mToFt(data.wave_height_m)} swell · {cToF(data.water_temperature_c)}
+            </div>
+          </div>
+        </>
+      ) : (
+        <span className="sl-label text-muted-foreground text-[10px] lowercase">Forecast unavailable</span>
+      )}
+
+      <ArrowRight className="w-3.5 h-3.5 text-navy/30 group-hover:text-navy group-hover:translate-x-0.5 transition-all ml-1 shrink-0" />
+    </Link>
+  );
+}
 
 export function ShorelifeHero() {
   return (
@@ -33,7 +112,7 @@ export function ShorelifeHero() {
         </p>
 
         {/* CTA Buttons */}
-        <div className="flex flex-col sm:flex-row items-center justify-center gap-4 mb-20">
+        <div className="flex flex-col sm:flex-row items-center justify-center gap-4 mb-0">
           <Button
             asChild
             size="lg"
@@ -49,6 +128,11 @@ export function ShorelifeHero() {
           >
             <Link href="/methodology">Read Methodology</Link>
           </Button>
+        </div>
+
+        {/* Spotlight Beach */}
+        <div className="flex justify-center">
+          <SpotlightCard />
         </div>
 
         {/* Key Pillars */}
