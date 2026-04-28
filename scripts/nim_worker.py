@@ -565,6 +565,7 @@ Rules:
 - Total output ≤ 300 tokens.
 - The executor never sees order.txt directly — give it enough context in action_list steps.
 - Pick the highest-priority unblocked WORKER item from the order.txt NEXT STEPS section.
+- NEVER plan to invoke scripts/run_nim_workers.sh or nim_worker.py — the worker cannot invoke itself. If the top priority requires running that script, skip it and pick the next concrete code or inspection task.
 """
 
 _NIM_UPDATE_SYSTEM = """\
