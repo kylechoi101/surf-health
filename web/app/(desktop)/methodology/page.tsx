@@ -7,7 +7,7 @@ export default function MethodologyPage() {
   return (
     <EditorialPage>
     <article style={{ padding: '64px 64px 96px', maxWidth: 1280, margin: '0 auto' }}>
-      <div style={{ color: 'var(--sl-sun-deep)', fontFamily: 'var(--font-mono)', fontSize: '0.85rem', textTransform: 'uppercase', letterSpacing: '0.12em' }}>Methodology · v1.0 · Apr 2026</div>
+      <div style={{ color: 'var(--sl-sun-deep)', fontFamily: 'var(--font-mono)', fontSize: '0.85rem', textTransform: 'uppercase', letterSpacing: '0.12em' }}>Methodology · v1.5 · Apr 2026</div>
       <h1 style={{ fontFamily: 'var(--font-heading)', fontSize: 96, marginTop: 18, marginBottom: 32, fontWeight: 400, letterSpacing: '-0.02em',
         color: 'var(--sl-navy-ink)', maxWidth: 980 }}>
         How the forecast<br/>is built.
