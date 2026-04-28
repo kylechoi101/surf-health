@@ -675,7 +675,7 @@ def _ollama_execute(
     bash_failures = 0
     total_cost = 0.0
 
-    for round_i in range(max_rounds + 2):  # +2 for final digest turn
+    for round_i in range(max_rounds):
         try:
             resp = _call_api(base_url, api_key, model, messages, tools=TOOLS)
         except requests.HTTPError as e:
@@ -741,7 +741,7 @@ def _ollama_execute(
 
         messages.extend(tool_results)
 
-    return "(max rounds exhausted)", max_rounds, "max_rounds", total_cost
+    return "(max rounds exhausted)", round_i + 1, "max_rounds", total_cost
 
 
 def _nim_update_order(
@@ -804,10 +804,10 @@ def _run_hybrid(
     iters = 0
 
     while True:
-        iters += 1
-        if max_iters and iters > max_iters:
+        if max_iters and iters >= max_iters:
             _log(f"Reached --max-iters={max_iters}, exiting")
             break
+        iters += 1
 
         order_text = _read_order()
         if _is_done(order_text):
