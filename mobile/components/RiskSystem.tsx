@@ -6,10 +6,10 @@ export type RiskBand = "Low" | "Moderate" | "High" | "Very High";
 export const RISK_ORDER: RiskBand[] = ["Low", "Moderate", "High", "Very High"];
 
 export const RISK_COPY: Record<RiskBand, { head: string; sub: string; cfu: string; drops: number }> = {
-  Low:         { head: "Clean.",    sub: "Swim, surf, dunk under.",        cfu: "< 35 CFU",  drops: 1 },
-  Moderate:    { head: "Watch.",    sub: "Okay — just don’t swallow.", cfu: "35–104", drops: 2 },
-  High:        { head: "Elevated.", sub: "Stay out if you’re sensitive.", cfu: "104–320", drops: 3 },
-  "Very High": { head: "Unsafe.",   sub: "County advisory — stay out.", cfu: "> 320",    drops: 3 },
+  Low:         { head: "Below standard.", sub: "Conditions favor swimming.",        cfu: "< 35 CFU",  drops: 1 },
+  Moderate:    { head: "Caution.",         sub: "Avoid swallowing water.",           cfu: "35–104",    drops: 2 },
+  High:        { head: "Warning.",         sub: "Avoid water contact.",              cfu: "104–320",   drops: 3 },
+  "Very High": { head: "Closure level.",   sub: "Check posted county advisory.",     cfu: "> 320",     drops: 3 },
 };
 
 export const RISK_COLORS_DEEP: Record<RiskBand, { fill: string; bg: string; ink: string }> = {

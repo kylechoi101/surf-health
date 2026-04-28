@@ -12,20 +12,20 @@ export function riskClass(band: RiskBand | string): string {
 
 export function riskVerdict(band: RiskBand | string): string {
   const map: Record<string, string> = {
-    Low: "Yes.",
-    Moderate: "Maybe.",
-    High: "Not ideal.",
-    "Very High": "Avoid.",
+    Low: "Below standard.",
+    Moderate: "Caution.",
+    High: "Avoid.",
+    "Very High": "Stay out.",
   };
   return map[band] ?? "Unknown.";
 }
 
 export function riskAdvice(band: RiskBand | string): string {
   const map: Record<string, string> = {
-    Low: "Bacteria levels are within safe limits. Enjoy the water.",
-    Moderate: "Elevated risk — swim with caution, especially near storm drains.",
-    High: "High bacteria likely. Consider staying out of the water today.",
-    "Very High": "Active contamination likely. Avoid water contact.",
+    Low: "Bacteria measurements are below the EPA single-sample threshold for marine recreational water.",
+    Moderate: "Elevated bacterial signal — avoid swallowing water and prolonged contact.",
+    High: "Bacteria forecast at or above the EPA threshold. Avoid water contact.",
+    "Very High": "Forecast at closure-level concentrations. Check the posted county advisory before entering.",
   };
   return map[band] ?? "";
 }

@@ -1,21 +1,21 @@
 import type { RiskBand } from "./api";
 
 export function riskVerdict(band: RiskBand | string): string {
-  const m: Record<string, string> = { Low: "Yes.", Moderate: "Maybe.", High: "Not ideal.", "Very High": "Avoid." };
+  const m: Record<string, string> = { Low: "Below standard.", Moderate: "Caution.", High: "Avoid.", "Very High": "Stay out." };
   return m[band] ?? "Unknown.";
 }
 
 export function riskHead(band: RiskBand | string): string {
-  const m: Record<string, string> = { Low: "Clean.", Moderate: "Watch.", High: "Elevated.", "Very High": "Unsafe." };
+  const m: Record<string, string> = { Low: "Below standard.", Moderate: "Caution.", High: "Warning.", "Very High": "Closure level." };
   return m[band] ?? "";
 }
 
 export function riskAdvice(band: RiskBand | string): string {
   const m: Record<string, string> = {
-    Low: "Swim, surf, dunk under.",
-    Moderate: "Okay — just don't swallow.",
-    High: "Stay out if you're sensitive.",
-    "Very High": "County advisory — stay out.",
+    Low: "Conditions favor swimming.",
+    Moderate: "Avoid swallowing water.",
+    High: "Avoid water contact.",
+    "Very High": "Check posted county advisory.",
   };
   return m[band] ?? "";
 }

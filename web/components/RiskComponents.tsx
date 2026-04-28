@@ -7,26 +7,26 @@ export type RiskBand = (typeof RISK_ORDER)[number];
 
 export const RISK_COPY: Record<RiskBand, { head: string; sub: string; cfu: string; drops: number }> = {
   Low: {
-    head: "Clean.",
-    sub: "Swim, surf, dunk under.",
+    head: "Below standard.",
+    sub: "Conditions favor swimming.",
     cfu: "< 35 CFU/100mL",
     drops: 1,
   },
   Moderate: {
-    head: "Watch.",
-    sub: "Okay — just don’t swallow.",
+    head: "Caution.",
+    sub: "Avoid swallowing water.",
     cfu: "35–104",
     drops: 2,
   },
   High: {
-    head: "Elevated.",
-    sub: "Stay out if you’re sensitive.",
+    head: "Warning.",
+    sub: "Avoid water contact.",
     cfu: "104–320",
     drops: 3,
   },
   "Very High": {
-    head: "Unsafe.",
-    sub: "County advisory · stay out.",
+    head: "Closure level.",
+    sub: "Check posted county advisory.",
     cfu: "> 320",
     drops: 3,
   },
