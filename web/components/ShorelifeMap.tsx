@@ -7,6 +7,7 @@ import { getBeaches } from "@/lib/api";
 export function ShorelifeMap() {
   const [beaches, setBeaches] = useState<BeachStation[]>([]);
   const [activeBeach, setActiveBeach] = useState<BeachStation | null>(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     async function fetchData() {
@@ -37,6 +38,8 @@ export function ShorelifeMap() {
         setActiveBeach(defaultBeach);
       } catch (err) {
         console.error("Failed to fetch beaches for map section:", err);
+      } finally {
+        setLoading(false);
       }
     }
     fetchData();
@@ -78,15 +81,27 @@ export function ShorelifeMap() {
         </div>
 
         {/* Map Container */}
-        <div className="h-[600px] md:h-[800px] bg-bone border border-navy/10 rounded-3xl overflow-hidden shadow-xl relative">
-          <CaliforniaPosterMap 
-            beaches={beaches} 
+        <div
+          className="h-[600px] md:h-[800px] bg-bone border border-navy/10 rounded-3xl overflow-hidden shadow-xl relative"
+          onMouseLeave={() => setActiveBeach(null)}
+        >
+          <CaliforniaPosterMap
+            beaches={beaches}
             activeBeach={activeBeach || undefined}
             onSelect={setActiveBeach}
             height={800}
             className="w-full"
           />
-          
+
+          {/* Loading shimmer */}
+          {loading && (
+            <div className="absolute inset-0 flex items-end justify-center pb-12 pointer-events-none">
+              <div className="sl-mono text-[10px] text-navy/40 animate-pulse tracking-widest uppercase">
+                Loading stations…
+              </div>
+            </div>
+          )}
+
           {/* Annotation Overlay */}
           <div className="absolute top-8 left-8 pointer-events-none">
             <div className="sl-label text-[10px] text-navy/40">FIG. 01 · STATEWIDE HEALTH BOARD</div>
