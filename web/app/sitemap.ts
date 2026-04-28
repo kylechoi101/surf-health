@@ -3,7 +3,7 @@ import { getBeaches } from "@/lib/api";
 
 export const dynamic = "force-static";
 
-const BASE = "https://shorelife.app";
+const BASE = "https://kylechoi101.github.io/surf-health";
 
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   const beaches = await getBeaches({ cache: "force-cache" });

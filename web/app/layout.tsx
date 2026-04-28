@@ -10,7 +10,7 @@ const jetbrainsMono = JetBrains_Mono({ subsets: ["latin"], variable: "--font-jet
 export const metadata: Metadata = {
   title: "Shorelife — Know before you paddle out",
   description: "Daily bacteria + surf health forecasts for 300+ California beaches.",
-  metadataBase: new URL("https://shorelife.app"),
+  metadataBase: new URL("https://kylechoi101.github.io/surf-health"),
   icons: {
     icon: "/icon.svg",
     apple: "/apple-icon.png",
@@ -18,7 +18,7 @@ export const metadata: Metadata = {
   manifest: "/manifest.json",
   openGraph: {
     type: "website",
-    url: "https://shorelife.app",
+    url: "https://kylechoi101.github.io/surf-health",
     siteName: "Shorelife",
     title: "Shorelife — Know before you paddle out",
     description: "Daily bacteria + surf health forecasts for 300+ California beaches.",
@@ -38,7 +38,7 @@ const jsonLd = {
     {
       "@type": "Organization",
       "name": "Shorelife",
-      "url": "https://shorelife.app",
+      "url": "https://kylechoi101.github.io/surf-health",
       "description": "Open-source California coastal water quality forecasting.",
       "email": "kylechoidsc@gmail.com",
       "sameAs": ["https://github.com/kylechoi101/surf-health"],
@@ -47,7 +47,7 @@ const jsonLd = {
       "@type": "Dataset",
       "name": "Shorelife Coastal Water Quality Forecasts",
       "description": "Daily calibrated bacterial exceedance probability forecasts for 300+ California beaches.",
-      "url": "https://shorelife.app/research",
+      "url": "https://kylechoi101.github.io/surf-health/research",
       "creator": { "@type": "Organization", "name": "Shorelife" },
       "spatialCoverage": "California, USA",
       "license": "https://opensource.org/licenses/MIT",

@@ -49,8 +49,8 @@ export default function BeachHome() {
 
   async function onShare() {
     await Share.share({
-      message: `${beach!.name} water quality: ${riskHead(band)} ${riskAdvice(band)} — shorelife.app/b/?id=${id}`,
-      url: `https://shorelife.app/b/?id=${id}`,
+      message: `${beach!.name} water quality: ${riskHead(band)} ${riskAdvice(band)} — kylechoi101.github.io/surf-health/b/?id=${id}`,
+      url: `https://kylechoi101.github.io/surf-health/b/?id=${id}`,
     });
   }
 

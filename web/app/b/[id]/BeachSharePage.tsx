@@ -175,7 +175,7 @@ export default function BeachSharePage() {
             <div style={{ marginTop: 14, fontFamily: 'var(--font-mono)', fontSize: 12,
               color: 'var(--sl-ink)', background: 'var(--sl-bone)',
               border: '1px solid var(--sl-line)', borderRadius: 12, padding: 16, lineHeight: 1.7 }}>
-              <div><span style={{ color: 'var(--sl-muted)' }}>url:</span> shorelife.app/b/{beach.id}</div>
+              <div><span style={{ color: 'var(--sl-muted)' }}>url:</span> kylechoi101.github.io/surf-health/b/{beach.id}</div>
               <div><span style={{ color: 'var(--sl-muted)' }}>og:title:</span> {beach.name} · {copy.head}</div>
               <div><span style={{ color: 'var(--sl-muted)' }}>og:desc:</span> {copy.sub}</div>
               <div><span style={{ color: 'var(--sl-muted)' }}>og:image:</span> /og/{beach.id}-{band.toLowerCase().replace(' ', '-')}.png</div>

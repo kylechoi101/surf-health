@@ -214,7 +214,7 @@ function SharePageContent() {
           <div>
             <div className="sl-eyebrow text-accent">Share link metadata</div>
             <div className="mt-4 font-mono text-[12px] text-foreground bg-bone border border-border rounded-xl p-4 leading-relaxed overflow-x-auto">
-              <div><span className="text-muted-foreground">url:</span> shorelife.app/b?id={beach.id}</div>
+              <div><span className="text-muted-foreground">url:</span> kylechoi101.github.io/surf-health/b?id={beach.id}</div>
               <div><span className="text-muted-foreground">og:title:</span> {beach.name} · {copy.head}</div>
               <div><span className="text-muted-foreground">og:desc:</span> {copy.sub}</div>
               <div className="truncate"><span className="text-muted-foreground ">og:image:</span> /og/{beach.id}-{band.toLowerCase().replace(/\s+/g, "-")}.png</div>
