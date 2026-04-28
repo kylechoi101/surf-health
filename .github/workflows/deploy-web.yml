@@ -5,6 +5,8 @@ on:
     branches: [main]
     paths:
       - 'web/**'
+      - 'data/curated/forecasts.parquet'
+      - 'data/curated/system_health.json'
       - '.github/workflows/deploy-web.yml'
   workflow_dispatch:
 
@@ -22,6 +24,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Generate forecast summary
+        run: |
+          pip install pandas pyarrow --quiet
+          python -c "
+          import pandas as pd, json
+          df = pd.read_parquet('data/curated/forecasts.parquet')
+          rows = df[['beach_id','risk_band','p_exceed','wave_height_m','water_temperature_c']].copy()
+          rows['p_exceed'] = rows['p_exceed'].round(4)
+          rows['wave_height_m'] = rows['wave_height_m'].round(2)
+          rows['water_temperature_c'] = rows['water_temperature_c'].round(2)
+          out = rows.to_dict(orient='records')
+          with open('web/public/forecast_summary.json','w') as f:
+              json.dump(out, f, separators=(',',':'))
+          print(f'Wrote {len(out)} rows to web/public/forecast_summary.json')
+          "
 
       - uses: actions/setup-node@v4
         with:
