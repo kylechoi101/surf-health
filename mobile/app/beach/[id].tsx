@@ -178,9 +178,9 @@ const s = StyleSheet.create({
     borderRadius: 14, alignItems: "center",
   },
   detailCtaText: { color: "#fff", fontSize: 14, fontWeight: "600" },
-  section: { backgroundColor: "#fff", marginHorizontal: 16, marginTop: 16, borderRadius: 18, borderWidth: 1, borderColor: "#e5e7eb", overflow: "hidden" },
-  sectionLabel: { fontSize: 10, fontWeight: "700", color: "#64748b", textTransform: "uppercase", letterSpacing: 1, padding: 14, paddingBottom: 6 },
+  section: { backgroundColor: "#faf6ee", marginHorizontal: 16, marginTop: 16, borderRadius: 18, borderWidth: 1, borderColor: "#d6cbb1", overflow: "hidden" },
+  sectionLabel: { fontSize: 10, fontWeight: "700", color: "#5e6b73", textTransform: "uppercase", letterSpacing: 1.2, padding: 14, paddingBottom: 6 },
   driverRow: { flexDirection: "row", alignItems: "flex-start", gap: 12, padding: 14 },
   driverIcon: { width: 26, height: 26, borderRadius: 8, alignItems: "center", justifyContent: "center" },
-  driverText: { flex: 1, fontSize: 14, fontWeight: "500", color: "#0f172a", lineHeight: 20 },
+  driverText: { flex: 1, fontSize: 14, fontWeight: "500", color: "#1a2730", lineHeight: 20 },
 });
