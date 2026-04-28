@@ -14,8 +14,9 @@ export default async function ResearchPage() {
   const stations = allBeaches.slice(0, 12);
 
   const model = healthData.model_registry.production_model;
-  const testAucpr = healthData.model_registry.production_metrics.aucpr.toFixed(4);
-  const testBrier = healthData.model_registry.production_metrics.brier.toFixed(4);
+  const prodMetrics = healthData.model_registry.production_metrics ?? {};
+  const testAucpr = prodMetrics.aucpr != null ? prodMetrics.aucpr.toFixed(4) : '—';
+  const testBrier = prodMetrics.brier != null ? prodMetrics.brier.toFixed(4) : '—';
   const isEligible = healthData.model_registry.public_release_eligible ? 'Eligible' : 'Blocked';
 
   const timeSince = (isoString: string) => {
@@ -96,6 +97,35 @@ export default async function ResearchPage() {
       )}
 
       {/* Scientific Artifacts */}
+      {/* Research subpages */}
+      <div style={{ marginTop: 32 }}>
+        <div style={{ color: 'var(--sl-sun-deep)', fontFamily: 'var(--font-mono)', fontSize: '0.85rem', textTransform: 'uppercase', letterSpacing: '0.12em' }}>Deep dives</div>
+        <h2 style={{ fontFamily: 'var(--font-heading)', fontSize: 28, margin: '8px 0 24px', color: 'var(--sl-navy-ink)', fontWeight: 400 }}>
+          Transparency documentation
+        </h2>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 20 }}>
+          {[
+            { href: '/research/labels', title: 'Risk Labels', desc: 'How exceedance probability maps to the four public bands, legal basis, and what the model can and cannot predict.', tag: 'Labels · Thresholds' },
+            { href: '/research/sources', title: 'Data Sources', desc: 'The six primary datasets feeding the pipeline — BeachWatch, NDBC, CDIP, Open-Meteo, USGS NWIS, and CEDEN — with freshness status.', tag: 'Provenance · Cadence' },
+            { href: '/research/calibration', title: 'Calibration', desc: 'Live production metrics, spatial backtest results, and candidate model registry from the latest CI run.', tag: 'AUCPR · Brier · Spatial CV' },
+          ].map(({ href, title, desc, tag }) => (
+            <div key={href} style={{ padding: 24, background: 'var(--sl-bone)', border: '1px solid var(--sl-line)', borderRadius: 14, display: 'flex', flexDirection: 'column', justifyContent: 'space-between', gap: 20 }}>
+              <div>
+                <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--sl-muted)', marginBottom: 8 }}>{tag}</div>
+                <h3 style={{ fontFamily: 'var(--font-heading)', fontSize: 22, margin: '0 0 8px', color: 'var(--sl-navy)', fontWeight: 400 }}>{title}</h3>
+                <p style={{ fontSize: 13, color: 'var(--sl-muted)', margin: 0, lineHeight: 1.55 }}>{desc}</p>
+              </div>
+              <Link href={href} style={{
+                padding: '9px 16px', borderRadius: 8, border: '1px solid var(--sl-line)',
+                background: 'var(--sl-ecru)', color: 'var(--sl-navy)', fontFamily: 'var(--font-mono)',
+                fontSize: 11, fontWeight: 600, textDecoration: 'none', whiteSpace: 'nowrap',
+                alignSelf: 'flex-start',
+              }}>READ →</Link>
+            </div>
+          ))}
+        </div>
+      </div>
+
       <div style={{ marginTop: 32, padding: '0 0 64px' }}>
         <div style={{ color: 'var(--sl-sun-deep)', fontFamily: 'var(--font-mono)', fontSize: '0.85rem', textTransform: 'uppercase', letterSpacing: '0.12em' }}>Scientific artifacts</div>
         <h2 style={{ fontFamily: 'var(--font-heading)', fontSize: 28, margin: '8px 0 24px', color: 'var(--sl-navy-ink)', fontWeight: 400 }}>
