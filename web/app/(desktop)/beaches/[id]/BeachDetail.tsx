@@ -70,7 +70,27 @@ export default function BeachDetailPage() {
 
   if (!beach) return <div style={{ padding: 64 }}>Beach not found.</div>;
 
-  const band = forecast?.risk_band || 'Moderate';
+  if (!forecast) {
+    const date = preferredForecastDate();
+    return (
+      <div style={{ padding: '48px 64px 64px' }}>
+        <div style={{ color: 'var(--sl-sun-deep)', fontFamily: 'var(--font-mono)', fontSize: '0.85rem', textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: 8 }}>
+          {beach.county} County · {beach.region}
+        </div>
+        <h1 style={{ fontFamily: 'var(--font-heading)', fontSize: 72, margin: '0 0 24px', fontWeight: 400, color: 'var(--sl-navy-ink)', letterSpacing: '-0.02em' }}>
+          {beach.name}
+        </h1>
+        <p style={{ fontFamily: 'var(--font-text)', fontSize: 17, color: 'var(--sl-muted)', lineHeight: 1.55, marginBottom: 32, maxWidth: 560 }}>
+          No forecast is available for {beach.name} on {date}. The model runs each morning — check back after 6 AM PT.
+        </p>
+        <a href="/beaches" style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--sl-navy)', textDecoration: 'none' }}>
+          ← Back to all beaches
+        </a>
+      </div>
+    );
+  }
+
+  const band = forecast.risk_band;
   const tok = RISK_TOKEN[band];
   const copy = RISK_COPY[band];
   const env = forecast?.environmental_summary;

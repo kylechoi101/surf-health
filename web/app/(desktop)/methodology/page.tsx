@@ -123,6 +123,94 @@ export default function MethodologyPage() {
           </ul>
         </div>
       </div>
+
+      {/* Model Card Link */}
+      <div style={{ marginTop: 80, paddingTop: 32, borderTop: '1px solid var(--sl-line)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div>
+          <div style={{ color: 'var(--sl-muted)', fontFamily: 'var(--font-mono)', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 6 }}>Full specification</div>
+          <div style={{ fontFamily: 'var(--font-heading)', fontSize: 22, color: 'var(--sl-navy)', fontWeight: 400 }}>Model Card</div>
+          <div style={{ fontFamily: 'var(--font-text)', fontSize: 14, color: 'var(--sl-muted)', marginTop: 4 }}>Feature rationale, spatial CV protocol, and known failure modes.</div>
+        </div>
+        <a
+          href="https://github.com/kylechoi101/surf-health/blob/main/data/curated/model_card.md"
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--sl-navy)', textDecoration: 'none', border: '1px solid var(--sl-line)', padding: '10px 18px', borderRadius: 8, background: 'var(--sl-ecru)', whiteSpace: 'nowrap' }}
+        >
+          Read model card →
+        </a>
+      </div>
+
+      {/* References */}
+      <div style={{ display: 'grid', gridTemplateColumns: '160px 1fr', gap: 64,
+        marginTop: 80, paddingTop: 32, borderTop: '1px solid var(--sl-line)' }}>
+        <aside>
+          <div style={{ color: 'var(--sl-navy)', fontFamily: 'var(--font-mono)', fontSize: 12, letterSpacing: '0.1em', fontWeight: 600, textTransform: 'uppercase' }}>§ 04</div>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--sl-muted)',
+            marginTop: 8, lineHeight: 1.6, letterSpacing: '0.06em' }}>
+            REFERENCES
+          </div>
+        </aside>
+        <div>
+          <h2 style={{ fontFamily: 'var(--font-heading)', fontSize: 40, margin: '0 0 28px', fontWeight: 400, letterSpacing: '-0.02em',
+            color: 'var(--sl-navy-ink)' }}>
+            Sources and prior work.
+          </h2>
+          <ol style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 0 }}>
+            {[
+              {
+                n: 1,
+                text: 'Searcy, R. T. & Boehm, A. B. (2021). A day at the beach: enabling coastal water quality prediction with high-frequency sampling and machine learning.',
+                url: 'https://doi.org/10.1016/j.watres.2021.117051',
+                label: 'Water Research · DOI: 10.1016/j.watres.2021.117051',
+              },
+              {
+                n: 2,
+                text: 'U.S. EPA. Virtual Beach 3 (VB3): User Guide. Enterococcus-based per-station MLR as production baseline.',
+                url: 'https://www.epa.gov/exposure-assessment-models/virtual-beach-vb',
+                label: 'EPA VB3 Reference Manual',
+              },
+              {
+                n: 3,
+                text: 'California Department of Public Health. AB411 Annual Beach Report. County advisory thresholds and official culture-based sampling protocol.',
+                url: 'https://www.cdph.ca.gov/Programs/CEH/DRSEM/Pages/BeachMonitoring.aspx',
+                label: 'CDPH AB411 / Beach Monitoring Program',
+              },
+              {
+                n: 4,
+                text: 'NOAA National Data Buoy Center (NDBC). Real-time and historical wave, wind, and sea surface temperature observations used as model covariates.',
+                url: 'https://www.ndbc.noaa.gov',
+                label: 'NDBC · noaa.gov/ndbc',
+              },
+              {
+                n: 5,
+                text: 'Scripps Institution of Oceanography. Coastal Data Information Program (CDIP). Nearshore wave model output and buoy telemetry.',
+                url: 'https://cdip.ucsd.edu',
+                label: 'CDIP · cdip.ucsd.edu',
+              },
+              {
+                n: 6,
+                text: 'Open-Meteo. Open-source weather API — hourly UV index and solar radiation used for solar inactivation index feature.',
+                url: 'https://open-meteo.com',
+                label: 'Open-Meteo API · open-meteo.com',
+              },
+            ].map(ref => (
+              <li key={ref.n} style={{ display: 'flex', gap: 20, paddingTop: 20, paddingBottom: 20,
+                borderTop: '1px solid var(--sl-line-soft)', fontSize: 14,
+                color: 'var(--sl-ink)', lineHeight: 1.6, fontFamily: 'var(--font-text)' }}>
+                <span style={{ color: 'var(--sl-muted)', fontSize: 11, fontFamily: 'var(--font-mono)', minWidth: 20, paddingTop: 2 }}>[{ref.n}]</span>
+                <span>
+                  {ref.text}{' '}
+                  <a href={ref.url} target="_blank" rel="noopener noreferrer"
+                    style={{ color: 'var(--sl-navy)', textDecoration: 'none', fontFamily: 'var(--font-mono)', fontSize: 11 }}>
+                    {ref.label} ↗
+                  </a>
+                </span>
+              </li>
+            ))}
+          </ol>
+        </div>
+      </div>
     </article>
   );
 }

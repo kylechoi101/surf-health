@@ -1,9 +1,9 @@
-import StickyHeader from "@/components/StickyHeader";
+import { Header } from "@/components/header";
 
 export default function DesktopLayout({ children }: { children: React.ReactNode }) {
   return (
     <div className="site-shell">
-      <StickyHeader />
+      <Header />
       {children}
     </div>
   );

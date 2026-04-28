@@ -3,6 +3,8 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { getBeaches } from '@/lib/api';
 import { RiskChip } from '@/components/Risk';
+import { EditorialPage } from '@/components/EditorialPage';
+import Link from 'next/link';
 
 export default async function ResearchPage() {
   const healthPath = path.join(process.cwd(), '../data/curated/system_health.json');
@@ -30,6 +32,7 @@ export default async function ResearchPage() {
   ];
 
   return (
+    <EditorialPage>
     <div style={{ padding: '48px 64px 64px' }}>
       <div style={{ color: 'var(--sl-sun-deep)', fontFamily: 'var(--font-mono)', fontSize: '0.85rem', textTransform: 'uppercase', letterSpacing: '0.12em' }}>Research · operator view · build {new Date().toISOString().split('T')[0].replace(/-/g, '.')}</div>
       <h1 style={{ fontFamily: 'var(--font-heading)', fontSize: 80, marginTop: 14, marginBottom: 16, fontWeight: 400, letterSpacing: '-0.02em',
@@ -96,32 +99,44 @@ export default async function ResearchPage() {
       <div style={{ marginTop: 32, padding: '0 0 64px' }}>
         <div style={{ color: 'var(--sl-sun-deep)', fontFamily: 'var(--font-mono)', fontSize: '0.85rem', textTransform: 'uppercase', letterSpacing: '0.12em' }}>Scientific artifacts</div>
         <h2 style={{ fontFamily: 'var(--font-heading)', fontSize: 28, margin: '8px 0 24px', color: 'var(--sl-navy-ink)', fontWeight: 400 }}>
-          Open data & peer review
+          Open data & methodology
         </h2>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
-          {[
-            { t: 'Technical Methodology', d: 'Full mathematical derivation of the stacked ensemble blender and spatial holdout protocol.', f: 'PDF', a: 'Shorelife Team' },
-            { t: 'v1.4 Curated Dataset', d: 'Pre-processed hourly marine microbiology and environmental covariates for all CA stations.', f: 'CSV/Parquet', a: 'Automated Pipeline' },
-          ].map(a => (
-            <div key={a.t} style={{ padding: 24, background: 'var(--sl-bone)', border: '1px solid var(--sl-line)', borderRadius: 14, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div>
-                <h3 style={{ fontFamily: 'var(--font-heading)', fontSize: 20, margin: '0 0 6px', color: 'var(--sl-navy)' }}>{a.t}</h3>
-                <p style={{ fontSize: 13, color: 'var(--sl-muted)', margin: '0 0 12px', maxWidth: 360, lineHeight: 1.5 }}>{a.d}</p>
-                <div style={{ display: 'flex', gap: 12, fontFamily: 'var(--font-mono)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                  <span style={{ color: 'var(--sl-navy)' }}>{a.f}</span>
-                  <span style={{ color: 'var(--sl-muted)' }}>·</span>
-                  <span style={{ color: 'var(--sl-muted)' }}>{a.a}</span>
-                </div>
+          <div style={{ padding: 24, background: 'var(--sl-bone)', border: '1px solid var(--sl-line)', borderRadius: 14, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div>
+              <h3 style={{ fontFamily: 'var(--font-heading)', fontSize: 20, margin: '0 0 6px', color: 'var(--sl-navy)' }}>Technical Methodology</h3>
+              <p style={{ fontSize: 13, color: 'var(--sl-muted)', margin: '0 0 12px', maxWidth: 360, lineHeight: 1.5 }}>
+                Model design, risk-band calibration, spatial holdout protocol, and known limitations.
+              </p>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--sl-muted)' }}>
+                Shorelife Team
               </div>
-              <button style={{ 
-                padding: '10px 18px', borderRadius: 8, border: '1px solid var(--sl-line)', 
-                background: 'var(--sl-ecru)', color: 'var(--sl-navy)', fontFamily: 'var(--font-mono)', 
-                fontSize: 11, fontWeight: 600, cursor: 'pointer' 
-              }}>DOWNLOAD</button>
             </div>
-          ))}
+            <Link href="/methodology" style={{
+              padding: '10px 18px', borderRadius: 8, border: '1px solid var(--sl-line)',
+              background: 'var(--sl-ecru)', color: 'var(--sl-navy)', fontFamily: 'var(--font-mono)',
+              fontSize: 11, fontWeight: 600, textDecoration: 'none', whiteSpace: 'nowrap',
+            }}>READ →</Link>
+          </div>
+          <div style={{ padding: 24, background: 'var(--sl-bone)', border: '1px solid var(--sl-line)', borderRadius: 14, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div>
+              <h3 style={{ fontFamily: 'var(--font-heading)', fontSize: 20, margin: '0 0 6px', color: 'var(--sl-navy)' }}>Source Code & Data</h3>
+              <p style={{ fontSize: 13, color: 'var(--sl-muted)', margin: '0 0 12px', maxWidth: 360, lineHeight: 1.5 }}>
+                Full pipeline, training scripts, and curated datasets available on GitHub under an open-source license.
+              </p>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--sl-muted)' }}>
+                Automated Pipeline
+              </div>
+            </div>
+            <a href="https://github.com/kylechoi101/surf-health" target="_blank" rel="noopener noreferrer" style={{
+              padding: '10px 18px', borderRadius: 8, border: '1px solid var(--sl-line)',
+              background: 'var(--sl-ecru)', color: 'var(--sl-navy)', fontFamily: 'var(--font-mono)',
+              fontSize: 11, fontWeight: 600, textDecoration: 'none', whiteSpace: 'nowrap',
+            }}>GITHUB →</a>
+          </div>
         </div>
       </div>
     </div>
+    </EditorialPage>
   );
 }
