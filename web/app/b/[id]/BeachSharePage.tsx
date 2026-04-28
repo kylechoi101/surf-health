@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { getBeaches, getForecast, preferredForecastDate, type BeachSummary, type ForecastRecord } from "@/lib/api";
 import { RISK_COPY, RISK_TOKEN, DropRow, SeverityBar } from "@/components/RiskComponents";
+import { EditorialPage } from "@/components/EditorialPage";
 
 function mToFt(m: number | null | undefined) {
   if (m == null) return "—";
@@ -57,6 +58,7 @@ export default function BeachSharePage() {
   ];
 
   return (
+    <EditorialPage>
     <div style={{ padding: '48px 64px 64px' }}>
       <div style={{ padding: '48px 0 24px' }}>
         <div style={{ color: 'var(--sl-sun-deep)', margin: '0 0 10px', fontSize: '0.85rem', textTransform: 'uppercase', letterSpacing: '0.12em', fontFamily: 'var(--font-mono)' }}>Beach · share preview</div>
@@ -184,6 +186,7 @@ export default function BeachSharePage() {
         </div>
       </div>
     </div>
+    </EditorialPage>
   );
 }
 

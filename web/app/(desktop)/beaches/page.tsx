@@ -3,6 +3,7 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { getBeaches, preferredForecastDate, type BeachSummary } from '@/lib/api';
 import { RiskChip, RISK_TOKEN } from '@/components/RiskComponents';
+import { EditorialPage } from '@/components/EditorialPage';
 
 export default function BeachesDirectoryPage() {
   const [beaches, setBeaches] = useState<BeachSummary[]>([]);
@@ -29,6 +30,7 @@ export default function BeachesDirectoryPage() {
   }, [beaches, search, selectedCounty]);
 
   return (
+    <EditorialPage>
     <main style={{ padding: '48px 64px 96px', maxWidth: 1200, margin: '0 auto' }}>
       <div style={{ color: 'var(--sl-sun-deep)', fontFamily: 'var(--font-mono)', fontSize: '0.85rem', textTransform: 'uppercase', letterSpacing: '0.12em' }}>
         Directory · {beaches.length} Stations
@@ -124,5 +126,6 @@ export default function BeachesDirectoryPage() {
         </div>
       )}
     </main>
+    </EditorialPage>
   );
 }

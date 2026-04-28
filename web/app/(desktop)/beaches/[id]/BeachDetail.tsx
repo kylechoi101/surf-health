@@ -3,6 +3,7 @@ import React, { useEffect, useState, useMemo } from "react";
 import { useParams } from "next/navigation";
 import { getBeaches, getForecast, getObservations, preferredForecastDate, type BeachSummary, type ForecastRecord, type ObservationResponse } from "@/lib/api";
 import { RISK_COPY, RISK_TOKEN, DropRow, SeverityBar, RiskChip } from "@/components/RiskComponents";
+import { EditorialPage } from "@/components/EditorialPage";
 import { Skeleton, SkeletonCard } from "@/components/Skeleton";
 
 function mToFt(m: number | null | undefined) {
@@ -132,6 +133,7 @@ export default function BeachDetailPage() {
   ];
 
   return (
+    <EditorialPage>
     <div style={{ padding: '48px 64px 64px' }} className="animate-fade">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', paddingBottom: 32, borderBottom: '1px solid var(--sl-line)' }}>
         <div>
@@ -249,5 +251,6 @@ export default function BeachDetailPage() {
         </div>
       </div>
     </div>
+    </EditorialPage>
   );
 }
