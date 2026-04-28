@@ -2191,6 +2191,7 @@ def train_curated_and_export(
     model_type: str = "tcn",
     spatial_strategy: str = "shortlist",
     winner_only: bool = False,
+    training_window_days: int = 60,
 ) -> TrainingArtifacts:
     import sys
     if spatial_strategy not in SPATIAL_BACKTEST_STRATEGIES:
@@ -2204,9 +2205,10 @@ def train_curated_and_export(
     full_frame["sample_date"] = pd.to_datetime(full_frame["sample_date"])
     max_date = full_frame["sample_date"].max()
     # Keep the full history available for env-covariate persistence fallback
-    # in _build_forecast_candidates.  The training window is still capped at
-    # 60 days so the model doesn't over-weight stale bacterial data.
-    frame = full_frame.loc[full_frame["sample_date"] > (max_date - pd.Timedelta(days=60))].copy()
+    # in _build_forecast_candidates.  Marine-micro features are 100% covered
+    # only post-2020; widen with care so older zero-coverage rows don't dilute.
+    frame = full_frame.loc[full_frame["sample_date"] > (max_date - pd.Timedelta(days=training_window_days))].copy()
+    print(f"Training window: {training_window_days}d, rows={len(frame)}", file=sys.stderr, flush=True)
     stations = pd.read_parquet(curated_dir / "beaches.parquet")
     uv_daily_path = curated_dir / "uv_daily.parquet"
     uv_daily = pd.read_parquet(uv_daily_path) if uv_daily_path.exists() else pd.DataFrame()
@@ -2468,6 +2470,7 @@ def train_all(
     model_type: str = "tcn",
     spatial_strategy: str = "shortlist",
     winner_only: bool = False,
+    training_window_days: int = 60,
 ) -> TrainingArtifacts:
     settings = get_settings()
     if curated:
@@ -2481,6 +2484,7 @@ def train_all(
             model_type=model_type,
             spatial_strategy=spatial_strategy,
             winner_only=winner_only,
+            training_window_days=training_window_days,
         )
     if not sample_fixture:
         raise NotImplementedError("Training currently expects fixture-backed development data.")
@@ -2521,6 +2525,9 @@ def main() -> None:
     parser.add_argument("--winner-only", action="store_true",
                         help="Retrain only the persisted backtest winner (reads production_model.json). "
                              "Falls back to full comparison if no registry exists.")
+    parser.add_argument("--training-window-days", type=int, default=60,
+                        help="Days of recent beach_day rows to train on. Default 60. "
+                             "Set higher (e.g. 365) once marine-micro coverage is uniform.")
     args = parser.parse_args()
     forecast_date = date.fromisoformat(args.forecast_date) if args.forecast_date else None
     artifacts = train_all(
@@ -2534,6 +2541,7 @@ def main() -> None:
         model_type=args.model,
         spatial_strategy=args.spatial_strategy,
         winner_only=args.winner_only,
+        training_window_days=args.training_window_days,
     )
     print(json.dumps(asdict(artifacts), indent=2))
 
