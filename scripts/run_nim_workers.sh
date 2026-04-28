@@ -77,6 +77,15 @@ case "$cmd" in
     shift
     exec "$PY" "$ROOT/scripts/nim_worker.py" "$@"
     ;;
+  hybrid)
+    shift
+    # NIM brain + Ollama executor. Default budget 0.50; pass extra args through.
+    exec "$PY" "$ROOT/scripts/nim_worker.py" \
+      --mode hybrid \
+      --executor-model "gemma4:31b" \
+      --budget-usd 0.50 \
+      "$@"
+    ;;
   *)
     exec "$PY" "$ROOT/scripts/nim_worker.py" "$@"
     ;;
