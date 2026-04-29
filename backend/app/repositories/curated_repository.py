@@ -70,17 +70,25 @@ class CuratedBeachRepository(BeachRepository):
         path = self.curated_dir / "latest_env.parquet"
         return pd.read_parquet(path) if path.exists() else pd.DataFrame()
 
-    def _obs_for_beach(self, beach_id: str) -> pd.DataFrame:
+    @cached_property
+    def observations_frame(self) -> pd.DataFrame:
         path = self.curated_dir / "observations.parquet"
-        if not path.exists():
+        return pd.read_parquet(path) if path.exists() else pd.DataFrame()
+
+    @cached_property
+    def beach_day_frame(self) -> pd.DataFrame:
+        path = self.curated_dir / "beach_day.parquet"
+        return pd.read_parquet(path) if path.exists() else pd.DataFrame()
+
+    def _obs_for_beach(self, beach_id: str) -> pd.DataFrame:
+        if self.observations_frame.empty:
             return pd.DataFrame()
-        return pq.read_table(path, filters=[("beach_id", "==", beach_id)]).to_pandas()
+        return self.observations_frame.loc[self.observations_frame["beach_id"] == beach_id]
 
     def _beach_day_for_beach(self, beach_id: str) -> pd.DataFrame:
-        path = self.curated_dir / "beach_day.parquet"
-        if not path.exists():
+        if self.beach_day_frame.empty:
             return pd.DataFrame()
-        return pq.read_table(path, filters=[("beach_id", "==", beach_id)]).to_pandas()
+        return self.beach_day_frame.loc[self.beach_day_frame["beach_id"] == beach_id]
 
     @cached_property
     def forecasts_frame(self) -> pd.DataFrame:
