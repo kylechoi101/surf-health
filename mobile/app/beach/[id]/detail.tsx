@@ -31,11 +31,12 @@ export default function BeachDetail() {
 
   if (!beach) return null;
 
+  const isUnsupported = beach.support_status === "unsupported";
   const band = (forecast?.risk_band ?? "Moderate") as RiskBand;
-  const colors = RISK_COLORS[band] ?? RISK_COLORS.Moderate;
+  const colors = isUnsupported ? { hero: ["#64748b", "#475569"], deep: "#334155", bg: "#e2e8f0", fill: "#94a3b8" } : (RISK_COLORS[band] ?? RISK_COLORS.Moderate);
   const env = forecast?.environmental_summary;
   const ds = daysSince(beach.latest_official_sample_at);
-  const riskCopy = RISK_COPY[band];
+  const riskCopy = isUnsupported ? { head: "No model coverage yet", sub: "Showing latest official sample. Treat uncertainty seriously." } : RISK_COPY[band];
 
   return (
     <View style={{ flex: 1, backgroundColor: "#f2f4f7" }}>
@@ -69,8 +70,8 @@ export default function BeachDetail() {
                   <Text style={[s.riskAdvice, { color: colors.deep }]}>{riskCopy.sub}</Text>
                 </View>
                 <View style={{ alignItems: "flex-end", gap: 8 }}>
-                  <DropRow band={band} size={15} />
-                  {forecast && (
+                  {!isUnsupported && <DropRow band={band} size={15} />}
+                  {!isUnsupported && forecast && (
                     <View style={{ alignItems: "flex-end" }}>
                       <Text style={[s.pctBig, { color: colors.deep }]}>{Math.round(forecast.p_exceed * 100)}<Text style={{ fontSize: 14 }}>%</Text></Text>
                       <Text style={[s.pctSub, { color: colors.deep }]}>exceed chance</Text>
@@ -78,17 +79,19 @@ export default function BeachDetail() {
                   )}
                 </View>
               </View>
-              <View style={{ marginTop: 14 }}>
-                <Text style={[s.riskEyebrow, { color: colors.deep, marginBottom: 6 }]}>Severity</Text>
-                <SeverityBar band={band} height={7} />
-                <View style={{ flexDirection: "row", justifyContent: "space-between", marginTop: 4 }}>
-                  {(["Low", "Moderate", "High", "Very High"] as RiskBand[]).map((b) => (
-                    <Text key={b} style={{ fontSize: 9, color: colors.deep, opacity: 0.7, fontWeight: b === band ? "700" : "400" }}>
-                      {b === "Very High" ? "V.High" : b}
-                    </Text>
-                  ))}
+              {!isUnsupported && (
+                <View style={{ marginTop: 14 }}>
+                  <Text style={[s.riskEyebrow, { color: colors.deep, marginBottom: 6 }]}>Severity</Text>
+                  <SeverityBar band={band} height={7} />
+                  <View style={{ flexDirection: "row", justifyContent: "space-between", marginTop: 4 }}>
+                    {(["Low", "Moderate", "High", "Very High"] as RiskBand[]).map((b) => (
+                      <Text key={b} style={{ fontSize: 9, color: colors.deep, opacity: 0.7, fontWeight: b === band ? "700" : "400" }}>
+                        {b === "Very High" ? "V.High" : b}
+                      </Text>
+                    ))}
+                  </View>
                 </View>
-              </View>
+              )}
             </View>
           </View>
         </View>
@@ -174,9 +177,9 @@ export default function BeachDetail() {
 
         {/* Footer */}
         {forecast && (
-          <View style={{ padding: 16 }}>
-            <Text style={{ fontSize: 11, color: "#94a3b8", lineHeight: 17 }}>
-              Model: {forecast.model_version} · Shorelife forecasts are not official lab results — exercise extra caution if you have a cut or compromised immune system.
+          <View style={{ marginTop: 24 }}>
+            <Text style={{ fontSize: 12, color: "#64748b", lineHeight: 18 }}>
+              {isUnsupported ? "Model: None (latest official sample) · " : `Model: ${forecast.model_version} · `}Shorelife forecasts are not official lab results — exercise extra caution if you have a cut or compromised immune system.
             </Text>
           </View>
         )}

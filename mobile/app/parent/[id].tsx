@@ -57,8 +57,9 @@ export default function ParentBeachScreen() {
     );
   }
 
-  const band = parent.risk_band ?? "Moderate";
-  const colors = RISK_COLORS[band] ?? RISK_COLORS.Moderate;
+  const isUnsupported = parent.support_status === "unsupported";
+  const band = (parent.risk_band ?? "Moderate") as RiskBand;
+  const colors = isUnsupported ? { hero: ["#64748b", "#475569"], deep: "#334155", bg: "#e2e8f0" } : (RISK_COLORS[band] ?? RISK_COLORS.Moderate);
 
   return (
     <View style={{ flex: 1 }}>
@@ -75,14 +76,17 @@ export default function ParentBeachScreen() {
             <Text style={s.heroTitle}>{parent.name}</Text>
             <View style={s.heroMeta}>
               <Text style={s.heroMetaText}>{parent.station_count} monitoring station{parent.station_count !== 1 ? "s" : ""}</Text>
-              {parent.risk_band && (
+              {parent.risk_band && !isUnsupported && (
                 <View style={s.riskPill}>
                   <Text style={s.riskPillText}>{parent.risk_band} risk</Text>
                 </View>
               )}
             </View>
-            {parent.p_exceed != null && (
+            {parent.p_exceed != null && !isUnsupported && (
               <Text style={s.heroAdvice}>{riskAdvice(band)}</Text>
+            )}
+            {isUnsupported && (
+              <Text style={s.heroAdvice}>No model coverage yet — showing latest official sample.</Text>
             )}
           </SafeAreaView>
         </View>
@@ -100,7 +104,7 @@ export default function ParentBeachScreen() {
         )}
 
         {/* Aggregate risk */}
-        {parent.p_exceed != null && (
+        {parent.p_exceed != null && !isUnsupported && (
           <View style={{ padding: 16, paddingBottom: 0 }}>
             <Text style={s.sectionLabel}>Overall forecast</Text>
             <View style={[s.riskBanner, { backgroundColor: colors.bg }]}>
@@ -127,14 +131,15 @@ export default function ParentBeachScreen() {
         )}
 
         {/* Station list */}
-        <View style={{ padding: 16, paddingTop: parent.p_exceed != null ? 16 : 16 }}>
+        <View style={{ padding: 16, paddingTop: parent.p_exceed != null && !isUnsupported ? 16 : 16 }}>
           <Text style={s.sectionLabel}>Monitoring stations</Text>
           <View style={s.stationCard}>
             {parent.member_beach_ids.map((mid, i) => {
               const b = memberBeaches.find((bch) => bch.id === mid);
               const f = memberForecasts[mid];
+              const isMemUnsupported = b?.support_status === "unsupported";
               const stBand = f?.risk_band ?? null;
-              const stColors = stBand ? (RISK_COLORS[stBand] ?? RISK_COLORS.Moderate) : null;
+              const stColors = stBand && !isMemUnsupported ? (RISK_COLORS[stBand] ?? RISK_COLORS.Moderate) : null;
               const ds = b ? daysSince(b.latest_official_sample_at) : null;
               return (
                 <TouchableOpacity
@@ -142,15 +147,15 @@ export default function ParentBeachScreen() {
                   onPress={() => router.push(`/beach/${mid}` as any)}
                   style={[s.stationRow, i > 0 && { borderTopWidth: 1, borderTopColor: "#f1f5f9" }]}
                 >
-                  <View style={[s.stationDot, { backgroundColor: stColors?.hero[0] ?? "#94a3b8" }]} />
+                  <View style={[s.stationDot, { backgroundColor: isMemUnsupported ? "#94a3b8" : (stColors?.hero[0] ?? "#94a3b8") }]} />
                   <View style={{ flex: 1 }}>
                     <Text style={s.stationName}>{b?.name ?? mid}</Text>
                     <Text style={s.stationSub}>
-                      {f ? `${Math.round(f.p_exceed * 100)}% exceed chance` : "Forecast unavailable"}
+                      {isMemUnsupported ? "No model coverage" : (f ? `${Math.round(f.p_exceed * 100)}% exceed chance` : "Forecast unavailable")}
                       {ds != null ? ` · sampled ${ds === 0 ? "today" : ds === 1 ? "yesterday" : `${ds}d ago`}` : ""}
                     </Text>
                   </View>
-                  {stBand && (
+                  {stBand && !isMemUnsupported && (
                     <Text style={[s.stationRisk, { color: stColors?.hero[0] ?? "#64748b" }]}>{stBand}</Text>
                   )}
                   <Text style={s.chevron}>›</Text>

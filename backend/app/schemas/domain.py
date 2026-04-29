@@ -31,6 +31,7 @@ class BeachSummary(BaseModel):
     county: str
     region: str
     support_status: SupportStatus
+    model_version: str | None = None
     latest_official_sample_at: datetime | None = None
     geometry: Point
 
@@ -41,6 +42,7 @@ class ParentBeachSummary(BaseModel):
     county: str
     region: str
     support_status: SupportStatus
+    model_version: str | None = None
     station_count: int
     member_beach_ids: list[str]
     latest_official_sample_at: datetime | None = None
