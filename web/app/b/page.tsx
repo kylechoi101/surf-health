@@ -4,13 +4,15 @@ import React, { useEffect, useState, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { Header } from "@/components/header";
 import { 
-  RiskBand, 
-  RISK_COPY, 
-  RISK_TOKEN, 
   DropRow, 
   SeverityBar, 
   RiskChip 
 } from "@/components/RiskComponents";
+import {
+  RiskBand,
+  RISK_COPY,
+  RISK_TOKEN
+} from "@/lib/riskData";
 import { 
   getForecast, 
   getBeaches, 

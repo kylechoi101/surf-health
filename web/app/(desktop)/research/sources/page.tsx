@@ -2,7 +2,6 @@ import React from 'react';
 import { promises as fs } from 'fs';
 import path from 'path';
 import Link from 'next/link';
-import { EditorialPage } from '@/components/EditorialPage';
 
 interface SourceDef {
   name: string;
@@ -86,22 +85,21 @@ export default async function SourcesPage() {
   };
 
   return (
-    <EditorialPage>
-      <article style={{ padding: '64px 64px 96px', maxWidth: 1280, margin: '0 auto' }}>
-
-        <div style={{ marginBottom: 12 }}>
-          <Link href="/research" style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--sl-muted)', textDecoration: 'none', letterSpacing: '0.08em' }}>
+    <main className="min-h-screen bg-background pt-32 pb-24">
+      <article className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="mb-4">
+          <Link href="/research" className="font-mono text-[11px] text-muted-foreground hover:text-foreground transition-colors tracking-widest">
             ← Research
           </Link>
         </div>
 
-        <div style={{ color: 'var(--sl-sun-deep)', fontFamily: 'var(--font-mono)', fontSize: '0.85rem', textTransform: 'uppercase', letterSpacing: '0.12em' }}>
+        <div className="text-primary text-sm tracking-widest uppercase font-medium mb-4">
           Research · Sources
         </div>
-        <h1 style={{ fontFamily: 'var(--font-heading)', fontSize: 80, marginTop: 18, marginBottom: 32, fontWeight: 400, letterSpacing: '-0.02em', color: 'var(--sl-navy-ink)', maxWidth: 900 }}>
+        <h1 className="text-5xl md:text-7xl font-light mb-8 text-foreground text-balance">
           Where the data<br/>comes from.
         </h1>
-        <p style={{ fontFamily: 'var(--font-text)', fontSize: 20, color: 'var(--sl-ink)', lineHeight: 1.6, maxWidth: 680, margin: 0 }}>
+        <p className="text-xl text-muted-foreground leading-relaxed max-w-3xl mb-14">
           Shorelife integrates six primary data sources, all public or government-archived, into a
           daily pipeline that runs at 6 AM PT. Each source is attributed in the model feature space
           and versioned in the parquet archive.
@@ -109,50 +107,53 @@ export default async function SourcesPage() {
 
         {/* Freshness strip */}
         {pipelineFreshness && (
-          <div style={{ marginTop: 48, background: 'var(--sl-bone)', border: '1px solid var(--sl-line)', borderRadius: 12, padding: '18px 28px', display: 'flex', gap: 40, alignItems: 'center' }}>
+          <div className="mt-14 bg-muted/30 border border-border/50 rounded-2xl p-7 md:p-8 flex flex-col sm:flex-row gap-10 sm:gap-16 items-start sm:items-center flex-wrap mb-24">
             <div>
-              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--sl-muted)' }}>Pipeline heartbeat</div>
-              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 16, color: 'var(--sl-navy-ink)', marginTop: 4 }}>{fmtAge(pipelineFreshness)}</div>
+              <div className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">Pipeline heartbeat</div>
+              <div className="font-mono text-xl text-foreground mt-2">{fmtAge(pipelineFreshness)}</div>
             </div>
             {Object.entries(sourceFreshness).map(([k, v]) => (
               <div key={k}>
-                <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--sl-muted)' }}>{k}</div>
-                <div style={{ fontFamily: 'var(--font-mono)', fontSize: 16, color: 'var(--sl-navy-ink)', marginTop: 4 }}>{fmtAge(v)}</div>
+                <div className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">{k}</div>
+                <div className="font-mono text-xl text-foreground mt-2">{fmtAge(v)}</div>
               </div>
             ))}
           </div>
         )}
 
         {/* Sources grid */}
-        <div style={{ display: 'grid', gridTemplateColumns: '160px 1fr', gap: 64,
-          marginTop: 64, paddingTop: 32, borderTop: '1px solid var(--sl-line)' }}>
+        <div className="grid md:grid-cols-[200px_1fr] gap-12 pt-12 border-t border-border/50 mb-24">
           <aside>
-            <div style={{ color: 'var(--sl-navy)', fontFamily: 'var(--font-mono)', fontSize: 12, letterSpacing: '0.1em', fontWeight: 600, textTransform: 'uppercase' }}>§ 01</div>
-            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--sl-muted)', marginTop: 8, lineHeight: 1.6, letterSpacing: '0.06em' }}>DATA SOURCES</div>
+            <div className="text-primary font-medium tracking-widest text-sm uppercase mb-2">§ 01</div>
+            <div className="text-xs text-muted-foreground tracking-wider uppercase">Data Sources</div>
           </aside>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 32 }}>
+          <div className="flex flex-col gap-12">
             {SOURCES.map((s, i) => (
-              <div key={s.name} style={{ paddingTop: 28, borderTop: i === 0 ? 'none' : '1px solid var(--sl-line-soft)', display: 'grid', gridTemplateColumns: '1fr 1.4fr', gap: 40 }}>
+              <div key={s.name} className={`pt-8 ${i === 0 ? '' : 'border-t border-border/50'} grid lg:grid-cols-[1fr_1.4fr] gap-10`}>
                 <div>
-                  <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, textTransform: 'uppercase', color: 'var(--sl-muted)', letterSpacing: '0.1em' }}>{s.org}</div>
-                  <div style={{ fontFamily: 'var(--font-heading)', fontSize: 28, color: 'var(--sl-navy-ink)', fontWeight: 400, marginTop: 6, marginBottom: 8 }}>{s.name}</div>
+                  <div className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">{s.org}</div>
+                  <div className="text-3xl font-light text-foreground mt-2 mb-3">{s.name}</div>
                   {s.freshness_key && sourceFreshness[s.freshness_key] && (
-                    <div style={{ display: 'inline-block', background: 'var(--sl-risk-low-bg)', color: 'var(--sl-risk-low-ink)', fontFamily: 'var(--font-mono)', fontSize: 10, padding: '3px 10px', borderRadius: 20 }}>
+                    <div className="inline-block bg-emerald-500/10 text-emerald-600 font-mono text-[10px] uppercase tracking-widest px-3 py-1 rounded-full mb-6">
                       Last seen {fmtAge(sourceFreshness[s.freshness_key])}
                     </div>
                   )}
-                  <div style={{ marginTop: 16, fontFamily: 'var(--font-mono)', fontSize: 10, textTransform: 'uppercase', color: 'var(--sl-muted)', letterSpacing: '0.08em' }}>Update cadence</div>
-                  <div style={{ fontFamily: 'var(--font-text)', fontSize: 13, color: 'var(--sl-ink)', marginTop: 4, lineHeight: 1.5 }}>{s.freq}</div>
-                  <a href={s.url} target="_blank" rel="noopener noreferrer" style={{ display: 'inline-block', marginTop: 16, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--sl-navy)', textDecoration: 'none', borderBottom: '1px solid var(--sl-line)' }}>
-                    {s.url.replace('https://', '')} ↗
-                  </a>
+                  <div className={s.freshness_key && sourceFreshness[s.freshness_key] ? "" : "mt-6"}>
+                    <div className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">Update cadence</div>
+                    <div className="text-sm text-foreground mt-1.5 leading-relaxed">{s.freq}</div>
+                    <a href={s.url} target="_blank" rel="noopener noreferrer" className="inline-block mt-4 font-mono text-[11px] tracking-widest text-primary border-b border-border/50 hover:border-primary transition-colors pb-0.5">
+                      {s.url.replace('https://', '')} ↗
+                    </a>
+                  </div>
                 </div>
                 <div>
-                  <p style={{ fontFamily: 'var(--font-text)', fontSize: 15, color: 'var(--sl-ink)', lineHeight: 1.65, margin: '0 0 16px' }}>{s.what}</p>
-                  <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, textTransform: 'uppercase', color: 'var(--sl-muted)', letterSpacing: '0.08em', marginBottom: 8 }}>Fields used</div>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                  <p className="text-base text-foreground leading-relaxed mb-6">{s.what}</p>
+                  <div className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground mb-3">Fields used</div>
+                  <div className="flex flex-wrap gap-2">
                     {s.fields.map(f => (
-                      <span key={f} style={{ background: 'var(--sl-bone)', border: '1px solid var(--sl-line)', fontFamily: 'var(--font-mono)', fontSize: 11, padding: '3px 10px', borderRadius: 6, color: 'var(--sl-ink)' }}>{f}</span>
+                      <span key={f} className="bg-muted/30 border border-border/50 font-mono text-[11px] px-3 py-1 rounded-md text-foreground">
+                        {f}
+                      </span>
                     ))}
                   </div>
                 </div>
@@ -162,17 +163,16 @@ export default async function SourcesPage() {
         </div>
 
         {/* Pipeline note */}
-        <div style={{ display: 'grid', gridTemplateColumns: '160px 1fr', gap: 64,
-          marginTop: 80, paddingTop: 32, borderTop: '1px solid var(--sl-line)' }}>
+        <div className="grid md:grid-cols-[200px_1fr] gap-12 pt-12 border-t border-border/50 mb-24">
           <aside>
-            <div style={{ color: 'var(--sl-navy)', fontFamily: 'var(--font-mono)', fontSize: 12, letterSpacing: '0.1em', fontWeight: 600, textTransform: 'uppercase' }}>§ 02</div>
-            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--sl-muted)', marginTop: 8, lineHeight: 1.6, letterSpacing: '0.06em' }}>PIPELINE</div>
+            <div className="text-primary font-medium tracking-widest text-sm uppercase mb-2">§ 02</div>
+            <div className="text-xs text-muted-foreground tracking-wider uppercase">Pipeline</div>
           </aside>
           <div>
-            <h2 style={{ fontFamily: 'var(--font-heading)', fontSize: 36, margin: '0 0 20px', fontWeight: 400, letterSpacing: '-0.01em', color: 'var(--sl-navy-ink)' }}>
+            <h2 className="text-3xl font-light mb-6 text-foreground">
               Forecast-safe cutoff at 5 AM PT.
             </h2>
-            <p style={{ fontFamily: 'var(--font-text)', fontSize: 16, color: 'var(--sl-ink)', lineHeight: 1.65, maxWidth: 680, margin: 0 }}>
+            <p className="text-base text-muted-foreground leading-relaxed max-w-2xl mb-8">
               The pipeline runs daily at 6 AM PT. All environmental covariates are summarised up to
               5 AM PT of the forecast day so no same-morning laboratory results leak into the
               features. Open-Meteo data is cached per (lat, lon, date) in a local parquet store
@@ -180,13 +180,13 @@ export default async function SourcesPage() {
               CI run.
             </p>
             <a href="https://github.com/kylechoi101/surf-health/blob/main/CLAUDE.md" target="_blank" rel="noopener noreferrer"
-              style={{ display: 'inline-block', marginTop: 20, fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--sl-navy)', textDecoration: 'none', border: '1px solid var(--sl-line)', padding: '10px 18px', borderRadius: 8, background: 'var(--sl-ecru)' }}>
+              className="inline-block font-mono text-[11px] tracking-widest uppercase px-5 py-2.5 bg-muted/30 border border-border/50 rounded-lg text-primary hover:text-primary/80 transition-colors">
               Pipeline reference →
             </a>
           </div>
         </div>
 
       </article>
-    </EditorialPage>
+    </main>
   );
 }

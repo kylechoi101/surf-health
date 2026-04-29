@@ -1,0 +1,172 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+
+:root {
+  /* Shorelife Brand */
+  --sl-navy:        #0b4266;
+  --sl-navy-deep:   #072e48;
+  --sl-navy-ink:    #051d2e;
+  --sl-teal:        #4dd5a8;
+  --sl-teal-deep:   #2b9e79;
+  --sl-sun:         #d99a2b;
+  --sl-sun-deep:    #a06a13;
+
+  /* Earth Neutrals */
+  --sl-ecru:        #f1ead9;
+  --sl-ecru-deep:   #e9dfc6;
+  --sl-bone:        #faf6ee;
+  --sl-sand:        #e8dfcc;
+  --sl-driftwood:   #c9b997;
+  --sl-kelp:        #2a3d32;
+
+  --sl-ink:         #1a2730;
+  --sl-muted:       #5e6b73;
+  --sl-line:        #d6cbb1;
+  --sl-line-soft:   #e6dcc4;
+
+  /* Risk Taxonomy */
+  --sl-risk-low:    #197257;
+  --sl-risk-low-bg: #d8efe4;
+  --sl-risk-low-ink:#175d43;
+  --sl-risk-mod:    #7a5c08;
+  --sl-risk-mod-bg: #f3e6c1;
+  --sl-risk-mod-ink:#6d4a05;
+  --sl-risk-high:   #c7552e;
+  --sl-risk-high-bg:#f2d9ca;
+  --sl-risk-high-ink:#7a2d15;
+  --sl-risk-vh:     #8a2a20;
+  --sl-risk-vh-bg:  #ecc9c1;
+  --sl-risk-vh-ink: #561611;
+
+  /* Shadcn/UI Mappings */
+  --background: var(--sl-ecru);
+  --foreground: var(--sl-ink);
+  --card: var(--sl-bone);
+  --card-foreground: var(--sl-ink);
+  --popover: var(--sl-bone);
+  --popover-foreground: var(--sl-ink);
+  --primary: var(--sl-navy);
+  --primary-foreground: var(--sl-bone);
+  --secondary: var(--sl-sand);
+  --secondary-foreground: var(--sl-navy);
+  --muted: var(--sl-ecru-deep);
+  --muted-foreground: var(--sl-muted);
+  --accent: var(--sl-sun);
+  --accent-foreground: var(--sl-bone);
+  --destructive: var(--sl-risk-vh);
+  --destructive-foreground: var(--sl-bone);
+  --border: var(--sl-line);
+  --input: var(--sl-line-soft);
+  --ring: var(--sl-navy);
+  --radius: 0.25rem;
+}
+
+@theme inline {
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-serif: var(--font-fraunces), 'Iowan Old Style', Georgia, serif;
+  --font-mono: var(--font-jetbrains), ui-monospace, 'SF Mono', Menlo, monospace;
+  --font-heading: var(--font-fraunces), serif;
+  --font-text: var(--font-inter), ui-sans-serif, sans-serif;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  /* Shorelife brand */
+  --color-navy: var(--sl-navy);
+  --color-navy-deep: var(--sl-navy-deep);
+  --color-navy-ink: var(--sl-navy-ink);
+  --color-teal: var(--sl-teal);
+  --color-teal-deep: var(--sl-teal-deep);
+  --color-sun: var(--sl-sun);
+  --color-sun-deep: var(--sl-sun-deep);
+  --color-bone: var(--sl-bone);
+  --color-ecru: var(--sl-ecru);
+  --color-ecru-deep: var(--sl-ecru-deep);
+  --color-sand: var(--sl-sand);
+  --color-driftwood: var(--sl-driftwood);
+  --color-kelp: var(--sl-kelp);
+  --color-ink: var(--sl-ink);
+
+  /* Risk taxonomy */
+  --color-risk-low: var(--sl-risk-low);
+  --color-risk-low-bg: var(--sl-risk-low-bg);
+  --color-risk-low-ink: var(--sl-risk-low-ink);
+  --color-risk-mod: var(--sl-risk-mod);
+  --color-risk-mod-bg: var(--sl-risk-mod-bg);
+  --color-risk-mod-ink: var(--sl-risk-mod-ink);
+  --color-risk-high: var(--sl-risk-high);
+  --color-risk-high-bg: var(--sl-risk-high-bg);
+  --color-risk-high-ink: var(--sl-risk-high-ink);
+  --color-risk-vh: var(--sl-risk-vh);
+  --color-risk-vh-bg: var(--sl-risk-vh-bg);
+  --color-risk-vh-ink: var(--sl-risk-vh-ink);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground relative min-h-screen overflow-x-hidden;
+  }
+
+  /* Paper grain — pure CSS, no external CDN */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+    background-image:
+      radial-gradient(circle at 12% 8%, rgba(217,154,43,0.05), transparent 28%),
+      radial-gradient(circle at 88% 92%, rgba(11,66,102,0.04), transparent 32%);
+  }
+
+  /* Typography Utilities */
+  .sl-display {
+    @apply font-serif font-medium tracking-tight leading-none;
+    font-weight: 450;
+  }
+  .sl-mono {
+    @apply font-mono tabular-nums;
+  }
+  .sl-eyebrow {
+    @apply font-mono text-[10px] font-medium uppercase tracking-[0.18em] text-muted-foreground;
+  }
+  .sl-label {
+    @apply font-mono text-[10px] font-medium uppercase tracking-[0.12em];
+  }
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
+}
+
+.animate-float {
+  animation: float 4s ease-in-out infinite;
+}
+
+html {
+  scroll-behavior: smooth;
+}

@@ -34,39 +34,34 @@ export default function SearchScreen({ beaches }: { beaches: BeachSummary[] }) {
   const regionOrder = Object.keys(grouped).sort();
 
   return (
-    <div className="sh-screen" style={{ background: "#f2f4f7" }}>
+    <div className="min-h-[100dvh] pb-[calc(80px+env(safe-area-inset-bottom))] bg-muted/20 text-foreground overflow-y-auto">
       {/* Sticky header */}
-      <div style={{
-        padding: "16px 20px 0", background: "#fff", borderBottom: "1px solid #e5e7eb",
-        position: "sticky", top: 0, zIndex: 2,
-      }}>
-        <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 12 }}>Browse beaches</h1>
-        <div className="sh-search-box">
+      <div className="sticky top-0 z-10 px-5 pt-4 bg-background/95 backdrop-blur-md border-b border-border/50">
+        <h1 className="text-[22px] font-bold mb-3">Browse beaches</h1>
+        <div className="flex items-center gap-2.5 bg-muted/50 rounded-2xl p-3 border border-border/50 focus-within:border-primary transition-colors">
           <IconSearch />
           <input
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder={`Search ${beaches.length}+ beaches`}
+            className="flex-1 bg-transparent border-none outline-none text-[15px] text-foreground placeholder:text-muted-foreground"
           />
           {q && (
-            <button onClick={() => setQ("")}
-              style={{ background: "none", border: "none", cursor: "pointer", color: "#94a3b8", padding: 0 }}>
+            <button onClick={() => setQ("")} className="text-muted-foreground p-1 hover:text-foreground">
               <IconClose />
             </button>
           )}
         </div>
 
         {/* Region filter pills */}
-        <div style={{ display: "flex", gap: 6, margin: "12px 0", overflowX: "auto" }}>
+        <div className="flex gap-1.5 my-3 overflow-x-auto no-scrollbar">
           {REGIONS.map((r) => (
             <button key={r} onClick={() => setRegion(r)}
-              style={{
-                padding: "6px 12px", borderRadius: 999, whiteSpace: "nowrap",
-                border: "1px solid " + (region === r ? "#0b4266" : "#e5e7eb"),
-                background: region === r ? "#0b4266" : "#fff",
-                color: region === r ? "#fff" : "#0f172a",
-                fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer",
-              }}>
+              className={`px-3 py-1.5 rounded-full whitespace-nowrap text-xs font-semibold tracking-wide border transition-colors ${
+                region === r 
+                  ? "border-primary bg-primary text-primary-foreground" 
+                  : "border-border/50 bg-background text-foreground hover:bg-muted/50"
+              }`}>
               {r}
             </button>
           ))}
@@ -74,38 +69,36 @@ export default function SearchScreen({ beaches }: { beaches: BeachSummary[] }) {
       </div>
 
       {/* Results */}
-      {regionOrder.map((r) => (
-        <div key={r} style={{ marginTop: 20 }}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: "#64748b", letterSpacing: "0.08em",
-            textTransform: "uppercase", padding: "0 20px", marginBottom: 8,
-            display: "flex", justifyContent: "space-between" }}>
-            <span>{REGION_LABELS[r] ?? r}</span>
-            <span style={{ opacity: 0.6 }}>{grouped[r].length}</span>
+      <div className="py-2">
+        {regionOrder.map((r) => (
+          <div key={r} className="mt-5">
+            <div className="text-[11px] font-bold text-muted-foreground tracking-widest uppercase px-5 mb-2 flex justify-between">
+              <span>{REGION_LABELS[r] ?? r}</span>
+              <span className="opacity-60">{grouped[r].length}</span>
+            </div>
+            <div className="px-4 flex flex-col gap-2">
+              {grouped[r].map((b) => (
+                <button key={b.id} onClick={() => router.push(`/m/beach/${b.id}`)}
+                  className="flex items-center gap-3 p-3 bg-background border border-border/50 rounded-xl cursor-pointer text-left w-full hover:border-primary/50 transition-colors shadow-sm">
+                  <span className="w-2 h-2 rounded-full bg-muted-foreground shrink-0"/>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-semibold text-foreground truncate">{b.name}</div>
+                    <div className="text-[11px] text-muted-foreground mt-0.5">{b.county} County</div>
+                  </div>
+                  <IconChevron />
+                </button>
+              ))}
+            </div>
           </div>
-          <div style={{ padding: "0 20px", display: "flex", flexDirection: "column", gap: 8 }}>
-            {grouped[r].map((b) => (
-              <button key={b.id} onClick={() => router.push(`/m/beach/${b.id}`)}
-                style={{ display: "flex", alignItems: "center", gap: 12, padding: 12,
-                  background: "#fff", border: "1px solid #e5e7eb", borderRadius: 14,
-                  cursor: "pointer", fontFamily: "inherit", textAlign: "left", width: "100%" }}>
-                <span className="sh-dot" style={{ background: "#94a3b8" }}/>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 14, fontWeight: 600, color: "#0f172a" }}>{b.name}</div>
-                  <div style={{ fontSize: 11, color: "#64748b", marginTop: 2 }}>{b.county} County</div>
-                </div>
-                <IconChevron />
-              </button>
-            ))}
-          </div>
-        </div>
-      ))}
+        ))}
 
-      {!filtered.length && (
-        <div style={{ textAlign: "center", padding: "40px 20px", color: "#64748b" }}>
-          <div style={{ fontSize: 15, fontWeight: 600 }}>No beaches match</div>
-          <div style={{ fontSize: 13, marginTop: 4 }}>Try a different search or region.</div>
-        </div>
-      )}
+        {!filtered.length && (
+          <div className="text-center py-10 px-5 text-muted-foreground">
+            <div className="text-[15px] font-semibold text-foreground">No beaches match</div>
+            <div className="text-[13px] mt-1">Try a different search or region.</div>
+          </div>
+        )}
+      </div>
 
       <TabBar />
     </div>

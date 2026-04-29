@@ -1,36 +1,35 @@
 import React from 'react';
 import Link from 'next/link';
-import { EditorialPage } from '@/components/EditorialPage';
 
 export default function PrivacyPage() {
   return (
-    <EditorialPage>
-      <article style={{ padding: '64px 64px 96px', maxWidth: 1280, margin: '0 auto' }}>
-        <div style={{ marginBottom: 12 }}>
-          <Link href="/" style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--sl-muted)', textDecoration: 'none', letterSpacing: '0.08em' }}>
+    <main className="min-h-screen bg-background pt-32 pb-24">
+      <article className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="mb-4">
+          <Link href="/" className="font-mono text-[11px] text-muted-foreground hover:text-foreground transition-colors tracking-widest">
             ← Home
           </Link>
         </div>
 
-        <div style={{ color: 'var(--sl-sun-deep)', fontFamily: 'var(--font-mono)', fontSize: '0.85rem', textTransform: 'uppercase', letterSpacing: '0.12em' }}>
+        <div className="text-primary text-sm tracking-widest uppercase font-medium mb-4">
           Legal
         </div>
-        <h1 style={{ fontFamily: 'var(--font-heading)', fontSize: 80, marginTop: 18, marginBottom: 32, fontWeight: 400, letterSpacing: '-0.02em', color: 'var(--sl-navy-ink)', maxWidth: 900, lineHeight: 1.1 }}>
+        <h1 className="text-5xl md:text-7xl font-light mb-8 text-foreground text-balance">
           Privacy Policy
         </h1>
         
-        <p style={{ fontFamily: 'var(--font-text)', fontSize: 20, color: 'var(--sl-ink)', lineHeight: 1.6, maxWidth: 680, margin: '0 0 40px' }}>
+        <p className="text-xl text-muted-foreground leading-relaxed max-w-3xl mb-16">
           Effective Date: April 28, 2026. This Privacy Policy describes how Shorelife 
           ("we", "our", or "us") collects, uses, and shares information when you use our 
           website and mobile application.
         </p>
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 40, marginTop: 40, borderTop: '1px solid var(--sl-line)', paddingTop: 40 }}>
+        <div className="space-y-16 mt-16 border-t border-border/50 pt-16">
           <section>
-            <h2 style={{ fontFamily: 'var(--font-heading)', fontSize: 28, color: 'var(--sl-navy)', marginBottom: 16, fontWeight: 400 }}>
+            <h2 className="text-3xl font-light mb-6 text-foreground">
               1. What data we collect
             </h2>
-            <p style={{ fontFamily: 'var(--font-text)', fontSize: 16, color: 'var(--sl-ink)', lineHeight: 1.65, maxWidth: 680, margin: 0 }}>
+            <p className="text-base text-muted-foreground leading-relaxed max-w-2xl">
               <strong>Location Data:</strong> When using the iOS application, we request access to your approximate location 
               to show nearby beaches. We only collect location data when you grant "While Using the App" permissions. 
               We do not track you in the background and we do not collect precise GPS coordinates.
@@ -41,10 +40,10 @@ export default function PrivacyPage() {
           </section>
 
           <section>
-            <h2 style={{ fontFamily: 'var(--font-heading)', fontSize: 28, color: 'var(--sl-navy)', marginBottom: 16, fontWeight: 400 }}>
+            <h2 className="text-3xl font-light mb-6 text-foreground">
               2. What we send to third parties
             </h2>
-            <p style={{ fontFamily: 'var(--font-text)', fontSize: 16, color: 'var(--sl-ink)', lineHeight: 1.65, maxWidth: 680, margin: 0 }}>
+            <p className="text-base text-muted-foreground leading-relaxed max-w-2xl">
               <strong>Forecasting APIs:</strong> We send generalized location queries to weather and environmental APIs, 
               such as Open-Meteo and USGS NWIS, strictly for the purpose of generating coastal water quality forecasts.
               <br/><br/>
@@ -54,10 +53,10 @@ export default function PrivacyPage() {
           </section>
 
           <section>
-            <h2 style={{ fontFamily: 'var(--font-heading)', fontSize: 28, color: 'var(--sl-navy)', marginBottom: 16, fontWeight: 400 }}>
+            <h2 className="text-3xl font-light mb-6 text-foreground">
               3. Children's Privacy
             </h2>
-            <p style={{ fontFamily: 'var(--font-text)', fontSize: 16, color: 'var(--sl-ink)', lineHeight: 1.65, maxWidth: 680, margin: 0 }}>
+            <p className="text-base text-muted-foreground leading-relaxed max-w-2xl">
               The Shorelife application is intended for a general audience. We do not knowingly collect, use, 
               or share information from children. If you believe we have inadvertently collected such information, 
               please contact us.
@@ -65,16 +64,16 @@ export default function PrivacyPage() {
           </section>
 
           <section>
-            <h2 style={{ fontFamily: 'var(--font-heading)', fontSize: 28, color: 'var(--sl-navy)', marginBottom: 16, fontWeight: 400 }}>
+            <h2 className="text-3xl font-light mb-6 text-foreground">
               4. Contact Us
             </h2>
-            <p style={{ fontFamily: 'var(--font-text)', fontSize: 16, color: 'var(--sl-ink)', lineHeight: 1.65, maxWidth: 680, margin: 0 }}>
-              If you have any questions or concerns about this Privacy Policy, please reach out to us at 
-              <a href="mailto:kylechoidsc@gmail.com" style={{ color: 'var(--sl-navy)', textDecoration: 'underline', marginLeft: 6 }}>kylechoidsc@gmail.com</a>.
+            <p className="text-base text-muted-foreground leading-relaxed max-w-2xl">
+              If you have any questions or concerns about this Privacy Policy, please reach out to us at{' '}
+              <a href="mailto:kylechoidsc@gmail.com" className="text-primary hover:underline font-medium">kylechoidsc@gmail.com</a>.
             </p>
           </section>
         </div>
       </article>
-    </EditorialPage>
+    </main>
   );
 }

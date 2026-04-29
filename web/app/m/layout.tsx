@@ -1,5 +1,4 @@
 import type { Metadata, Viewport } from "next";
-import "./mobile.css";
 
 export const metadata: Metadata = {
   title: "Surf Health",
@@ -15,7 +14,7 @@ export const viewport: Viewport = {
 
 export default function MobileLayout({ children }: { children: React.ReactNode }) {
   return (
-    <div className="sh-app-root">
+    <div className="bg-background text-foreground min-h-[100dvh] antialiased">
       {children}
     </div>
   );

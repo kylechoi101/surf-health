@@ -1,9 +1,9 @@
 "use client";
-import React, { useEffect, useState, useMemo } from "react";
+import React, { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { getBeaches, getForecast, getObservations, preferredForecastDate, type BeachSummary, type ForecastRecord, type ObservationResponse } from "@/lib/api";
-import { RISK_COPY, RISK_TOKEN, DropRow, SeverityBar, RiskChip } from "@/components/RiskComponents";
-import { EditorialPage } from "@/components/EditorialPage";
+import { DropRow, SeverityBar, RiskChip } from "@/components/RiskComponents";
+import { RISK_COPY, RISK_TOKEN } from "@/lib/riskData";
 import { Skeleton, SkeletonCard } from "@/components/Skeleton";
 
 function mToFt(m: number | null | undefined) {
@@ -16,15 +16,7 @@ function TrendIndicator({ current, previous, reverse = false }: { current: numbe
   const isUp = current > previous;
   const isGood = reverse ? !isUp : isUp;
   return (
-    <span style={{ 
-      display: 'inline-flex', 
-      alignItems: 'center', 
-      marginLeft: 4, 
-      color: isGood ? 'var(--sl-teal-deep)' : 'var(--sl-risk-high)',
-      fontSize: 14,
-      transform: isUp ? 'rotate(0deg)' : 'rotate(180deg)',
-      transition: 'transform 0.3s ease'
-    }}>
+    <span className={`inline-flex items-center ml-1 text-sm transition-transform duration-300 ${isGood ? 'text-emerald-600' : 'text-red-500'} ${isUp ? 'rotate-0' : 'rotate-180'}`}>
       ↑
     </span>
   );
@@ -54,49 +46,61 @@ export default function BeachDetailPage() {
   }, [id]);
 
   if (loading) return (
-    <div style={{ padding: '48px 64px 64px' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', paddingBottom: 32, borderBottom: '1px solid var(--sl-line)' }}>
-        <div>
-          <Skeleton style={{ width: 120, height: 14, marginBottom: 8 }} />
-          <Skeleton style={{ width: 400, height: 72 }} />
+    <main className="min-h-screen bg-background pt-32 pb-24">
+      <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-end pb-8 mb-12 border-b border-border/50 gap-6">
+          <div>
+            <Skeleton style={{ width: 120, height: 14, marginBottom: 8 }} />
+            <Skeleton style={{ width: 400, height: 72 }} />
+          </div>
+          <Skeleton style={{ width: 100, height: 32 }} />
         </div>
-        <Skeleton style={{ width: 100, height: 32 }} />
+        <div className="grid lg:grid-cols-[1.2fr_1fr] gap-12">
+          <SkeletonCard />
+          <SkeletonCard />
+        </div>
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: 48, marginTop: 48 }}>
-        <SkeletonCard />
-        <SkeletonCard />
-      </div>
-    </div>
+    </main>
   );
 
-  if (!beach) return <div style={{ padding: 64 }}>Beach not found.</div>;
+  if (!beach) return (
+    <main className="min-h-screen bg-background pt-32 pb-24 flex items-center justify-center">
+      <div className="text-xl text-muted-foreground font-mono">Beach not found.</div>
+    </main>
+  );
 
   if (!forecast) {
     const date = preferredForecastDate();
     return (
-      <div style={{ padding: '48px 64px 64px' }}>
-        <div style={{ color: 'var(--sl-sun-deep)', fontFamily: 'var(--font-mono)', fontSize: '0.85rem', textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: 8 }}>
-          {beach.county} County · {beach.region}
+      <main className="min-h-screen bg-background pt-32 pb-24">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="text-primary text-sm tracking-widest uppercase font-medium mb-4">
+            {beach.county} County · {beach.region}
+          </div>
+          <h1 className="text-5xl md:text-7xl font-light mb-8 text-foreground text-balance">
+            {beach.name}
+          </h1>
+          <p className="text-xl text-muted-foreground leading-relaxed max-w-2xl mb-12">
+            No forecast is available for {beach.name} on {date}. The model runs each morning — check back after 6 AM PT.
+          </p>
+          <a href="/beaches" className="font-mono text-[11px] tracking-widest text-primary border-b border-border/50 hover:border-primary transition-colors pb-0.5">
+            ← Back to all beaches
+          </a>
         </div>
-        <h1 style={{ fontFamily: 'var(--font-heading)', fontSize: 72, margin: '0 0 24px', fontWeight: 400, color: 'var(--sl-navy-ink)', letterSpacing: '-0.02em' }}>
-          {beach.name}
-        </h1>
-        <p style={{ fontFamily: 'var(--font-text)', fontSize: 17, color: 'var(--sl-muted)', lineHeight: 1.55, marginBottom: 32, maxWidth: 560 }}>
-          No forecast is available for {beach.name} on {date}. The model runs each morning — check back after 6 AM PT.
-        </p>
-        <a href="/beaches" style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--sl-navy)', textDecoration: 'none' }}>
-          ← Back to all beaches
-        </a>
-      </div>
+      </main>
     );
   }
 
+  const isUnsupported = beach.support_status === 'unsupported';
   const band = forecast.risk_band;
-  const tok = RISK_TOKEN[band];
-  const copy = RISK_COPY[band];
+  // Fallback to Tailwind-like styles for unsupported
+  const cardBgClass = isUnsupported ? 'bg-muted/30' : RISK_TOKEN[band]?.bgClass || 'bg-muted/30';
+  const cardBorderClass = isUnsupported ? 'border-border/50' : RISK_TOKEN[band]?.borderClass || 'border-border/50';
+  const cardTextClass = isUnsupported ? 'text-muted-foreground' : RISK_TOKEN[band]?.textClass || 'text-foreground';
+  
+  const copy = isUnsupported ? { head: "No Model Coverage", sub: "Showing latest official sample. Treat uncertainty seriously." } : RISK_COPY[band];
   const env = forecast?.environmental_summary;
   
-  // Basic trend comparison if history exists
   const prevEnv = obs?.recent_environment && obs.recent_environment.length > 1 ? obs.recent_environment[1] : null;
 
   const conditions = [
@@ -133,124 +137,133 @@ export default function BeachDetailPage() {
   ];
 
   return (
-    <EditorialPage>
-    <div style={{ padding: '48px 64px 64px' }} className="animate-fade">
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', paddingBottom: 32, borderBottom: '1px solid var(--sl-line)' }}>
-        <div>
-          <div style={{ color: 'var(--sl-sun-deep)', fontFamily: 'var(--font-mono)', fontSize: '0.85rem', textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: 8 }}>{beach.county} County · {beach.region}</div>
-          <h1 style={{ fontFamily: 'var(--font-heading)', fontSize: 72, margin: 0, fontWeight: 400, color: 'var(--sl-navy-ink)', letterSpacing: '-0.02em' }}>{beach.name}</h1>
-        </div>
-        <div style={{ textAlign: 'right' }}>
-          <RiskChip band={band}/>
-          <div style={{ marginTop: 8, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--sl-muted)' }}>LAT {beach.geometry.latitude.toFixed(3)} · LON {Math.abs(beach.geometry.longitude).toFixed(3)}</div>
-        </div>
-      </div>
-
-      <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: 48, marginTop: 48 }}>
-        <div>
-          {/* Main Risk Card */}
-          <div style={{ background: tok.bg, border: `1px solid ${tok.c}`, borderRadius: 18, padding: '40px', position: 'relative' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              <DropRow band={band} size={18}/>
-              <div style={{ color: tok.ink, fontFamily: 'var(--font-mono)', fontSize: 12, letterSpacing: '0.14em', fontWeight: 600 }}>{band.toUpperCase()} · FORECAST</div>
+    <main className="min-h-screen bg-background pt-32 pb-24">
+      <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 animate-fade-in">
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-end pb-8 mb-12 border-b border-border/50 gap-6">
+          <div>
+            <div className="text-primary text-sm tracking-widest uppercase font-medium mb-4">
+              {beach.county} County · {beach.region}
             </div>
-            <div style={{ fontSize: 96, lineHeight: 0.9, color: tok.ink, marginTop: 24, marginBottom: 16, fontFamily: 'var(--font-heading)', fontWeight: 400 }}>{copy.head}</div>
-            <p style={{ fontSize: 18, color: tok.ink, opacity: 0.85, lineHeight: 1.5, margin: 0, fontFamily: 'var(--font-text)', maxWidth: 480 }}>{copy.sub}</p>
-            
-            <div style={{ marginTop: 40, paddingTop: 24, borderTop: `1px dashed ${tok.c}` }}>
-              <SeverityBar band={band} width="100%" height={8}/>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 12, fontFamily: 'var(--font-mono)', fontSize: 11, color: tok.ink, opacity: 0.7 }}>
-                <span>Exceedance chance: {forecast ? Math.round(forecast.p_exceed * 100) : '--'}%</span>
-                <span>Threshold: 104 CFU/100mL</span>
-              </div>
+            <h1 className="text-5xl md:text-7xl font-light m-0 text-foreground text-balance tracking-tight">
+              {beach.name}
+            </h1>
+          </div>
+          <div className="text-left md:text-right">
+            {!isUnsupported && <RiskChip band={band}/>}
+            <div className="mt-3 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+              LAT {beach.geometry.latitude.toFixed(3)} · LON {Math.abs(beach.geometry.longitude).toFixed(3)}
             </div>
           </div>
+        </div>
 
-          {/* Forecast Drivers */}
-          {forecast && forecast.top_drivers.length > 0 && (
-            <div style={{ marginTop: 48 }}>
-              <h2 style={{ fontFamily: 'var(--font-heading)', fontSize: 28, color: 'var(--sl-navy)', fontWeight: 400, marginBottom: 20 }}>Model drivers</h2>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                {forecast.top_drivers.map((d, i) => (
-                  <div key={i} style={{ padding: '16px 20px', background: 'var(--sl-bone)', borderRadius: 12, border: '1px solid var(--sl-line)', display: 'flex', gap: 16 }}>
-                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--sl-muted)' }}>0{i+1}</span>
-                    <span style={{ fontSize: 15, color: 'var(--sl-ink)', fontFamily: 'var(--font-text)' }}>{d}</span>
+        <div className="grid lg:grid-cols-[1.2fr_1fr] gap-12">
+          <div>
+            {/* Main Risk Card */}
+            <div className={`rounded-3xl p-8 md:p-10 border ${cardBgClass} ${cardBorderClass}`}>
+              <div className="flex items-center gap-3">
+                <DropRow band={band} size={18}/>
+                <div className={`font-mono text-xs tracking-[0.2em] font-semibold uppercase ${cardTextClass}`}>
+                  {band} · FORECAST
+                </div>
+              </div>
+              <div className={`text-6xl sm:text-7xl md:text-[5.5rem] leading-[0.9] mt-8 mb-6 font-light tracking-tight ${cardTextClass}`}>
+                {copy.head}
+              </div>
+              <p className={`text-lg md:text-xl leading-relaxed max-w-lg opacity-90 ${cardTextClass}`}>
+                {copy.sub}
+              </p>
+              
+              <div className={`mt-10 pt-6 border-t border-dashed ${cardBorderClass}`}>
+                <SeverityBar band={band} width="100%" height={8}/>
+                <div className={`flex justify-between items-center mt-4 font-mono text-[10px] uppercase tracking-widest opacity-80 ${cardTextClass}`}>
+                  <span>Exceedance chance: {forecast ? Math.round(forecast.p_exceed * 100) : '--'}%</span>
+                  <span>Threshold: 104 CFU</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Forecast Drivers */}
+            {forecast && forecast.top_drivers.length > 0 && (
+              <div className="mt-16">
+                <h2 className="text-2xl font-light text-foreground mb-6">Model drivers</h2>
+                <div className="flex flex-col gap-3">
+                  {forecast.top_drivers.map((d, i) => (
+                    <div key={i} className="px-5 py-4 bg-muted/30 rounded-xl border border-border/50 flex items-center gap-4">
+                      <span className="font-mono text-[10px] tracking-widest text-muted-foreground">0{i+1}</span>
+                      <span className="text-sm sm:text-base text-foreground">{d}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* History Sparkline / Table */}
+            {obs && obs.observations.length > 0 && (
+              <div className="mt-16">
+                <h2 className="text-2xl font-light text-foreground mb-6">Recent samples</h2>
+                <div className="bg-muted/30 border border-border/50 rounded-2xl overflow-hidden">
+                  <div className="grid grid-cols-[1fr_120px_100px] px-6 py-4 border-b border-border/50 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+                    <span>Date</span><span>Value</span><span className="text-center">Result</span>
+                  </div>
+                  {obs.observations.slice(0, 5).map((o, i, arr) => (
+                    <div key={i} className={`grid grid-cols-[1fr_120px_100px] px-6 py-5 items-center ${i === arr.length - 1 ? '' : 'border-b border-border/50'}`}>
+                      <span className="text-sm sm:text-base text-foreground">{new Date(o.sample_time).toLocaleDateString()}</span>
+                      <span className="font-mono text-sm font-medium text-foreground flex items-center">
+                        {o.value} <small className="font-normal text-muted-foreground ml-1">{o.units}</small>
+                        {i < obs.observations.length - 1 && (
+                          <TrendIndicator current={o.value} previous={obs.observations[i+1].value} reverse={true} />
+                        )}
+                      </span>
+                      <span className={`px-2 py-1 rounded-md text-[10px] font-mono tracking-widest text-center mx-auto ${
+                        o.exceeds_stv ? 'bg-red-500/20 text-red-700' : 'bg-emerald-500/10 text-emerald-600'
+                      }`}>
+                        {o.exceeds_stv ? 'EXCEED' : 'CLEAN'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div>
+            {/* Conditions Grid */}
+            <div className="bg-muted/30 border border-border/50 rounded-3xl p-8">
+              <h2 className="text-2xl font-light text-foreground mb-8">Ocean context</h2>
+              <div className="grid grid-cols-2 gap-4">
+                {conditions.map(c => (
+                  <div key={c.l} className="p-5 bg-background rounded-2xl border border-border/50">
+                    <div className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground mb-2">{c.l}</div>
+                    <div className="flex items-baseline">
+                      <div className="text-2xl sm:text-3xl font-light text-foreground">{c.v}</div>
+                      {c.trend}
+                    </div>
                   </div>
                 ))}
               </div>
             </div>
-          )}
 
-          {/* History Sparkline / Table */}
-          {obs && obs.observations.length > 0 && (
-            <div style={{ marginTop: 48 }}>
-              <h2 style={{ fontFamily: 'var(--font-heading)', fontSize: 28, color: 'var(--sl-navy)', fontWeight: 400, marginBottom: 20 }}>Recent samples</h2>
-              <div style={{ background: 'var(--sl-bone)', border: '1px solid var(--sl-line)', borderRadius: 12, overflow: 'hidden' }}>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 120px 100px', padding: '12px 20px', borderBottom: '1px solid var(--sl-line)', fontFamily: 'var(--font-mono)', fontSize: 10, textTransform: 'uppercase', color: 'var(--sl-muted)' }}>
-                  <span>Date</span><span>Value</span><span>Result</span>
+            {/* Sidebar / Map Context */}
+            <div className="mt-8 p-8 bg-muted/30 border border-border/50 rounded-3xl">
+              <h2 className="text-xl font-medium text-foreground mb-6">Station Metadata</h2>
+              <div className="flex flex-col gap-4 text-sm text-foreground">
+                <div className="flex justify-between items-center py-2 border-b border-border/50">
+                  <span className="text-muted-foreground">Status</span>
+                  <span className="capitalize">{beach.support_status}</span>
                 </div>
-                {obs.observations.slice(0, 5).map((o, i) => (
-                  <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 120px 100px', padding: '16px 20px', borderBottom: i === 4 ? 'none' : '1px solid var(--sl-line-soft)', alignItems: 'center' }}>
-                    <span style={{ fontFamily: 'var(--font-text)', fontSize: 14 }}>{new Date(o.sample_time).toLocaleDateString()}</span>
-                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 14, fontWeight: 500 }}>
-                      {o.value} <small style={{ fontWeight: 400, color: 'var(--sl-muted)' }}>{o.units}</small>
-                      {i < obs.observations.length - 1 && (
-                        <TrendIndicator current={o.value} previous={obs.observations[i+1].value} reverse={true} />
-                      )}
-                    </span>
-                    <span style={{ 
-                      color: o.exceeds_stv ? 'var(--sl-risk-high-ink)' : 'var(--sl-risk-low-ink)',
-                      background: o.exceeds_stv ? 'var(--sl-risk-high-bg)' : 'var(--sl-risk-low-bg)',
-                      padding: '4px 8px', borderRadius: 6, fontSize: 10, fontFamily: 'var(--font-mono)', textAlign: 'center', width: 'fit-content'
-                    }}>
-                      {o.exceeds_stv ? 'EXCEED' : 'CLEAN'}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-
-        <div>
-          {/* Conditions Grid */}
-          <div style={{ background: 'var(--sl-bone)', border: '1px solid var(--sl-line)', borderRadius: 18, padding: 32 }}>
-            <h2 style={{ fontFamily: 'var(--font-heading)', fontSize: 28, color: 'var(--sl-navy)', fontWeight: 400, marginBottom: 24 }}>Ocean context</h2>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-              {conditions.map(c => (
-                <div key={c.l} style={{ padding: '16px 20px', background: 'var(--sl-ecru)', borderRadius: 12, border: '1px solid var(--sl-line-soft)' }}>
-                  <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, textTransform: 'uppercase', color: 'var(--sl-muted)', letterSpacing: '0.05em' }}>{c.l}</div>
-                  <div style={{ display: 'flex', alignItems: 'baseline' }}>
-                    <div style={{ fontFamily: 'var(--font-heading)', fontSize: 24, color: 'var(--sl-navy-ink)', marginTop: 8 }}>{c.v}</div>
-                    {c.trend}
-                  </div>
+                <div className="flex justify-between items-center py-2 border-b border-border/50">
+                  <span className="text-muted-foreground">Latest Official Sample</span>
+                  <span>{beach.latest_official_sample_at ? new Date(beach.latest_official_sample_at).toLocaleDateString() : 'None'}</span>
                 </div>
-              ))}
-            </div>
-          </div>
-
-
-          {/* Sidebar / Map Context */}
-          <div style={{ marginTop: 32, padding: 32, background: 'var(--sl-bone)', border: '1px solid var(--sl-line)', borderRadius: 18 }}>
-            <h2 style={{ fontFamily: 'var(--font-heading)', fontSize: 24, color: 'var(--sl-navy)', fontWeight: 400, marginBottom: 16 }}>Station Metadata</h2>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12, fontFamily: 'var(--font-text)', fontSize: 14, color: 'var(--sl-ink)' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ color: 'var(--sl-muted)' }}>Status</span>
-                <span style={{ textTransform: 'capitalize' }}>{beach.support_status}</span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ color: 'var(--sl-muted)' }}>Latest Official Sample</span>
-                <span>{beach.latest_official_sample_at ? new Date(beach.latest_official_sample_at).toLocaleDateString() : 'None'}</span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ color: 'var(--sl-muted)' }}>Region</span>
-                <span>{beach.region}</span>
+                <div className="flex justify-between items-center py-2">
+                  <span className="text-muted-foreground">Region</span>
+                  <span>{beach.region}</span>
+                </div>
               </div>
             </div>
           </div>
         </div>
       </div>
-    </div>
-    </EditorialPage>
+    </main>
   );
 }

@@ -4,10 +4,14 @@ import BeachSharePage from "./BeachSharePage";
 import { RISK_COPY } from "@/lib/riskData";
 
 export async function generateStaticParams() {
-  const beaches = await getBeaches({ cache: 'force-cache' });
-  return beaches.map((b) => ({
-    id: b.id,
-  }));
+  try {
+    const beaches = await getBeaches({ cache: 'force-cache' });
+    return beaches.map((b) => ({
+      id: b.id,
+    }));
+  } catch (err) {
+    return [{ id: "_" }];
+  }
 }
 
 export async function generateMetadata(props: { params: Promise<{ id: string }> }): Promise<Metadata> {

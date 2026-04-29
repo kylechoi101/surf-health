@@ -1,77 +1,41 @@
-import type { Metadata } from "next";
-import { Fraunces, Inter, JetBrains_Mono } from "next/font/google";
-
-import "./globals.css";
-
-const fraunces = Fraunces({ subsets: ["latin"], variable: "--font-fraunces" });
-const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
-const jetbrainsMono = JetBrains_Mono({ subsets: ["latin"], variable: "--font-jetbrains" });
+import type { Metadata } from 'next'
+import { Analytics } from '@vercel/analytics/next'
+import './globals.css'
 
 export const metadata: Metadata = {
-  title: "Shorelife — Know before you paddle out",
-  description: "Daily bacteria + surf health forecasts for 300+ California beaches.",
-  metadataBase: new URL("https://kylechoi101.github.io/surf-health"),
+  title: 'ShoreLife - Live the Coastal Lifestyle',
+  description: 'Discover surf spots, connect with beach lovers, and embrace the coastal lifestyle. Your gateway to the ultimate shore experience.',
+  generator: 'v0.app',
   icons: {
-    icon: "/icon.svg",
-    apple: "/apple-icon.png",
-  },
-  manifest: "/manifest.json",
-  openGraph: {
-    type: "website",
-    url: "https://kylechoi101.github.io/surf-health",
-    siteName: "Shorelife",
-    title: "Shorelife — Know before you paddle out",
-    description: "Daily bacteria + surf health forecasts for 300+ California beaches.",
-    images: [{ url: "/opengraph-image", width: 1200, height: 630, alt: "Shorelife — California beach health forecasts" }],
-  },
-  twitter: {
-    card: "summary_large_image",
-    title: "Shorelife — Know before you paddle out",
-    description: "Daily bacteria + surf health forecasts for 300+ California beaches.",
-    images: ["/opengraph-image"],
-  },
-};
-
-const jsonLd = {
-  "@context": "https://schema.org",
-  "@graph": [
-    {
-      "@type": "Organization",
-      "name": "Shorelife",
-      "url": "https://kylechoi101.github.io/surf-health",
-      "description": "Open-source California coastal water quality forecasting.",
-      "email": "kylechoidsc@gmail.com",
-      "sameAs": ["https://github.com/kylechoi101/surf-health"],
-    },
-    {
-      "@type": "Dataset",
-      "name": "Shorelife Coastal Water Quality Forecasts",
-      "description": "Daily calibrated bacterial exceedance probability forecasts for 300+ California beaches.",
-      "url": "https://kylechoi101.github.io/surf-health/research",
-      "creator": { "@type": "Organization", "name": "Shorelife" },
-      "spatialCoverage": "California, USA",
-      "license": "https://opensource.org/licenses/MIT",
-      "distribution": {
-        "@type": "DataDownload",
-        "contentUrl": "https://surf-health-api.onrender.com/beaches",
-        "encodingFormat": "application/json",
+    icon: [
+      {
+        url: '/icon-light-32x32.png',
+        media: '(prefers-color-scheme: light)',
       },
-    },
-  ],
-};
+      {
+        url: '/icon-dark-32x32.png',
+        media: '(prefers-color-scheme: dark)',
+      },
+      {
+        url: '/icon.svg',
+        type: 'image/svg+xml',
+      },
+    ],
+    apple: '/apple-icon.png',
+  },
+}
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default function RootLayout({
+  children,
+}: Readonly<{
+  children: React.ReactNode
+}>) {
   return (
-    <html lang="en" className={`${fraunces.variable} ${inter.variable} ${jetbrainsMono.variable}`}>
-      <head>
-        <script
-          type="application/ld+json"
-          dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
-        />
-      </head>
-      <body className="font-sans antialiased selection:bg-accent selection:text-accent-foreground">
+    <html lang="en" className="bg-background">
+      <body className="font-sans antialiased">
         {children}
+        {process.env.NODE_ENV === 'production' && <Analytics />}
       </body>
     </html>
-  );
+  )
 }
