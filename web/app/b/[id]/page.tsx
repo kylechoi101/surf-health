@@ -31,7 +31,6 @@ export async function generateMetadata(props: { params: Promise<{ id: string }> 
       openGraph: {
         title: `${beach.name} · ${copy.head}`,
         description: copy.sub,
-        images: [`/og/${beach.id}-${band.toLowerCase().replace(' ', '-')}.png`],
       },
       twitter: {
         card: "summary_large_image",

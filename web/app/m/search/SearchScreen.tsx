@@ -17,8 +17,9 @@ export default function SearchScreen({ beaches }: { beaches: BeachSummary[] }) {
   const [region, setRegion] = useState("All");
   const router = useRouter();
 
-  const filtered = beaches
-    .filter((b) => region === "All" || b.region === region)
+  const uniqueBeaches = Array.from(new Map(beaches.map(b => [b.name, b])).values());
+  const filtered = uniqueBeaches
+    .filter((b) => region === "All" || b.region === region || b.region === REGION_LABELS[region])
     .filter(
       (b) =>
         !q ||

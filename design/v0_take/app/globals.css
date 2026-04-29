@@ -1,0 +1,210 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  /* ShoreLife Elegant Research Theme */
+  --background: oklch(0.99 0.002 220); /* Clean off-white with ocean hint */
+  --foreground: oklch(0.20 0.02 220); /* Deep slate blue */
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.20 0.02 220);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.20 0.02 220);
+  --primary: oklch(0.50 0.12 200); /* Refined ocean teal */
+  --primary-foreground: oklch(0.99 0 0);
+  --secondary: oklch(0.95 0.01 220);
+  --secondary-foreground: oklch(0.20 0.02 220);
+  --muted: oklch(0.96 0.01 220);
+  --muted-foreground: oklch(0.50 0.02 220);
+  --accent: oklch(0.55 0.10 195);
+  --accent-foreground: oklch(0.99 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --destructive-foreground: oklch(0.577 0.245 27.325);
+  --border: oklch(0.92 0.01 220);
+  --input: oklch(0.96 0.005 220);
+  --ring: oklch(0.50 0.12 200);
+  --chart-1: oklch(0.50 0.12 200);
+  --chart-2: oklch(0.75 0.06 70);
+  --chart-3: oklch(0.55 0.10 195);
+  --chart-4: oklch(0.65 0.10 50);
+  --chart-5: oklch(0.40 0.10 210);
+  --radius: 0.25rem;
+  --sidebar: oklch(0.99 0.002 220);
+  --sidebar-foreground: oklch(0.20 0.02 220);
+  --sidebar-primary: oklch(0.50 0.12 200);
+  --sidebar-primary-foreground: oklch(0.99 0 0);
+  --sidebar-accent: oklch(0.96 0.01 220);
+  --sidebar-accent-foreground: oklch(0.20 0.02 220);
+  --sidebar-border: oklch(0.92 0.01 220);
+  --sidebar-ring: oklch(0.50 0.12 200);
+  
+  /* Custom ShoreLife colors */
+  --ocean: oklch(0.50 0.12 200);
+  --ocean-deep: oklch(0.30 0.10 210);
+  --ocean-light: oklch(0.70 0.10 195);
+  --sand: oklch(0.80 0.05 70);
+  --sand-light: oklch(0.92 0.02 75);
+  --foam: oklch(0.98 0.005 200);
+  --sunset: oklch(0.65 0.12 50);
+}
+
+.dark {
+  --background: oklch(0.18 0.03 220);
+  --foreground: oklch(0.95 0.01 85);
+  --card: oklch(0.22 0.03 220);
+  --card-foreground: oklch(0.95 0.01 85);
+  --popover: oklch(0.22 0.03 220);
+  --popover-foreground: oklch(0.95 0.01 85);
+  --primary: oklch(0.65 0.15 195);
+  --primary-foreground: oklch(0.15 0.02 220);
+  --secondary: oklch(0.35 0.05 75);
+  --secondary-foreground: oklch(0.95 0.01 85);
+  --muted: oklch(0.28 0.03 220);
+  --muted-foreground: oklch(0.65 0.02 200);
+  --accent: oklch(0.70 0.18 190);
+  --accent-foreground: oklch(0.15 0.02 220);
+  --destructive: oklch(0.396 0.141 25.723);
+  --destructive-foreground: oklch(0.637 0.237 25.331);
+  --border: oklch(0.30 0.03 220);
+  --input: oklch(0.28 0.03 220);
+  --ring: oklch(0.65 0.15 195);
+  --chart-1: oklch(0.65 0.15 195);
+  --chart-2: oklch(0.70 0.08 75);
+  --chart-3: oklch(0.70 0.18 190);
+  --chart-4: oklch(0.75 0.15 50);
+  --chart-5: oklch(0.55 0.12 210);
+  --sidebar: oklch(0.20 0.03 220);
+  --sidebar-foreground: oklch(0.95 0.01 85);
+  --sidebar-primary: oklch(0.65 0.15 195);
+  --sidebar-primary-foreground: oklch(0.15 0.02 220);
+  --sidebar-accent: oklch(0.28 0.03 220);
+  --sidebar-accent-foreground: oklch(0.95 0.01 85);
+  --sidebar-border: oklch(0.30 0.03 220);
+  --sidebar-ring: oklch(0.65 0.15 195);
+  
+  --ocean: oklch(0.65 0.15 195);
+  --ocean-deep: oklch(0.45 0.12 210);
+  --ocean-light: oklch(0.75 0.12 195);
+  --sand: oklch(0.70 0.06 70);
+  --sand-light: oklch(0.80 0.03 75);
+  --foam: oklch(0.95 0.01 200);
+  --sunset: oklch(0.75 0.15 50);
+}
+
+@theme inline {
+  --font-sans: 'Geist', 'Geist Fallback';
+  --font-mono: 'Geist Mono', 'Geist Mono Fallback';
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  
+  /* Custom colors */
+  --color-ocean: var(--ocean);
+  --color-ocean-deep: var(--ocean-deep);
+  --color-ocean-light: var(--ocean-light);
+  --color-sand: var(--sand);
+  --color-sand-light: var(--sand-light);
+  --color-foam: var(--foam);
+  --color-sunset: var(--sunset);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* Wave animation */
+@keyframes wave {
+  0%, 100% {
+    transform: translateX(0) translateY(0);
+  }
+  25% {
+    transform: translateX(-5px) translateY(-3px);
+  }
+  50% {
+    transform: translateX(0) translateY(-5px);
+  }
+  75% {
+    transform: translateX(5px) translateY(-3px);
+  }
+}
+
+@keyframes float {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.animate-wave {
+  animation: wave 3s ease-in-out infinite;
+}
+
+.animate-float {
+  animation: float 4s ease-in-out infinite;
+}
+
+.animate-shimmer {
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.4) 50%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 2s linear infinite;
+}
+
+/* Smooth scroll */
+html {
+  scroll-behavior: smooth;
+}

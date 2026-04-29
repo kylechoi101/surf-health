@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { View, Text, TextInput, TouchableOpacity, SectionList, StyleSheet, ActivityIndicator } from "react-native";
 import { useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { getBeaches, type BeachSummary } from "../../lib/api";
+import { getParentBeaches, type ParentBeachSummary } from "../../lib/api";
 
 const REGIONS = ["All", "SoCal", "Central", "NorCal"];
 const REGION_LABELS: Record<string, string> = {
@@ -12,25 +12,25 @@ const REGION_LABELS: Record<string, string> = {
 };
 
 export default function SearchTab() {
-  const [beaches, setBeaches] = useState<BeachSummary[]>([]);
+  const [beaches, setBeaches] = useState<ParentBeachSummary[]>([]);
   const [q, setQ] = useState("");
   const [region, setRegion] = useState("All");
   const [loading, setLoading] = useState(true);
   const router = useRouter();
 
   useEffect(() => {
-    getBeaches().then(setBeaches).finally(() => setLoading(false));
+    getParentBeaches().then(setBeaches).finally(() => setLoading(false));
   }, []);
 
   const filtered = beaches
-    .filter((b) => region === "All" || b.region === region)
+    .filter((b) => region === "All" || b.region === REGION_LABELS[region] || b.region === region)
     .filter((b) =>
       !q ||
       b.name.toLowerCase().includes(q.toLowerCase()) ||
       b.county.toLowerCase().includes(q.toLowerCase())
     );
 
-  const grouped: Record<string, BeachSummary[]> = {};
+  const grouped: Record<string, ParentBeachSummary[]> = {};
   filtered.forEach((b) => { (grouped[b.region] = grouped[b.region] ?? []).push(b); });
   const sections = Object.entries(grouped).map(([r, data]) => ({
     title: REGION_LABELS[r] ?? r,

@@ -4,26 +4,26 @@ import { RiskChip, DropRow } from '@/components/RiskComponents';
 import { RISK_ORDER, RISK_COPY } from '@/lib/riskData';
 import { EditorialPage } from '@/components/EditorialPage';
 
-const BAND_DETAIL: Record<string, { threshold: string; action: string; legal: string }> = {
+const BAND_DETAIL: Record<string, { threshold: string; action: string; 'regulatory reference': string }> = {
   Low: {
     threshold: 'Predicted exceedance probability < 15 %',
     action: 'Water is suitable for body-contact recreation.',
-    legal: 'Below EPA STV (104 CFU/100mL) and state action threshold.',
+    'regulatory reference': 'Below EPA STV (104 CFU/100mL) and state action threshold.',
   },
   Moderate: {
     threshold: 'Predicted exceedance probability 15–35 %',
     action: 'Avoid swallowing water; rinse thoroughly after exit.',
-    legal: 'Elevated but below the single-sample violation threshold.',
+    'regulatory reference': 'Elevated but below the single-sample violation threshold.',
   },
   High: {
     threshold: 'Predicted exceedance probability 35–65 %',
     action: 'Avoid water contact, especially for sensitive groups.',
-    legal: 'Exceeds 104 CFU/100mL with high probability; county may post advisory.',
+    'regulatory reference': 'Exceeds 104 CFU/100mL with high probability; county may post advisory.',
   },
   'Very High': {
     threshold: 'Predicted exceedance probability > 65 %',
     action: 'Stay out of water. Check posted county advisory.',
-    legal: 'Model predicts likely ≥ 320 CFU/100mL; corresponds to CDPH closure threshold.',
+    'regulatory reference': 'Model predicts likely ≥ 320 CFU/100mL; corresponds to CDPH closure threshold.',
   },
 };
 

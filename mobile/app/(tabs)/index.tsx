@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { View, Text, TextInput, TouchableOpacity, ScrollView, StyleSheet, ActivityIndicator } from "react-native";
+import { View, Text, TextInput, TouchableOpacity, ScrollView, StyleSheet, ActivityIndicator, Image } from "react-native";
 import { useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import * as Location from "expo-location";
@@ -86,6 +86,7 @@ export default function HomeTab() {
           <View style={s.waveDecor} />
 
           <View style={s.brand}>
+            <Image source={require('../../assets/icon.png')} style={{width: 20, height: 20, marginRight: 8}} resizeMode="contain" />
             <Text style={s.brandMark}>SHORELIFE</Text>
           </View>
 
@@ -119,10 +120,10 @@ export default function HomeTab() {
             </View>
           ) : null}
 
-          {health && health.active_advisories_count != null && health.active_advisories_count > 0 && (
+          {nearest && nearest.has_active_advisory && (
             <View style={s.advisoryBanner}>
               <Text style={s.advisoryText}>
-                ⚠ {health.active_advisories_count} ACTIVE ADVISOR{health.active_advisories_count === 1 ? "Y" : "IES"} STATEWIDE
+                ⚠ ACTIVE ADVISORY AT NEAREST BEACH
               </Text>
             </View>
           )}

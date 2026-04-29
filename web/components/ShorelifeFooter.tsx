@@ -22,6 +22,13 @@ const footerLinks = [
       { name: "Beaches", href: "/beaches" },
     ],
   },
+  {
+    title: "Legal",
+    links: [
+      { name: "Privacy Policy", href: "/privacy" },
+      { name: "Terms of Service", href: "/terms" },
+    ],
+  },
 ];
 
 export async function ShorelifeFooter() {
