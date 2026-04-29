@@ -4,33 +4,84 @@ import { useParams } from "next/navigation";
 import { getBeaches, getForecast, preferredForecastDate, type BeachSummary, type ForecastRecord } from "@/lib/api";
 import { DropRow, SeverityBar } from "@/components/RiskComponents";
 import { RISK_COPY, RISK_TOKEN } from "@/lib/riskData";
+import { formatPacificDate } from "@/lib/utils";
 
 function mToFt(m: number | null | undefined) {
   if (m == null) return "—";
   return (m * 3.281).toFixed(1) + " ft";
 }
 
-export default function BeachSharePage() {
-  const { id } = useParams();
+const UNSUPPORTED_SHARE_COPY = {
+  head: "No model coverage",
+  sub: "Showing the latest official sample instead of a calibrated Shorelife forecast.",
+  cfu: "Official sample",
+};
+
+type ConditionCard = {
+  l: string;
+  v: string;
+  s: string;
+};
+
+type ShareCopy = typeof UNSUPPORTED_SHARE_COPY | (typeof RISK_COPY)[keyof typeof RISK_COPY];
+
+type BeachSharePageProps = {
+  beachId?: string;
+};
+
+export default function BeachSharePage({ beachId }: BeachSharePageProps) {
+  const params = useParams<{ id?: string | string[] }>();
+  const paramId = Array.isArray(params?.id) ? params.id[0] : params?.id;
+  const resolvedBeachId = beachId ?? paramId ?? null;
   const [beach, setBeach] = useState<BeachSummary | null>(null);
   const [forecast, setForecast] = useState<ForecastRecord | null>(null);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
 
   useEffect(() => {
-    if (!id) { setNotFound(true); setLoading(false); return; }
-    const bid = Array.isArray(id) ? id[0] : id;
+    let active = true;
+    setLoading(true);
+    setNotFound(false);
 
     const date = preferredForecastDate();
-    Promise.all([
-      getBeaches().then((bs) => bs.find((b) => b.id === bid) ?? null),
-      getForecast(bid, date).catch(() => null),
-    ]).then(([b, f]) => {
-      if (!b) setNotFound(true);
-      setBeach(b);
-      setForecast(f);
-    }).finally(() => setLoading(false));
-  }, [id]);
+    async function load() {
+      try {
+        const beaches = await getBeaches();
+        const selectedBeach = resolvedBeachId
+          ? beaches.find((candidate) => candidate.id === resolvedBeachId) ?? null
+          : beaches.find((candidate) => candidate.support_status === "production") ?? beaches[0] ?? null;
+
+        if (!selectedBeach) {
+          if (!active) return;
+          setBeach(null);
+          setForecast(null);
+          setNotFound(true);
+          return;
+        }
+
+        const nextForecast = await getForecast(selectedBeach.id, date).catch(() => null);
+
+        if (!active) return;
+        setBeach(selectedBeach);
+        setForecast(nextForecast);
+        setNotFound(false);
+      } catch {
+        if (!active) return;
+        setBeach(null);
+        setForecast(null);
+        setNotFound(true);
+      } finally {
+        if (active) {
+          setLoading(false);
+        }
+      }
+    }
+
+    void load();
+    return () => {
+      active = false;
+    };
+  }, [resolvedBeachId]);
 
   if (loading) return (
     <main className="min-h-screen bg-background flex items-center justify-center">
@@ -45,12 +96,20 @@ export default function BeachSharePage() {
     </main>
   );
 
+  const isUnsupported = beach.support_status === "unsupported";
   const band = forecast?.risk_band ?? "Moderate";
   const tok = RISK_TOKEN[band] ?? RISK_TOKEN.Moderate;
-  const copy = RISK_COPY[band] ?? RISK_COPY.Moderate;
+  const copy = isUnsupported
+    ? UNSUPPORTED_SHARE_COPY
+    : (RISK_COPY[band] ?? RISK_COPY.Moderate);
   const env = forecast?.environmental_summary;
+  const cardBgClass = isUnsupported ? "bg-[var(--sl-ecru-deep)]" : tok.bgClass;
+  const cardBorderClass = isUnsupported ? "border-[var(--sl-line)]" : tok.borderClass;
+  const cardTextClass = isUnsupported ? "text-[var(--sl-muted)]" : tok.textClass;
+  const shareTitle = `${beach.name} · ${copy.head}`;
+  const shareImageSlug = isUnsupported ? "official-sample" : band.toLowerCase().replace(/\s+/g, "-");
 
-  const conditions = [
+  const conditions: ConditionCard[] = [
     { l: 'Surf',  v: mToFt(env?.wave_height_m), s: env?.dominant_period_s ? `@ ${Math.round(env.dominant_period_s)}s` : '—' },
     { l: 'Water', v: env?.water_temperature_c != null ? `${Math.round(env.water_temperature_c * 9/5 + 32)}°F` : '—', s: 'mild' },
     { l: 'Wind',  v: env?.wind_speed_mps != null ? `${Math.round(env.wind_speed_mps * 2.237)} mph` : '—', s: 'WSW' },
@@ -78,7 +137,7 @@ export default function BeachSharePage() {
           {/* LEFT — full beach detail */}
           <div className="flex flex-col gap-12">
             {/* Big risk hero card */}
-            <div className={`rounded-3xl p-8 md:p-12 border ${tok.bgClass} ${tok.borderClass} relative overflow-hidden`}>
+            <div className={`rounded-3xl p-8 md:p-12 border ${cardBgClass} ${cardBorderClass} relative overflow-hidden`}>
               {/* Tide-line texture */}
               <svg className="absolute inset-0 w-full h-full opacity-10" viewBox="0 0 600 320" preserveAspectRatio="none">
                 {[60, 90, 130, 180, 240].map((y, i) => (
@@ -87,34 +146,46 @@ export default function BeachSharePage() {
                 ))}
               </svg>
               <div className="relative z-10">
-                <div className="flex items-center gap-3 mb-6">
-                  <DropRow band={band} size={18}/>
-                  <div className={`font-mono text-xs tracking-[0.2em] font-semibold uppercase ${tok.textClass}`}>{band} · TODAY</div>
-                </div>
-                <div className={`text-6xl sm:text-7xl md:text-[5.5rem] leading-[0.9] font-light tracking-tight mb-6 ${tok.textClass}`}>
+                {isUnsupported ? (
+                  <div className="flex items-center gap-3 mb-6">
+                    <div className={`font-mono text-xs tracking-[0.2em] font-semibold uppercase ${cardTextClass}`}>
+                      Official sample only
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-3 mb-6">
+                    <DropRow band={band} size={18}/>
+                    <div className={`font-mono text-xs tracking-[0.2em] font-semibold uppercase ${cardTextClass}`}>{band} · Today</div>
+                  </div>
+                )}
+                <div className={`text-6xl sm:text-7xl md:text-[5.5rem] leading-[0.9] font-light tracking-tight mb-6 ${cardTextClass}`}>
                   {copy.head}
                 </div>
-                <div className={`text-lg md:text-xl font-mono leading-relaxed max-w-lg opacity-90 ${tok.textClass}`}>
+                <div className={`text-lg md:text-xl font-mono leading-relaxed max-w-lg opacity-90 ${cardTextClass}`}>
                   {copy.sub}
                 </div>
                 
-                <div className={`mt-10 pt-8 border-t border-dashed flex flex-wrap justify-between gap-6 ${tok.borderClass}`}>
+                <div className={`mt-10 pt-8 border-t border-dashed flex flex-wrap justify-between gap-6 ${cardBorderClass}`}>
                   <div>
-                    <div className={`font-mono text-[10px] tracking-widest uppercase font-semibold opacity-70 mb-2 ${tok.textClass}`}>Enterococcus</div>
-                    <div className={`text-xl font-mono ${tok.textClass}`}>{copy.cfu}</div>
+                    <div className={`font-mono text-[10px] tracking-widest uppercase font-semibold opacity-70 mb-2 ${cardTextClass}`}>Signal</div>
+                    <div className={`text-xl font-mono ${cardTextClass}`}>{copy.cfu}</div>
                   </div>
                   <div className="text-center">
-                    <div className={`font-mono text-[10px] tracking-widest uppercase font-semibold opacity-70 mb-2 ${tok.textClass}`}>Exceed chance</div>
-                    <div className={`text-4xl font-light leading-none ${tok.textClass}`}>
-                      {forecast ? Math.round(forecast.p_exceed * 100) : '--'}<span className="text-xl">%</span>
+                    <div className={`font-mono text-[10px] tracking-widest uppercase font-semibold opacity-70 mb-2 ${cardTextClass}`}>
+                      {isUnsupported ? "Coverage" : "Exceed chance"}
+                    </div>
+                    <div className={`text-4xl font-light leading-none ${cardTextClass}`}>
+                      {isUnsupported ? "None" : <>{forecast ? Math.round(forecast.p_exceed * 100) : '--'}<span className="text-xl">%</span></>}
                     </div>
                   </div>
                   <div className="text-right">
-                    <div className={`font-mono text-[10px] tracking-widest uppercase font-semibold opacity-70 mb-2 ${tok.textClass}`}>Sampled</div>
-                    <div className={`text-xl font-mono ${tok.textClass}`}>2d ago</div>
+                    <div className={`font-mono text-[10px] tracking-widest uppercase font-semibold opacity-70 mb-2 ${cardTextClass}`}>Latest sample</div>
+                    <div className={`text-xl font-mono ${cardTextClass}`}>
+                      {beach.latest_official_sample_at ? new Date(beach.latest_official_sample_at).toLocaleDateString() : "Unknown"}
+                    </div>
                   </div>
                 </div>
-                <div className="mt-8"><SeverityBar band={band} width="100%" height={6}/></div>
+                {!isUnsupported && <div className="mt-8"><SeverityBar band={band} width="100%" height={6}/></div>}
               </div>
             </div>
 
@@ -133,7 +204,7 @@ export default function BeachSharePage() {
             </div>
 
             {/* Drivers */}
-            {forecast && forecast.top_drivers.length > 0 && (
+            {!isUnsupported && forecast && forecast.top_drivers.length > 0 && (
               <div>
                 <div className="text-primary text-sm tracking-widest uppercase font-medium mb-6">What's driving this</div>
                 <div className="bg-muted/30 border border-border/50 rounded-2xl overflow-hidden">
@@ -155,7 +226,14 @@ export default function BeachSharePage() {
             <div>
               <div className="text-primary text-sm tracking-widest uppercase font-medium mb-6">iOS share preview</div>
               <div className="bg-muted/30 border border-border/50 rounded-3xl p-8 lg:p-12 flex justify-center">
-                <PhoneMock beach={beach} band={band} tok={tok} copy={copy} p={forecast ? Math.round(forecast.p_exceed * 100) : 0} conditions={conditions} />
+                <PhoneMock
+                  beach={beach}
+                  band={band}
+                  copy={copy}
+                  p={forecast ? Math.round(forecast.p_exceed * 100) : 0}
+                  conditions={conditions}
+                  unsupported={isUnsupported}
+                />
               </div>
             </div>
 
@@ -163,9 +241,9 @@ export default function BeachSharePage() {
               <div className="text-primary text-sm tracking-widest uppercase font-medium mb-6">Share link metadata</div>
               <div className="bg-muted/30 border border-border/50 rounded-2xl p-6 font-mono text-[11px] md:text-xs leading-relaxed text-foreground overflow-hidden break-all space-y-2">
                 <div><span className="text-muted-foreground inline-block w-20">url:</span> kylechoi101.github.io/surf-health/b/{beach.id}</div>
-                <div><span className="text-muted-foreground inline-block w-20">og:title:</span> {beach.name} · {copy.head}</div>
+                <div><span className="text-muted-foreground inline-block w-20">og:title:</span> {shareTitle}</div>
                 <div><span className="text-muted-foreground inline-block w-20">og:desc:</span> {copy.sub}</div>
-                <div><span className="text-muted-foreground inline-block w-20">og:image:</span> /og/{beach.id}-{band.toLowerCase().replace(' ', '-')}.png</div>
+                <div><span className="text-muted-foreground inline-block w-20">og:image:</span> /og/{beach.id}-{shareImageSlug}.png</div>
               </div>
             </div>
           </div>
@@ -175,11 +253,25 @@ export default function BeachSharePage() {
   );
 }
 
-function PhoneMock({ beach, band, tok, copy, p, conditions }: any) {
+function PhoneMock({
+  beach,
+  band,
+  copy,
+  p,
+  conditions,
+  unsupported,
+}: {
+  beach: BeachSummary;
+  band: ForecastRecord["risk_band"];
+  copy: ShareCopy;
+  p: number;
+  conditions: ConditionCard[];
+  unsupported: boolean;
+}) {
   // Use explicit hex colors for the phone mock to maintain the "dark mode" preview aesthetic
   // regardless of the site's current theme, as this represents a native iOS app preview.
-  const isGood = band === 'Low' || band === 'Very Low';
-  const headerBg = isGood ? '#047857' : (band === 'Moderate' ? '#b45309' : '#b91c1c');
+  const isGood = band === 'Low';
+  const headerBg = unsupported ? '#5e6b73' : (isGood ? '#047857' : (band === 'Moderate' ? '#b45309' : '#b91c1c'));
   
   return (
     <div className="w-[340px] shrink-0 rounded-[2.5rem] bg-[#1a1a1a] p-2 shadow-2xl relative overflow-hidden ring-1 ring-white/10">
@@ -213,17 +305,17 @@ function PhoneMock({ beach, band, tok, copy, p, conditions }: any) {
             <div className="flex justify-between items-start">
               <div>
                 <div className="text-slate-500 text-[8px] font-mono uppercase font-bold tracking-wider mb-1">Water quality</div>
-                <div className="text-lg font-semibold text-slate-900">{band}</div>
+                <div className="text-lg font-semibold text-slate-900">{unsupported ? 'No coverage' : band}</div>
                 <div className="text-[10px] text-slate-500 mt-1 font-sans">Ent: {copy.cfu}</div>
               </div>
               <div className="text-right">
                 <div className="text-3xl text-slate-900 leading-none font-light">
-                  {p}<span className="text-sm ml-0.5">%</span>
+                  {unsupported ? '—' : <>{p}<span className="text-sm ml-0.5">%</span></>}
                 </div>
-                <div className="text-slate-400 text-[8px] mt-1.5 font-mono uppercase font-bold tracking-wider">EXCEED</div>
+                <div className="text-slate-400 text-[8px] mt-1.5 font-mono uppercase font-bold tracking-wider">{unsupported ? 'OFFICIAL' : 'EXCEED'}</div>
               </div>
             </div>
-            <div className="mt-4"><SeverityBar band={band} width="100%" height={4}/></div>
+            {!unsupported && <div className="mt-4"><SeverityBar band={band} width="100%" height={4}/></div>}
           </div>
         </div>
 
@@ -231,7 +323,7 @@ function PhoneMock({ beach, band, tok, copy, p, conditions }: any) {
         <div className="px-4 mt-4">
           <div className="text-slate-400 text-[8px] font-mono uppercase font-bold tracking-wider mb-2 px-1">Conditions</div>
           <div className="grid grid-cols-2 gap-2">
-            {conditions.map((c: any) => (
+            {conditions.map((c) => (
               <div key={c.l} className="bg-white rounded-xl ring-1 ring-slate-100 p-3 shadow-sm">
                 <div className="text-slate-400 text-[7px] font-mono uppercase font-bold tracking-wider mb-1">{c.l}</div>
                 <div className="text-sm font-semibold text-slate-900">{c.v}</div>
@@ -243,8 +335,10 @@ function PhoneMock({ beach, band, tok, copy, p, conditions }: any) {
         {/* CTA */}
         <div className="px-4 mt-auto mb-6">
           <div className="bg-slate-900 rounded-xl p-4 text-center shadow-lg">
-            <div className="text-xs font-semibold text-white mb-1">Get the Shorelife app</div>
-            <div className="text-[9px] text-slate-400">300+ California beaches</div>
+            <div className="text-xs font-semibold text-white mb-1">Daily coast forecast</div>
+            <div className="text-[9px] text-slate-400">
+              Latest sample · {formatPacificDate(beach.latest_official_sample_at)}
+            </div>
           </div>
         </div>
       </div>

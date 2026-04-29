@@ -1,92 +1,100 @@
 "use client";
 
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { useState } from "react";
-import { Button } from "@/components/ui/button";
-import { ShoreLifeLogo } from "@/components/shorelife-logo";
 import { Menu, X } from "lucide-react";
 
+import { LockupHorizontal } from "@/components/Lockup";
+import { cn } from "@/lib/utils";
+
 const navLinks = [
-  { href: "#forecast", label: "Forecast" },
-  { href: "#map", label: "CA Coast Map" },
-  { href: "#research", label: "Microbiology" },
-  { href: "#artifacts", label: "Data" },
+  { href: "/beaches", label: "Beaches" },
+  { href: "/research", label: "Research" },
+  { href: "/methodology", label: "Methodology" },
+  { href: "/privacy", label: "Privacy" },
+  { href: "/terms", label: "Terms" },
 ];
 
+function isActive(pathname: string, href: string) {
+  return pathname === href || pathname.startsWith(`${href}/`);
+}
+
 export function Header() {
+  const pathname = usePathname();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
 
   return (
-    <header className="fixed top-0 left-0 right-0 z-50 bg-background/90 backdrop-blur-md border-b border-border/30">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="flex items-center justify-between h-16 md:h-20">
-          {/* Logo */}
-          <Link href="/" className="flex items-center gap-3 group">
-            <ShoreLifeLogo size={40} className="group-hover:scale-105 transition-transform" />
-            <span className="text-xl md:text-2xl font-light tracking-wide text-foreground">
-              Shore<span className="font-semibold text-primary">Life</span>
-            </span>
-          </Link>
+    <header className="sticky top-0 z-50 border-b border-[var(--sl-line)] bg-[rgba(241,234,217,0.9)] backdrop-blur-xl">
+      <div className="mx-auto flex max-w-7xl items-center justify-between gap-6 px-4 py-4 sm:px-6 lg:px-8">
+        <Link href="/" className="shrink-0">
+          <LockupHorizontal size={26} subtitle="California Water Quality" />
+        </Link>
 
-          {/* Desktop Navigation */}
-          <nav className="hidden md:flex items-center gap-10">
+        <nav className="hidden items-center gap-6 lg:flex">
+          {navLinks.map((link) => (
+            <Link
+              key={link.href}
+              href={link.href}
+              className={cn(
+                "sl-label border-b pb-1 transition-colors",
+                isActive(pathname, link.href)
+                  ? "border-[var(--sl-navy)] text-[var(--sl-navy)]"
+                  : "border-transparent text-[var(--sl-muted)] hover:text-[var(--sl-navy)]"
+              )}
+            >
+              {link.label}
+            </Link>
+          ))}
+        </nav>
+
+        <div className="hidden lg:block">
+          <Link
+            href="/beaches"
+            className="sl-label inline-flex items-center rounded-full bg-[var(--sl-navy)] px-4 py-2 text-[var(--sl-bone)] transition-transform hover:-translate-y-0.5"
+          >
+            Open Explorer
+          </Link>
+        </div>
+
+        <button
+          type="button"
+          onClick={() => setIsMenuOpen((open) => !open)}
+          className="rounded-full border border-[var(--sl-line)] bg-[var(--sl-bone)] p-2 text-[var(--sl-navy)] lg:hidden"
+          aria-label="Toggle navigation"
+        >
+          {isMenuOpen ? <X size={18} /> : <Menu size={18} />}
+        </button>
+      </div>
+
+      {isMenuOpen && (
+        <div className="border-t border-[var(--sl-line)] bg-[var(--sl-bone)] lg:hidden">
+          <nav className="mx-auto flex max-w-7xl flex-col gap-1 px-4 py-4 sm:px-6">
             {navLinks.map((link) => (
               <Link
                 key={link.href}
                 href={link.href}
-                className="text-muted-foreground hover:text-foreground transition-colors text-sm tracking-wide"
+                onClick={() => setIsMenuOpen(false)}
+                className={cn(
+                  "rounded-2xl px-4 py-3 text-sm transition-colors",
+                  isActive(pathname, link.href)
+                    ? "bg-[var(--sl-ecru-deep)] text-[var(--sl-navy)]"
+                    : "text-[var(--sl-muted)] hover:bg-[var(--sl-ecru-deep)] hover:text-[var(--sl-navy)]"
+                )}
               >
                 {link.label}
               </Link>
             ))}
+            <Link
+              href="/beaches"
+              onClick={() => setIsMenuOpen(false)}
+              className="sl-label mt-3 inline-flex justify-center rounded-full bg-[var(--sl-navy)] px-4 py-3 text-[var(--sl-bone)]"
+            >
+              Open Explorer
+            </Link>
           </nav>
-
-          {/* CTA Buttons */}
-          <div className="hidden md:flex items-center gap-4">
-            <Button variant="ghost" className="text-foreground hover:text-primary text-sm">
-              Sign In
-            </Button>
-            <Button className="bg-primary hover:bg-primary/90 text-primary-foreground text-sm">
-              Get Started
-            </Button>
-          </div>
-
-          {/* Mobile Menu Button */}
-          <button
-            onClick={() => setIsMenuOpen(!isMenuOpen)}
-            className="md:hidden p-2 text-foreground"
-            aria-label="Toggle menu"
-          >
-            {isMenuOpen ? <X size={24} /> : <Menu size={24} />}
-          </button>
         </div>
-
-        {/* Mobile Menu */}
-        {isMenuOpen && (
-          <div className="md:hidden py-4 border-t border-border/30">
-            <nav className="flex flex-col gap-4">
-              {navLinks.map((link) => (
-                <Link
-                  key={link.href}
-                  href={link.href}
-                  onClick={() => setIsMenuOpen(false)}
-                  className="text-muted-foreground hover:text-foreground transition-colors py-2 text-sm"
-                >
-                  {link.label}
-                </Link>
-              ))}
-              <div className="flex flex-col gap-2 pt-4 border-t border-border/30">
-                <Button variant="ghost" className="justify-start text-sm">
-                  Sign In
-                </Button>
-                <Button className="bg-primary hover:bg-primary/90 text-primary-foreground text-sm">
-                  Get Started
-                </Button>
-              </div>
-            </nav>
-          </div>
-        )}
-      </div>
+      )}
     </header>
   );
 }

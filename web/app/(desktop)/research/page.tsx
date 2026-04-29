@@ -1,15 +1,16 @@
 import React from 'react';
 import { promises as fs } from 'fs';
 import path from 'path';
-import { getBeaches } from '@/lib/api';
+import { listBeaches, siteStats } from '@/lib/curated';
 import Link from 'next/link';
 
 export default async function ResearchPage() {
   const healthPath = path.join(process.cwd(), '../data/curated/system_health.json');
   const healthData = JSON.parse(await fs.readFile(healthPath, 'utf8'));
   
-  const allBeaches = await getBeaches({ cache: 'force-cache' });
-  const stations = allBeaches.slice(0, 12);
+  const allBeaches = listBeaches();
+  const stats = siteStats();
+  const modeledCount = allBeaches.filter((beach) => beach.support_status === 'production').length;
 
   const model = healthData.model_registry.production_model;
   const prodMetrics = healthData.model_registry.production_metrics ?? {};
@@ -50,7 +51,7 @@ export default async function ResearchPage() {
             ['Production model', model, 'font-light text-xl', ''],
             ['Test AUCPR', testAucpr, 'font-mono text-2xl', ''],
             ['Test Brier', testBrier, 'font-mono text-2xl', ''],
-            ['Coverage', `${stations.length} / 0`, 'font-mono text-2xl', 'production / beta'],
+            ['Coverage', `${modeledCount} / ${stats.totalStations}`, 'font-mono text-2xl', 'modeled / monitored'],
             ['Public release', isEligible, 'font-light text-xl', ''],
           ].map((r, i) => (
             <div key={i} className="bg-muted/30 p-6 md:p-8 flex flex-col justify-center">

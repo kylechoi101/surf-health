@@ -1,107 +1,106 @@
-"use client";
-
 import Link from "next/link";
-import { Card, CardContent } from "@/components/ui/card";
-import { 
-  Microscope, 
-  FlaskConical, 
-  Dna,
+import {
   Activity,
+  AlertTriangle,
+  Dna,
   Droplets,
-  AlertTriangle
+  FlaskConical,
+  Microscope,
 } from "lucide-react";
 
 const researchAreas = [
   {
     icon: Microscope,
-    title: "Fecal Indicator Bacteria",
-    description: "Monitor Enterococcus levels to assess fecal contamination and public health risks.",
+    title: "Fecal indicator bacteria",
+    description:
+      "The production model forecasts Enterococcus exceedance risk using official California sample history and coastal covariates.",
     status: "Active",
-    link: "/research",
+    href: "/research",
   },
   {
     icon: FlaskConical,
-    title: "Harmful Algal Blooms",
-    description: "Track cyanobacteria and dinoflagellate populations that produce toxins affecting marine life.",
+    title: "Harmful algal blooms",
+    description:
+      "Planned. Not yet in the production forecast, but on the research roadmap for broader water-health context.",
     status: "Planned",
   },
   {
     icon: Dna,
-    title: "Microbial Diversity",
-    description: "Study bacterial community composition and its response to environmental stressors.",
+    title: "Microbial diversity",
+    description:
+      "Planned. Community composition work remains outside the current public release and is not surfaced as a user-facing risk signal.",
     status: "Planned",
   },
   {
     icon: Activity,
-    title: "Pathogen Detection",
-    description: "Identify waterborne pathogens including Vibrio species and antibiotic-resistant bacteria.",
+    title: "Pathogen detection",
+    description:
+      "Planned. The current product does not claim direct pathogen detection beyond FIB-based risk forecasting.",
     status: "Planned",
   },
   {
     icon: Droplets,
-    title: "Source Tracking",
-    description: "Use molecular methods to determine contamination sources: human, animal, or environmental.",
+    title: "Source tracking",
+    description:
+      "Planned. Useful for future diagnostic workflows, but not part of today’s modeled public output.",
     status: "Planned",
   },
   {
     icon: AlertTriangle,
-    title: "Health Risk Assessment",
-    description: "Quantitative microbial risk assessment for recreational water exposure.",
+    title: "Health risk assessment",
+    description:
+      "Planned. Quantitative exposure work is still research-only and not exposed as a production risk score today.",
     status: "Planned",
   },
 ];
 
 export function ResearchSection() {
   return (
-    <section id="research" className="py-24 bg-muted/30 relative">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        {/* Section Header */}
-        <div className="max-w-2xl mb-16">
-          <span className="text-primary text-sm tracking-widest uppercase font-medium">
-            Research Focus
-          </span>
-          <h2 className="text-3xl md:text-4xl font-light mt-4 mb-6 text-foreground text-balance">
-            Coastal Microbiology
-            <span className="font-semibold"> Research Roadmap</span>
+    <section id="research" className="border-b border-[var(--sl-line)] bg-[var(--sl-bone)]">
+      <div className="mx-auto max-w-7xl px-4 py-20 sm:px-6 lg:px-8 lg:py-24">
+        <div className="max-w-3xl">
+          <div className="sl-eyebrow text-[var(--sl-sun-deep)]">Research roadmap</div>
+          <h2 className="sl-display mt-4 text-4xl text-[var(--sl-navy-ink)] sm:text-5xl">
+            What is live, and what is still research.
           </h2>
-          <p className="text-muted-foreground leading-relaxed">
-            Our platform supports comprehensive microbial water quality research, providing tools 
-            and data for scientists studying bacterial indicators and pathogens in California coastal waters.
+          <p className="mt-5 text-lg leading-8 text-[var(--sl-muted)]">
+            Shorelife’s production forecast is narrow on purpose. Only fecal indicator bacteria
+            risk is live today. The rest of this section is roadmap, not disguised feature scope.
           </p>
         </div>
 
-        {/* Research Grid */}
-        <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {researchAreas.map((area) => (
-            <Card
-              key={area.title}
-              className="group bg-card hover:bg-background border-border/50 transition-all duration-300 relative overflow-hidden"
-            >
-              {area.link && (
-                <Link href={area.link} className="absolute inset-0 z-10" aria-label={area.title} />
-              )}
-              <CardContent className="p-8">
-                <div className="flex justify-between items-start mb-6">
-                  <div className="w-12 h-12 rounded-sm bg-primary/10 flex items-center justify-center group-hover:bg-primary/20 transition-colors">
-                    <area.icon className="w-6 h-6 text-primary" />
+        <div className="mt-10 grid gap-5 md:grid-cols-2 xl:grid-cols-3">
+          {researchAreas.map((area) => {
+            const card = (
+              <article className="paper-panel group flex h-full flex-col rounded-[1.75rem] p-6 transition-transform hover:-translate-y-1">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[var(--sl-ecru-deep)] text-[var(--sl-navy)]">
+                    <area.icon className="h-5 w-5" />
                   </div>
-                  <span className={`text-[10px] uppercase tracking-wider font-semibold px-2 py-1 rounded ${
-                    area.status === "Active" 
-                      ? "bg-emerald-500/10 text-emerald-600" 
-                      : "bg-muted text-muted-foreground"
-                  }`}>
+                  <span
+                    className={
+                      area.status === "Active"
+                        ? "sl-label rounded-full bg-[var(--sl-risk-low-bg)] px-3 py-1 text-[var(--sl-risk-low-ink)]"
+                        : "sl-label rounded-full bg-[var(--sl-ecru-deep)] px-3 py-1 text-[var(--sl-muted)]"
+                    }
+                  >
                     {area.status}
                   </span>
                 </div>
-                <h3 className="text-lg font-medium mb-3 text-card-foreground">
-                  {area.title}
-                </h3>
-                <p className="text-muted-foreground text-sm leading-relaxed">
-                  {area.description}
-                </p>
-              </CardContent>
-            </Card>
-          ))}
+
+                <h3 className="mt-6 text-2xl font-medium text-[var(--sl-navy)]">{area.title}</h3>
+                <p className="mt-4 text-sm leading-7 text-[var(--sl-muted)]">{area.description}</p>
+              </article>
+            );
+
+            return area.href ? (
+              <Link key={area.title} href={area.href} className="block">
+                {card}
+              </Link>
+            ) : (
+              <div key={area.title}>{card}</div>
+            );
+          })}
         </div>
       </div>
     </section>

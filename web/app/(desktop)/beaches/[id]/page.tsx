@@ -1,15 +1,10 @@
-import { getBeaches } from "@/lib/api";
+import { listBeaches } from "@/lib/curated";
 import BeachDetail from "./BeachDetail";
 
 export async function generateStaticParams() {
-  try {
-    const beaches = await getBeaches({ cache: 'force-cache' });
-    return beaches.map((b) => ({
-      id: b.id,
-    }));
-  } catch (err) {
-    return [{ id: "_" }];
-  }
+  return listBeaches().map((beach) => ({
+    id: beach.id,
+  }));
 }
 
 export default async function Page(props: { params: Promise<{ id: string }> }) {

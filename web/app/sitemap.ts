@@ -1,5 +1,5 @@
 import { MetadataRoute } from "next";
-import { getBeaches } from "@/lib/api";
+import { listBeaches } from "@/lib/curated";
 
 export const dynamic = "force-static";
 
@@ -7,17 +7,11 @@ const BASE = "https://kylechoi101.github.io/surf-health";
 
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   const date = new Date().toISOString();
-  
-  let beachUrls: MetadataRoute.Sitemap = [];
-  try {
-    const beaches = await getBeaches({ cache: 'force-cache' });
-    beachUrls = beaches.flatMap((b) => [
-      { url: `${BASE}/beaches/${b.id}`, lastModified: date, changeFrequency: "daily" as const, priority: 0.6 },
-      { url: `${BASE}/b/${b.id}`, lastModified: date, changeFrequency: "daily" as const, priority: 0.5 },
-    ]);
-  } catch (err) {
-    console.warn("Could not fetch beaches for sitemap");
-  }
+  const beaches = listBeaches();
+  const beachUrls: MetadataRoute.Sitemap = beaches.flatMap((beach) => [
+    { url: `${BASE}/beaches/${beach.id}`, lastModified: date, changeFrequency: "daily" as const, priority: 0.6 },
+    { url: `${BASE}/b/${beach.id}`, lastModified: date, changeFrequency: "daily" as const, priority: 0.5 },
+  ]);
 
   const staticRoutes: MetadataRoute.Sitemap = [
     { url: BASE, lastModified: new Date(), changeFrequency: "daily", priority: 1.0 },

@@ -1,103 +1,161 @@
-"use client";
+import Link from "next/link";
 
-import { Button } from "@/components/ui/button";
-import { ShoreLifeLogo } from "@/components/shorelife-logo";
-import { ChevronDown, Thermometer, Waves, Bug } from "lucide-react";
+import { DropRow, SeverityBar } from "@/components/RiskComponents";
+import { PosterMap } from "@/components/poster-map";
+import { featuredMapSite, siteForMap, siteStats } from "@/lib/curated";
+import { RISK_COPY, RISK_TOKEN } from "@/lib/riskData";
+import {
+  formatPacificTimestamp,
+  formatPercent,
+  formatRelativeSampleDate,
+  formatWaterFahrenheit,
+  formatWaveFeet,
+} from "@/lib/utils";
 
 export function HeroSection() {
+  const stats = siteStats();
+  const sites = siteForMap();
+  const featuredSite = featuredMapSite();
+  const forecast = featuredSite.forecast;
+  const answerCopy = forecast ? RISK_COPY[forecast.risk_band] : null;
+  const answerToken = forecast ? RISK_TOKEN[forecast.risk_band] : null;
+  const featuredBeach = featuredSite.latest_modeled_beach;
+
   return (
-    <section className="relative min-h-screen flex items-center justify-center overflow-hidden bg-gradient-to-b from-[#0c4a6e] via-[#0e7490] to-[#14b8a6]">
-      {/* Subtle wave pattern background */}
-      <div className="absolute inset-0 opacity-10">
-        <svg className="w-full h-full" preserveAspectRatio="none" viewBox="0 0 1440 800">
-          <path
-            d="M0 400 Q360 300 720 400 T1440 400 V800 H0 Z"
-            fill="currentColor"
-            className="text-white"
-          />
-          <path
-            d="M0 450 Q360 350 720 450 T1440 450 V800 H0 Z"
-            fill="currentColor"
-            className="text-white"
-            opacity="0.5"
-          />
-        </svg>
-      </div>
-
-      {/* Gradient overlay */}
-      <div className="absolute bottom-0 left-0 right-0 h-48 bg-gradient-to-t from-background to-transparent" />
-
-      {/* Content */}
-      <div className="relative z-20 max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 pt-20 text-center">
-        {/* Logo */}
-        <div className="flex justify-center mb-8">
-          <ShoreLifeLogo size={120} className="drop-shadow-2xl" />
-        </div>
-
-        {/* Headline */}
-        <h1 className="text-4xl sm:text-5xl md:text-6xl font-light leading-tight mb-6 text-white tracking-wide text-balance">
-          California Coastal
-          <span className="block font-semibold mt-2">Water Quality Monitor</span>
-        </h1>
-
-        {/* Subheadline */}
-        <p className="text-lg sm:text-xl text-white/80 mb-12 max-w-2xl mx-auto leading-relaxed font-light text-balance">
-          Daily forecasting of water temperature, wave conditions, and bacterial levels 
-          across California&apos;s coastline for researchers and public health.
-        </p>
-
-        {/* CTA Buttons */}
-        <div className="flex flex-col sm:flex-row items-center justify-center gap-4 mb-20">
-          <Button
-            size="lg"
-            className="bg-white hover:bg-white/90 text-[#0c4a6e] text-base px-8 py-6 rounded-sm"
-          >
-            View Forecast Map
-          </Button>
-          <Button
-            size="lg"
-            variant="outline"
-            className="bg-transparent hover:bg-white/10 border-white/40 text-white text-base px-8 py-6 rounded-sm"
-          >
-            Access Research Data
-          </Button>
-        </div>
-
-        {/* Key Metrics */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-8 max-w-3xl mx-auto">
-          <div className="text-center">
-            <div className="w-12 h-12 mx-auto mb-4 rounded-full bg-white/10 flex items-center justify-center">
-              <Thermometer className="w-5 h-5 text-white" />
+    <section className="site-shell overflow-hidden border-b border-[var(--sl-line)]">
+      <div className="mx-auto max-w-7xl px-4 pb-20 pt-10 sm:px-6 sm:pt-14 lg:px-8 lg:pb-24">
+        <div className="grid gap-10 lg:grid-cols-[minmax(0,1.02fr)_minmax(0,0.98fr)] lg:items-start">
+          <div className="max-w-2xl">
+            <div className="sl-eyebrow text-[var(--sl-sun-deep)]">
+              Daily forecast · {formatPacificTimestamp(stats.latestPublishAt)}
             </div>
-            <h3 className="text-white font-medium mb-1">Temperature</h3>
-            <p className="text-white/60 text-sm">Daily water temperature data</p>
-          </div>
-          <div className="text-center">
-            <div className="w-12 h-12 mx-auto mb-4 rounded-full bg-white/10 flex items-center justify-center">
-              <Waves className="w-5 h-5 text-white" />
-            </div>
-            <h3 className="text-white font-medium mb-1">Wave Height</h3>
-            <p className="text-white/60 text-sm">Current swell and surf conditions</p>
-          </div>
-          <div className="text-center">
-            <div className="w-12 h-12 mx-auto mb-4 rounded-full bg-white/10 flex items-center justify-center">
-              <Bug className="w-5 h-5 text-white" />
-            </div>
-            <h3 className="text-white font-medium mb-1">Bacteria Levels</h3>
-            <p className="text-white/60 text-sm">Microbial water quality indicators</p>
-          </div>
-        </div>
-      </div>
 
-      {/* Scroll Indicator */}
-      <div className="absolute bottom-8 left-1/2 -translate-x-1/2 z-20 animate-bounce">
-        <a
-          href="#forecast"
-          className="flex flex-col items-center text-white/50 hover:text-white transition-colors"
-        >
-          <span className="text-xs tracking-widest uppercase mb-2">Explore</span>
-          <ChevronDown className="w-5 h-5" />
-        </a>
+            <h1 className="sl-display mt-5 max-w-[12ch] text-[clamp(3.3rem,7vw,6.4rem)] text-[var(--sl-navy-ink)]">
+              Know before you paddle out.
+            </h1>
+
+            <p className="mt-6 max-w-xl text-lg leading-8 text-[var(--sl-ink)] sm:text-xl">
+              Shorelife turns official bacteria samples and coastal conditions into one-day
+              health forecasts for{" "}
+              <span className="font-semibold text-[var(--sl-navy)]">
+                {stats.modeledStations} modeled beaches
+              </span>{" "}
+              across {stats.totalStations} California monitoring stations.
+            </p>
+
+            <div className="mt-8 flex flex-col gap-3 sm:flex-row">
+              <Link
+                href="/beaches"
+                className="sl-label inline-flex items-center justify-center rounded-full bg-[var(--sl-navy)] px-6 py-3 text-[var(--sl-bone)] transition-transform hover:-translate-y-0.5"
+              >
+                Open beach explorer
+              </Link>
+              <Link
+                href="/methodology"
+                className="sl-label inline-flex items-center justify-center rounded-full border border-[var(--sl-line)] bg-[var(--sl-bone)] px-6 py-3 text-[var(--sl-navy)] transition-colors hover:border-[var(--sl-navy)]"
+              >
+                Read methodology
+              </Link>
+            </div>
+
+            <div className="paper-panel mt-9 rounded-[2rem] p-6 sm:p-8">
+              <div className="flex flex-wrap items-center justify-between gap-4">
+                <div>
+                  <div className="sl-label text-[var(--sl-muted)]">Featured beach</div>
+                  <h2 className="mt-3 text-2xl font-medium text-[var(--sl-navy)] sm:text-3xl">
+                    {featuredSite.name}
+                  </h2>
+                  <p className="mt-2 text-sm text-[var(--sl-muted)]">
+                    {featuredSite.county} County · {featuredSite.region}
+                  </p>
+                </div>
+                {forecast && answerCopy && answerToken ? (
+                  <div
+                    className="rounded-[1.5rem] border px-4 py-4 sm:px-5"
+                    style={{
+                      background: answerToken.bg,
+                      borderColor: answerToken.c,
+                      color: answerToken.ink,
+                    }}
+                  >
+                    <div className="flex items-center gap-3">
+                      <DropRow band={forecast.risk_band} size={14} />
+                      <div className="sl-label">{forecast.risk_band}</div>
+                    </div>
+                    <div className="sl-display mt-3 text-3xl">{answerCopy.head}</div>
+                    <div className="mt-2 max-w-[12rem] text-sm leading-6 opacity-85">
+                      {answerCopy.sub}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="rounded-[1.5rem] border border-[var(--sl-line)] bg-[var(--sl-ecru-deep)] px-4 py-4 text-sm text-[var(--sl-muted)]">
+                    No model coverage yet
+                  </div>
+                )}
+              </div>
+
+              {forecast && answerCopy && answerToken && (
+                <>
+                  <div className="mt-7">
+                    <SeverityBar band={forecast.risk_band} width="100%" height={7} />
+                  </div>
+
+                  <div className="mt-4 grid gap-4 border-t border-[var(--sl-line-soft)] pt-4 sm:grid-cols-2">
+                    <div>
+                      <div className="sl-label text-[var(--sl-muted)]">Exceedance chance</div>
+                      <div className="mt-2 text-lg font-medium text-[var(--sl-ink)]">
+                        {formatPercent(forecast.p_exceed)}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="sl-label text-[var(--sl-muted)]">Latest official sample</div>
+                      <div className="mt-2 text-lg font-medium text-[var(--sl-ink)]">
+                        {formatRelativeSampleDate(featuredSite.latest_official_sample_at)}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="sl-label text-[var(--sl-muted)]">Wave height</div>
+                      <div className="mt-2 text-lg font-medium text-[var(--sl-ink)]">
+                        {formatWaveFeet(featuredSite.env?.wave_height_m)}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="sl-label text-[var(--sl-muted)]">Water temperature</div>
+                      <div className="mt-2 text-lg font-medium text-[var(--sl-ink)]">
+                        {formatWaterFahrenheit(featuredSite.env?.water_temperature_c)}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-5 flex flex-wrap items-center gap-3 border-t border-[var(--sl-line-soft)] pt-4 text-sm text-[var(--sl-muted)]">
+                    <span className="sl-mono">{stats.productionModel ?? "Unknown model"}</span>
+                    {featuredBeach?.forecast?.top_drivers?.[0] && <span>·</span>}
+                    {featuredBeach?.forecast?.top_drivers?.[0] && (
+                      <span>{featuredBeach.forecast.top_drivers[0]}</span>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div className="mt-8 grid gap-4 sm:grid-cols-3">
+              {[
+                { value: stats.totalStations, label: "monitoring stations" },
+                { value: stats.modeledStations, label: "modeled sites" },
+                { value: stats.groupedCoastSites, label: "grouped coast sites" },
+              ].map((stat) => (
+                <div key={stat.label} className="border-t border-[var(--sl-line)] pt-4">
+                  <div className="sl-display text-3xl text-[var(--sl-navy)] sm:text-4xl">
+                    {stat.value}
+                  </div>
+                  <div className="sl-label mt-2 text-[var(--sl-muted)]">{stat.label}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <PosterMap sites={sites} featuredSite={featuredSite} />
+        </div>
       </div>
     </section>
   );

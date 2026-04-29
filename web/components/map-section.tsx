@@ -1,46 +1,41 @@
 import { CoastalMap } from "@/components/coastal-map";
-import { siteForMap } from "@/lib/curated";
+import { siteForMap, siteStats } from "@/lib/curated";
 
 export function MapSection() {
   const sites = siteForMap();
+  const stats = siteStats();
 
   return (
-    <section id="map" className="py-24 bg-muted/30 relative">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        {/* Section Header */}
-        <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-6 mb-12">
+    <section id="map" className="border-b border-[var(--sl-line)] bg-[var(--sl-ecru)]">
+      <div className="mx-auto max-w-7xl px-4 py-20 sm:px-6 lg:px-8 lg:py-24">
+        <div className="grid gap-8 lg:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)] lg:items-end">
           <div className="max-w-2xl">
-            <span className="text-primary text-sm tracking-widest uppercase font-medium">
-              Interactive Map
-            </span>
-            <h2 className="text-3xl md:text-4xl font-light mt-4 mb-4 text-foreground text-balance">
-              California Coast
-              <span className="font-semibold"> Monitoring Network</span>
+            <div className="sl-eyebrow text-[var(--sl-sun-deep)]">Monitoring network</div>
+            <h2 className="sl-display mt-4 text-4xl text-[var(--sl-navy-ink)] sm:text-5xl">
+              Grouped sites across the California coast.
             </h2>
-            <p className="text-muted-foreground leading-relaxed">
-              Explore daily water quality forecasts from monitoring stations spanning 
-              the entire California coastline. Click any marker for detailed forecasts.
+            <p className="mt-5 text-lg leading-8 text-[var(--sl-muted)]">
+              The public map groups 924 monitoring stations into {stats.groupedCoastSites} readable
+              coast sites. Markers show the latest modeled risk where coverage exists and stay
+              neutral where Shorelife still falls back to official sampling only.
             </p>
           </div>
-          
-          <div className="flex gap-8 text-sm">
-            <div className="text-center">
-              <div className="text-2xl font-semibold text-foreground">924</div>
-              <div className="text-muted-foreground">Monitoring Stations</div>
-            </div>
-            <div className="text-center">
-              <div className="text-2xl font-semibold text-foreground">377</div>
-              <div className="text-muted-foreground">Modeled Sites</div>
-            </div>
-            <div className="text-center">
-              <div className="text-2xl font-semibold text-foreground">Daily</div>
-              <div className="text-muted-foreground">Update Cycle</div>
-            </div>
+
+          <div className="grid gap-4 sm:grid-cols-3">
+            {[
+              { value: stats.totalStations, label: "monitoring stations" },
+              { value: stats.modeledStations, label: "modeled stations" },
+              { value: stats.unsupportedStations, label: "official-sample only" },
+            ].map((stat) => (
+              <div key={stat.label} className="paper-panel rounded-[1.5rem] p-5">
+                <div className="sl-display text-3xl text-[var(--sl-navy)]">{stat.value}</div>
+                <div className="sl-label mt-3 text-[var(--sl-muted)]">{stat.label}</div>
+              </div>
+            ))}
           </div>
         </div>
 
-        {/* Map */}
-        <div className="h-[550px] md:h-[650px]">
+        <div className="mt-10 h-[40rem]">
           <CoastalMap sites={sites} />
         </div>
       </div>

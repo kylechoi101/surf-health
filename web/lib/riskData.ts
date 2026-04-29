@@ -29,25 +29,47 @@ export const RISK_COPY: Record<RiskBand, { head: string; sub: string; cfu: strin
   },
 };
 
-export const RISK_TOKEN: Record<RiskBand, { c: string; bg: string; ink: string }> = {
+export const RISK_TOKEN: Record<
+  RiskBand,
+  {
+    c: string;
+    bg: string;
+    ink: string;
+    bgClass: string;
+    borderClass: string;
+    textClass: string;
+  }
+> = {
   Low: {
     c: "var(--sl-risk-low)",
     bg: "var(--sl-risk-low-bg)",
     ink: "var(--sl-risk-low-ink)",
+    bgClass: "bg-[var(--sl-risk-low-bg)]",
+    borderClass: "border-[var(--sl-risk-low)]",
+    textClass: "text-[var(--sl-risk-low-ink)]",
   },
   Moderate: {
     c: "var(--sl-risk-mod)",
     bg: "var(--sl-risk-mod-bg)",
     ink: "var(--sl-risk-mod-ink)",
+    bgClass: "bg-[var(--sl-risk-mod-bg)]",
+    borderClass: "border-[var(--sl-risk-mod)]",
+    textClass: "text-[var(--sl-risk-mod-ink)]",
   },
   High: {
     c: "var(--sl-risk-high)",
     bg: "var(--sl-risk-high-bg)",
     ink: "var(--sl-risk-high-ink)",
+    bgClass: "bg-[var(--sl-risk-high-bg)]",
+    borderClass: "border-[var(--sl-risk-high)]",
+    textClass: "text-[var(--sl-risk-high-ink)]",
   },
   "Very High": {
     c: "var(--sl-risk-vh)",
     bg: "var(--sl-risk-vh-bg)",
     ink: "var(--sl-risk-vh-ink)",
+    bgClass: "bg-[var(--sl-risk-vh-bg)]",
+    borderClass: "border-[var(--sl-risk-vh)]",
+    textClass: "text-[var(--sl-risk-vh-ink)]",
   },
 };
