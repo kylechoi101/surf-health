@@ -37,7 +37,28 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Annotated, List, Literal, TypedDict
+import operator
+
+try:
+    from langgraph.graph import StateGraph, START, END
+    from langgraph.prebuilt import ToolNode
+    from langchain_nvidia_ai_endpoints import ChatNVIDIA
+    from langchain_ollama import ChatOllama
+    from langchain_core.messages import SystemMessage, HumanMessage, AnyMessage
+    from langchain_core.tools import tool
+    LANGGRAPH_AVAILABLE = True
+
+    class WorkerState(TypedDict):
+        messages: Annotated[List[AnyMessage], operator.add]
+        order_text: str
+        current_plan: str
+        updated_order: str
+        task_done: bool
+        total_cost: float
+except ImportError:
+    LANGGRAPH_AVAILABLE = False
+    AnyMessage = Any # dummy type for globals
 
 import requests
 
@@ -532,256 +553,17 @@ def _run_iteration(
 
 
 # ---------------------------------------------------------------------------
-# Hybrid mode — Plan dataclass + NIM/Ollama helpers
+# Hybrid mode — LangGraph Implementation
 # ---------------------------------------------------------------------------
 
 HYBRID_MAX_EXECUTOR_ROUNDS = 5
 
-
-@dataclass
-class Plan:
-    decision: str        # "continue" | "DONE"
-    goal: str
-    action_list: list[str]
-    exit_criterion: str
-
-
-_NIM_PLANNER_SYSTEM = """\
-You are the BRAIN in a NIM-brain/Ollama-executor hybrid agent for the Surf Health / Shorelife project.
-
-Read the current order.txt and the executor's prior digest. Emit a compact JSON PLAN for the executor.
-
-Output ONLY valid JSON (no prose, no markdown fences):
-{
-  "decision": "continue",
-  "goal": "one-sentence goal for this iteration",
-  "action_list": ["step 1: specific tool + command", "step 2"],
-  "exit_criterion": "exact condition executor must verify before stopping"
-}
-
-Rules:
-- Set decision="DONE" if STATUS: DONE appears in order.txt or all priorities are already complete.
-- action_list: 1-3 items. Each item = one or two tool calls with a concrete command.
-- Total output ≤ 300 tokens.
-- The executor never sees order.txt directly — give it enough context in action_list steps.
-- Pick the highest-priority unblocked WORKER item from the order.txt NEXT STEPS section.
-- NEVER plan to invoke scripts/run_nim_workers.sh or nim_worker.py — the worker cannot invoke itself. If the top priority requires running that script, skip it and pick the next concrete code or inspection task.
-"""
-
-_NIM_UPDATE_SYSTEM = """\
-You are the BRAIN in a NIM-brain/Ollama-executor hybrid agent for the Surf Health / Shorelife project.
-
-The executor finished a task. Review its digest and produce an updated order.txt.
-
-Output ONLY the updated order.txt inside these tags (no prose outside):
-<UPDATED_ORDER>
-[full updated order.txt content]
-</UPDATED_ORDER>
-
-Rules:
-- Only mark items [✅] complete if the executor's digest confirms it (commit hash, curl 200, etc.).
-- Preserve all sections and history; do not delete anything.
-- Increment the revision number if a meaningful step completed.
-"""
-
-_EXECUTOR_SYSTEM_TEMPLATE = """\
-You are the EXECUTOR in a NIM-brain/Ollama-executor hybrid agent for the Surf Health / Shorelife project.
-
-PLAN FROM BRAIN:
-  Goal: {goal}
-  Steps:
-{steps}
-  Exit criterion: {exit_criterion}
-
-You have three tools:
-  bash(cmd)                   — run shell commands (sandboxed allowlist)
-  read_file(path)             — read any file in the repo
-  write_file(path, content)   — write a file in the repo
-
-Execute the plan step by step. Stop when exit_criterion is met (verify explicitly).
-Max {max_rounds} tool-call rounds total; if exhausted without meeting exit_criterion, say so.
-
-When done, output EXACTLY:
-<DIGEST>
-[≤500 words: what you did, commands run, what worked, what failed, commit SHAs or file paths, whether exit_criterion was met]
-</DIGEST>
-
-No prose outside the <DIGEST> tags in your final output.
-"""
-
-
-def _nim_plan(
-    base_url: str,
-    api_key: str | None,
-    model: str,
-    order_text: str,
-    prior_digest: str,
-) -> tuple[Plan, float]:
-    """Single NIM call → Plan dataclass + cost_usd."""
-    messages = [
-        {"role": "system", "content": _NIM_PLANNER_SYSTEM},
-        {
-            "role": "user",
-            "content": f"order.txt:\n\n{order_text}\n\nPrior executor digest:\n{prior_digest}",
-        },
-    ]
-    resp = _call_api(base_url, api_key, model, messages, tools=None)
-    cost = _tokens_cost(resp, model)
-
-    raw = resp["choices"][0]["message"].get("content", "").strip()
-    # Strip markdown fences if present
-    raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.MULTILINE)
-    raw = re.sub(r"\n?```\s*$", "", raw.strip(), flags=re.MULTILINE)
-
-    try:
-        data = json.loads(raw.strip())
-        plan = Plan(
-            decision=data.get("decision", "continue"),
-            goal=data.get("goal", ""),
-            action_list=data.get("action_list", []),
-            exit_criterion=data.get("exit_criterion", ""),
-        )
-    except json.JSONDecodeError:
-        _log(f"  WARN: could not parse planner JSON; raw={raw[:200]!r}")
-        plan = Plan(
-            decision="continue",
-            goal="Diagnose current state (planner JSON parse failed)",
-            action_list=["bash: git status && git log --oneline -5", "read_file: order.txt"],
-            exit_criterion="Any tool output received",
-        )
-    return plan, cost
-
-
-def _ollama_execute(
-    base_url: str,
-    api_key: str | None,
-    model: str,
-    plan: Plan,
-    no_write: bool,
-    max_bash_failures: int,
-    max_rounds: int = HYBRID_MAX_EXECUTOR_ROUNDS,
-) -> tuple[str, int, str, float]:
-    """Run executor tool loop. Returns (digest, rounds_used, exit_reason, cost_usd)."""
-    steps_text = "\n".join(f"    {i + 1}. {s}" for i, s in enumerate(plan.action_list))
-    system_prompt = _EXECUTOR_SYSTEM_TEMPLATE.format(
-        goal=plan.goal,
-        steps=steps_text,
-        exit_criterion=plan.exit_criterion,
-        max_rounds=max_rounds,
-    )
-    messages: list[dict] = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": "Begin executing the plan."},
-    ]
-    bash_failures = 0
-    total_cost = 0.0
-
-    for round_i in range(max_rounds):
-        try:
-            resp = _call_api(base_url, api_key, model, messages, tools=TOOLS)
-        except requests.HTTPError as e:
-            body = getattr(e.response, "text", "")[:300] if e.response is not None else ""
-            _log(f"    executor HTTP error round {round_i}: {e} | {body}")
-            return f"HTTP error: {e}", round_i, "http_error", total_cost
-
-        total_cost += _tokens_cost(resp, model)
-        choice = resp["choices"][0]
-        msg = choice["message"]
-        tool_calls = msg.get("tool_calls") or []
-        messages.append(msg)
-
-        if not tool_calls:
-            content = msg.get("content") or ""
-            m = re.search(r"<DIGEST>(.*?)</DIGEST>", content, re.DOTALL)
-            if m:
-                return m.group(1).strip(), round_i, "digest_tag", total_cost
-            _log(f"    executor round {round_i}: no tool calls, no DIGEST tag")
-            return content[:500] or "(empty)", round_i, "no_digest_tag", total_cost
-
-        _log(f"    executor round {round_i}: {len(tool_calls)} tool call(s)")
-        tool_results: list[dict] = []
-        for tc in tool_calls:
-            fn = tc["function"]["name"]
-            try:
-                args = json.loads(tc["function"]["arguments"])
-            except json.JSONDecodeError:
-                args = {}
-
-            if fn == "bash":
-                cmd = args.get("cmd", "")
-                timeout = min(int(args.get("timeout", 60)), 300)
-                _log(f"      bash: {cmd[:120]!r}")
-                result = _execute_bash(cmd, timeout=timeout, no_write=no_write)
-                if result.startswith("ERROR") or result.startswith("TIMEOUT"):
-                    bash_failures += 1
-                _log(f"      → {result[:200]!r}")
-            elif fn == "read_file":
-                path = args.get("path", "")
-                _log(f"      read_file: {path!r}")
-                result = _execute_read_file(path)
-                _log(f"      → {len(result)} chars")
-            elif fn == "write_file":
-                path = args.get("path", "")
-                content_w = args.get("content", "")
-                _log(f"      write_file: {path!r} ({len(content_w)} chars)")
-                result = _execute_write_file(path, content_w, no_write=no_write)
-                _log(f"      → {result}")
-            else:
-                result = f"ERROR: unknown tool '{fn}'"
-
-            tool_results.append({
-                "role": "tool",
-                "tool_call_id": tc["id"],
-                "content": result,
-            })
-
-            if bash_failures >= max_bash_failures:
-                _log(f"    executor STOP: bash_failures={bash_failures}")
-                messages.extend(tool_results)
-                return f"Stopped: bash failures={bash_failures}", round_i, "bash_failures", total_cost
-
-        messages.extend(tool_results)
-
-    return "(max rounds exhausted)", round_i + 1, "max_rounds", total_cost
-
-
-def _nim_update_order(
-    base_url: str,
-    api_key: str | None,
-    model: str,
-    order_text: str,
-    plan: Plan,
-    digest: str,
-) -> tuple[str | None, float]:
-    """Single NIM call → (updated_order_text, cost_usd)."""
-    user_content = (
-        f"Current order.txt:\n\n{order_text}\n\n"
-        f"Plan executed:\n"
-        f"  Goal: {plan.goal}\n"
-        f"  Steps: {plan.action_list}\n"
-        f"  Exit criterion: {plan.exit_criterion}\n\n"
-        f"Executor digest:\n{digest}"
-    )
-    messages = [
-        {"role": "system", "content": _NIM_UPDATE_SYSTEM},
-        {"role": "user", "content": user_content},
-    ]
-    resp = _call_api(base_url, api_key, model, messages, tools=None)
-    cost = _tokens_cost(resp, model)
-    raw = resp["choices"][0]["message"].get("content", "")
-    m = re.search(r"<UPDATED_ORDER>(.*?)</UPDATED_ORDER>", raw, re.DOTALL)
-    if m:
-        return m.group(1).strip(), cost
-    _log(f"  WARN: no <UPDATED_ORDER> in NIM update response; head: {raw[:200]!r}")
-    return None, cost
-
-
 def _run_hybrid(
     planner_url: str,
     planner_key: str | None,
-    planner_model: str,
+    planner_model_name: str,
     executor_url: str,
-    executor_model: str,
+    executor_model_name: str,
     max_iters: int,
     max_bash_failures: int,
     executor_rounds: int,
@@ -789,20 +571,186 @@ def _run_hybrid(
     budget_usd: float,
     sleep_s: int,
 ) -> int:
-    """Outer loop for hybrid NIM-brain / Ollama-executor mode."""
+    """Outer loop for hybrid NIM-brain / Ollama-executor mode using LangGraph."""
+    if not LANGGRAPH_AVAILABLE:
+        print("ERROR: Hybrid mode requires langgraph. Install dependencies first.", file=sys.stderr)
+        return 2
+
     if not ORDER_PATH.exists():
         print(f"ERROR: {ORDER_PATH} not found", file=sys.stderr)
         return 2
 
     _log(
-        f"hybrid starting | planner={planner_model} | executor={executor_model} | "
+        f"hybrid starting (LangGraph) | planner={planner_model_name} | executor={executor_model_name} | "
         f"max-iters={max_iters} | executor-rounds={executor_rounds} | "
         f"write={not no_write} | budget=${budget_usd:.2f}"
     )
 
-    prior_digest = "(first iteration; no prior digest)"
-    total_cost = 0.0
+    nim_keys = _load_nim_keys()
+    if not nim_keys:
+        print("ERROR: set NVIDIA_API_KEYS for hybrid planner", file=sys.stderr)
+        return 2
+    key_iterator = itertools.cycle(nim_keys)
+
+    # Define LangChain Tools wrapping our sandbox
+    @tool
+    def bash(cmd: str, timeout: int = 60) -> str:
+        """Run a shell command in the repo root. Output is returned as a string. Use this to check build status, run tests, inspect git state, read logs, or make commits. Sandbox enforces an allowlist; denied commands return SANDBOX DENY."""
+        _log(f"    [TOOL] bash: {cmd[:120]!r}")
+        result = _execute_bash(cmd, timeout=timeout, no_write=no_write)
+        _log(f"    → {result[:200]!r}")
+        return result
+
+    @tool
+    def read_file(path: str) -> str:
+        """Read a text file from the repo. Path may be relative to repo root or absolute."""
+        _log(f"    [TOOL] read_file: {path!r}")
+        result = _execute_read_file(path)
+        _log(f"    → {len(result)} chars")
+        return result
+
+    @tool
+    def write_file(path: str, content: str) -> str:
+        """Write content to a file in the repo. Creates parent directories if needed. Refuses to write .env / secrets files."""
+        _log(f"    [TOOL] write_file: {path!r} ({len(content)} chars)")
+        result = _execute_write_file(path, content, no_write=no_write)
+        _log(f"    → {result}")
+        return result
+
+    @tool
+    def replace_text(path: str, old_string: str, new_string: str) -> str:
+        """Replaces exact old_string with new_string in a file. Best for surgical edits to avoid rewriting large files. Fails if old_string is not an exact match."""
+        _log(f"    [TOOL] replace_text: {path!r}")
+        if no_write:
+            return f"DRY-RUN: would replace string in {path}"
+        try:
+            p = Path(path)
+            if not p.is_absolute():
+                p = REPO_ROOT / p
+            if not p.exists():
+                return f"ERROR: file not found: {p}"
+            content = p.read_text(encoding="utf-8")
+            if old_string not in content:
+                return "ERROR: old_string not found exactly in the file. Read the file to get the exact literal string."
+            content = content.replace(old_string, new_string, 1)
+            p.write_text(content, encoding="utf-8")
+            return f"OK: Replaced text in {p.relative_to(REPO_ROOT)}"
+        except Exception as e:
+            return f"ERROR: {e!r}"
+
+    tools = [bash, read_file, write_file, replace_text]
+
+    # Initialize Executor Model (Ollama)
+    # Note: ChatOllama handles the API base URL natively
+    ollama_base = executor_url.replace("/v1", "") if executor_url.endswith("/v1") else executor_url
+    executor_model = ChatOllama(
+        model=executor_model_name,
+        temperature=0,
+        base_url=ollama_base
+    ).bind_tools(tools)
+
+    def planner_node(state: WorkerState):
+        """NIM Brain plans the next step or updates order.txt if a step is done."""
+        current_key = next(key_iterator)
+        planner_model = ChatNVIDIA(
+            model=planner_model_name,
+            api_key=current_key,
+            temperature=0.1,
+            base_url=planner_url
+        )
+
+        _log("--- NIM BRAIN (PLANNER) ---")
+        
+        sys_msg = SystemMessage(content=(
+            "You are the BRAIN orchestrator for the Surf Health project.\n"
+            "Review the current order.txt and the recent execution history.\n\n"
+            "INSTRUCTIONS:\n"
+            "1. If the current highest-priority task is NOT COMPLETE: Output a concise plan for the local executor to follow. Do NOT output <UPDATED_ORDER>.\n"
+            "2. If the executor has successfully completed the task: Output a fully updated order.txt enclosed EXACTLY in <UPDATED_ORDER>...</UPDATED_ORDER> tags. Mark the item complete [✅].\n"
+            "3. If the entire order.txt is DONE, output <UPDATED_ORDER> with STATUS: DONE.\n"
+            "Do not execute tools yourself. You must rely on the executor."
+        ))
+
+        user_msg = HumanMessage(content=f"Current order.txt:\n\n{state['order_text']}")
+        
+        # We only pass the system prompt, the order.txt, and the messages from the executor
+        # We keep the context lean by letting the graph reset messages after an order update.
+        prompt = [sys_msg, user_msg] + state["messages"]
+
+        t0 = time.time()
+        response = planner_model.invoke(prompt)
+        wall = time.time() - t0
+        
+        # Calculate cost
+        cost = _tokens_cost(response.response_metadata, planner_model_name)
+        _log(f"  [NIM] wall={wall:.1f}s | cost=${cost:.4f}")
+
+        content = response.content
+        m = re.search(r"<UPDATED_ORDER>(.*?)</UPDATED_ORDER>", content, re.DOTALL)
+        
+        if m:
+            updated_order = m.group(1).strip()
+            _log(f"  [NIM] Produced <UPDATED_ORDER>")
+            return {"updated_order": updated_order, "current_plan": "DONE", "total_cost": cost}
+        else:
+            _log(f"  [NIM] Produced new plan: {content[:100]}...")
+            return {"current_plan": content, "total_cost": cost}
+
+    def executor_node(state: WorkerState):
+        """Ollama executes the plan using tools."""
+        _log("--- OLLAMA EXECUTOR ---")
+        sys_msg = SystemMessage(content=(
+            f"You are the EXECUTOR. Strictly follow this plan using your tools:\n\n{state['current_plan']}\n\n"
+            "If a step fails, try to diagnose it. When finished with the plan steps, summarize what you did and the results."
+        ))
+        
+        # For Ollama, we only feed it the current plan and its own recent tool interactions
+        prompt = [sys_msg] + state["messages"]
+        
+        t0 = time.time()
+        response = executor_model.invoke(prompt)
+        wall = time.time() - t0
+        
+        cost = _tokens_cost(response.response_metadata if hasattr(response, 'response_metadata') else {}, executor_model_name)
+        _log(f"  [OLLAMA] wall={wall:.1f}s")
+        
+        return {"messages": [response], "total_cost": cost}
+
+    tool_executor = ToolNode(tools)
+
+    def should_continue(state: WorkerState) -> Literal["tools", "planner", "__end__"]:
+        if state.get("current_plan") == "DONE" or state.get("updated_order"):
+            return "__end__"
+            
+        last_message = state["messages"][-1] if state["messages"] else None
+        if last_message and hasattr(last_message, "tool_calls") and last_message.tool_calls:
+            return "tools"
+            
+        return "planner"
+
+    workflow = StateGraph(WorkerState)
+    workflow.add_node("planner", planner_node)
+    workflow.add_node("executor", executor_node)
+    workflow.add_node("tools", tool_executor)
+
+    workflow.add_edge(START, "planner")
+    workflow.add_edge("planner", "executor")
+    
+    workflow.add_conditional_edges(
+        "executor",
+        should_continue,
+        {
+            "tools": "tools",
+            "planner": "planner",
+            "__end__": END
+        }
+    )
+    workflow.add_edge("tools", "executor")
+
+    app = workflow.compile()
+
     iters = 0
+    total_spend = 0.0
 
     while True:
         if max_iters and iters >= max_iters:
@@ -815,75 +763,44 @@ def _run_hybrid(
             _log("order.txt has STATUS: DONE — exiting")
             break
 
-        _log(f"--- hybrid iter {iters} | planner={planner_model} ---")
+        _log(f"--- hybrid iter {iters} ---")
 
-        # 1 NIM plan call
-        t0 = time.time()
+        # Initial state for this iteration resets the `messages` array
+        # This prevents the context window from growing infinitely
+        initial_state = {
+            "order_text": order_text,
+            "messages": [],
+            "current_plan": "",
+            "updated_order": "",
+            "task_done": False,
+            "total_cost": 0.0
+        }
+
+        # Run the graph for one full task cycle
+        # We limit the recursion to prevent runaway tool loops within a single task
+        final_state = None
         try:
-            plan, plan_cost = _nim_plan(
-                planner_url, planner_key, planner_model, order_text, prior_digest
-            )
+            for event in app.stream(initial_state, {"recursion_limit": executor_rounds * 2 + 5}):
+                for node_name, node_state in event.items():
+                    if "total_cost" in node_state:
+                        total_spend += node_state["total_cost"]
+                final_state = event
         except Exception as e:
-            _log(f"NIM plan error: {e!r}")
+            _log(f"LangGraph execution error: {e!r}")
             time.sleep(sleep_s)
             continue
 
-        plan_wall = time.time() - t0
-        total_cost += plan_cost
-        _log(
-            f"  NIM plan | decision={plan.decision} | goal={plan.goal[:80]!r} | "
-            f"cost=${plan_cost:.4f} | wall={plan_wall:.1f}s"
-        )
-
-        if plan.decision == "DONE":
-            _log("NIM decided DONE — exiting hybrid loop")
+        if budget_usd > 0 and total_spend >= budget_usd:
+            _log(f"Budget ${budget_usd:.2f} reached (${total_spend:.4f}), exiting")
             break
 
-        if budget_usd > 0 and total_cost >= budget_usd:
-            _log(f"Budget ${budget_usd:.2f} reached before executor (${total_cost:.4f}), exiting")
-            break
-
-        # 1..N Ollama executor tool-call rounds
-        t1 = time.time()
-        try:
-            digest, rounds_used, exit_reason, exec_cost = _ollama_execute(
-                executor_url, None, executor_model, plan,
-                no_write=no_write,
-                max_bash_failures=max_bash_failures,
-                max_rounds=executor_rounds,
-            )
-        except Exception as e:
-            _log(f"Ollama executor error: {e!r}")
-            prior_digest = f"Executor errored: {e!r}"
-            time.sleep(sleep_s)
-            continue
-
-        exec_wall = time.time() - t1
-        total_cost += exec_cost
-        _log(
-            f"  Ollama exec | rounds={rounds_used} | exit={exit_reason} | "
-            f"wall={exec_wall:.1f}s | cost=${exec_cost:.4f}"
-        )
-        _log(f"  digest: {digest[:300]!r}")
-
-        # 1 NIM update call
-        t2 = time.time()
-        try:
-            updated_order, update_cost = _nim_update_order(
-                planner_url, planner_key, planner_model, order_text, plan, digest
-            )
-        except Exception as e:
-            _log(f"NIM update error: {e!r}")
-            prior_digest = digest
-            time.sleep(sleep_s)
-            continue
-
-        update_wall = time.time() - t2
-        total_cost += update_cost
-        _log(
-            f"  NIM update | cost=${update_cost:.4f} | wall={update_wall:.1f}s | "
-            f"cumulative NIM=${total_cost:.4f}"
-        )
+        # Extract the final state from the last event
+        if final_state and "__end__" not in final_state:
+            # Look inside the last node's state
+            last_node = list(final_state.values())[0]
+            updated_order = last_node.get("updated_order")
+        else:
+            updated_order = None
 
         if updated_order and not no_write:
             if updated_order.strip() == order_text.strip():
@@ -892,17 +809,11 @@ def _run_hybrid(
                 backup = _write_order(updated_order)
                 _log(f"  order.txt updated; prior backed up to {backup.relative_to(REPO_ROOT)}")
         elif not updated_order:
-            _log("  WARN: no updated order from NIM; order.txt left untouched")
-
-        prior_digest = digest
-
-        if budget_usd > 0 and total_cost >= budget_usd:
-            _log(f"Budget ${budget_usd:.2f} reached (${total_cost:.4f}), exiting")
-            break
+            _log("  WARN: no updated order from NIM; order.txt left untouched. The executor might have failed or hit recursion limit.")
 
         time.sleep(sleep_s)
 
-    _log(f"hybrid done | iters={iters} | total NIM cost=${total_cost:.4f}")
+    _log(f"hybrid done | iters={iters} | total cost=${total_spend:.4f}")
     return 0
 
 
@@ -984,9 +895,9 @@ def main() -> int:
         return _run_hybrid(
             planner_url=NIM_BASE_URL,
             planner_key=nim_keys[0],
-            planner_model=planner_model,
+            planner_model_name=planner_model,
             executor_url=OLLAMA_BASE_URL,
-            executor_model=executor_model,
+            executor_model_name=executor_model,
             max_iters=args.max_iters,
             max_bash_failures=args.max_bash_failures,
             executor_rounds=args.executor_rounds,
