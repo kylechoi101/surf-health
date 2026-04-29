@@ -70,25 +70,17 @@ class CuratedBeachRepository(BeachRepository):
         path = self.curated_dir / "latest_env.parquet"
         return pd.read_parquet(path) if path.exists() else pd.DataFrame()
 
-    @cached_property
-    def observations_frame(self) -> pd.DataFrame:
-        path = self.curated_dir / "observations.parquet"
-        return pd.read_parquet(path) if path.exists() else pd.DataFrame()
-
-    @cached_property
-    def beach_day_frame(self) -> pd.DataFrame:
-        path = self.curated_dir / "beach_day.parquet"
-        return pd.read_parquet(path) if path.exists() else pd.DataFrame()
-
     def _obs_for_beach(self, beach_id: str) -> pd.DataFrame:
-        if self.observations_frame.empty:
+        path = self.curated_dir / "observations.parquet"
+        if not path.exists():
             return pd.DataFrame()
-        return self.observations_frame.loc[self.observations_frame["beach_id"] == beach_id]
+        return pq.read_table(path, filters=[("beach_id", "==", beach_id)]).to_pandas()
 
     def _beach_day_for_beach(self, beach_id: str) -> pd.DataFrame:
-        if self.beach_day_frame.empty:
+        path = self.curated_dir / "beach_day.parquet"
+        if not path.exists():
             return pd.DataFrame()
-        return self.beach_day_frame.loc[self.beach_day_frame["beach_id"] == beach_id]
+        return pq.read_table(path, filters=[("beach_id", "==", beach_id)]).to_pandas()
 
     @cached_property
     def forecasts_frame(self) -> pd.DataFrame:
@@ -105,11 +97,11 @@ class CuratedBeachRepository(BeachRepository):
             return []
 
         # Build forecast lookup: worst-case p_exceed per member station
-        forecast_lookup: dict[str, tuple[str, float]] = {}
+        forecast_lookup: dict[str, tuple[str, float, str]] = {}
         if not self.forecasts_frame.empty:
             for _, row in self.forecasts_frame.iterrows():
                 bid = row["beach_id"]
-                forecast_lookup[bid] = (str(row["risk_band"]), float(row["p_exceed"]))
+                forecast_lookup[bid] = (str(row["risk_band"]), float(row["p_exceed"]), str(row.get("model_version", "unknown")))
 
         # Build advisory lookup: any active advisory per station
         active_stations: set[str] = set()
@@ -123,21 +115,25 @@ class CuratedBeachRepository(BeachRepository):
             member_forecasts = [forecast_lookup[bid] for bid in member_ids if bid in forecast_lookup]
             worst_band: str | None = None
             worst_p: float | None = None
+            worst_model_v: str | None = None
             if member_forecasts:
                 worst = max(member_forecasts, key=lambda x: x[1])
-                worst_band, worst_p = worst
+                worst_band, worst_p, worst_model_v = worst
 
             lat = _safe_float(row.get("latitude"))
             lon = _safe_float(row.get("longitude"))
             if lat is None or lon is None:
                 continue
+            
+            support = row.get("support_status", "unsupported") if worst_model_v else "unsupported"
 
             parents.append(ParentBeachSummary(
                 id=str(row["parent_beach_id"]),
                 name=str(row["name"]),
                 county=str(row["county"]),
                 region=str(row["region"]),
-                support_status=row.get("support_status", "unsupported"),
+                support_status=support,
+                model_version=worst_model_v,
                 station_count=int(row["station_count"]),
                 member_beach_ids=member_ids,
                 latest_official_sample_at=(
@@ -153,15 +149,24 @@ class CuratedBeachRepository(BeachRepository):
         return parents
 
     def list_beaches(self) -> list[BeachSummary]:
+        forecast_models: dict[str, str] = {}
+        if not self.forecasts_frame.empty:
+            for _, row in self.forecasts_frame.iterrows():
+                forecast_models[row["beach_id"]] = str(row.get("model_version", "unknown"))
+
         beaches: list[BeachSummary] = []
         for _, row in self.beaches_frame.iterrows():
+            bid = row["beach_id"]
+            model_v = forecast_models.get(bid)
+            support = row["support_status"] if model_v else "unsupported"
             beaches.append(
                 BeachSummary(
-                    id=row["beach_id"],
+                    id=bid,
                     name=_derive_friendly_name(row),
                     county=row["county"],
                     region=row["region"],
-                    support_status=row["support_status"],
+                    support_status=support,
+                    model_version=model_v,
                     latest_official_sample_at=(
                         pd.to_datetime(row.get("latest_official_sample_at")).to_pydatetime()
                         if pd.notna(row.get("latest_official_sample_at"))
@@ -177,12 +182,22 @@ class CuratedBeachRepository(BeachRepository):
         if match.empty:
             raise HTTPException(status_code=404, detail=f"Unknown beach '{beach_id}'")
         row = match.iloc[0]
+
+        model_v = None
+        if not self.forecasts_frame.empty:
+            f_match = self.forecasts_frame.loc[self.forecasts_frame["beach_id"] == beach_id]
+            if not f_match.empty:
+                model_v = str(f_match.iloc[0].get("model_version", "unknown"))
+        
+        support = row["support_status"] if model_v else "unsupported"
+
         return BeachSummary(
             id=row["beach_id"],
             name=_derive_friendly_name(row),
             county=row["county"],
             region=row["region"],
-            support_status=row["support_status"],
+            support_status=support,
+            model_version=model_v,
             latest_official_sample_at=(
                 pd.to_datetime(row.get("latest_official_sample_at")).to_pydatetime()
                 if pd.notna(row.get("latest_official_sample_at"))
