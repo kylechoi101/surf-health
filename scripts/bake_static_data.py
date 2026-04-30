@@ -106,8 +106,15 @@ def main() -> None:
         if not forecast:
             support_status = "unsupported"
 
-        public_name = clean_text(row.get("beach_name")) or clean_text(row.get("name")) or bid
-        station_name = clean_text(row.get("name"), fallback=public_name)
+        b_name = clean_text(row.get("beach_name"))
+        s_name = clean_text(row.get("name"))
+        
+        if b_name and s_name and b_name.lower() != s_name.lower() and s_name.lower() not in b_name.lower():
+            public_name = f"{b_name} ({s_name})"
+        else:
+            public_name = b_name or s_name or bid
+            
+        station_name = s_name or public_name
 
         beaches_list.append(
             {

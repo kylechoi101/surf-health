@@ -270,6 +270,7 @@ def main() -> None:
     parser.add_argument("--ceden-results-csv", type=Path)
     parser.add_argument("--ceden-sites-csv", type=Path)
     parser.add_argument("--max-ceden-rows", type=int, default=None)
+    parser.add_argument("--force-ceden-fetch", action="store_true", help="Bypass CEDEN cache and fetch fresh data")
     parser.add_argument("--with-external-covariates", action="store_true")
     parser.add_argument("--with-hydrology", action="store_true")
     parser.add_argument(
@@ -363,7 +364,7 @@ def main() -> None:
                     requested_path=args.ceden_results_csv,
                     raw_dir=raw_dir,
                 )
-                if subset_cache_path.exists():
+                if subset_cache_path.exists() and not args.force_ceden_fetch:
                     ceden_results_raw = load_ceden_csv(subset_cache_path, nrows=args.max_ceden_rows)
                 else:
                     ceden_results_raw = fetch_ceden_datastore_subset(
