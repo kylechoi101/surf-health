@@ -45,7 +45,7 @@ export default async function ResearchPage() {
         </h1>
         <p className="text-xl text-muted-foreground leading-relaxed max-w-3xl mb-14">
           The operator view tracks production model status, source freshness, and current public
-          coverage. Shorelife is a daily forecast product, not a real-time spill detector.
+          coverage. Shorelife is a daily forecast product and does not detect intra-day spills.
         </p>
 
         {/* Registry stats */}

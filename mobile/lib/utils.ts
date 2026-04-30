@@ -12,10 +12,10 @@ export function riskHead(band: RiskBand | string): string {
 
 export function riskAdvice(band: RiskBand | string): string {
   const m: Record<string, string> = {
-    Low: "Conditions favor swimming.",
-    Moderate: "Avoid swallowing water.",
-    High: "Avoid water contact.",
-    "Very High": "Check posted county advisory.",
+    Low: "Lower modeled exceedance risk today.",
+    Moderate: "Elevated modeled risk today.",
+    High: "Avoid water contact and check advisories.",
+    "Very High": "Check posted county advisory before entering.",
   };
   return m[band] ?? "";
 }

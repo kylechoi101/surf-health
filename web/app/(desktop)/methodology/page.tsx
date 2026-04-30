@@ -52,7 +52,7 @@ export default async function MethodologyPage() {
             <div className="grid sm:grid-cols-2 gap-8">
               {[
                 ['Label policy', 'V1 uses culture-based marine enterococcus only. Freshwater E. coli, total coliform, fecal coliform, and ddPCR stay in the warehouse but outside the pooled forecast label.'],
-                ['Daily forecast', 'The pipeline refreshes once each morning. It is a batch forecast, not a real-time nowcast, and it cannot react to an intra-day spill after publication.'],
+                ['Daily forecast', 'The pipeline refreshes once each morning. It is a batch forecast that cannot react to an intra-day spill after publication.'],
                 ['Baselines first', 'Persistence, logistic/linear, and gradient-boosted tree baselines are mandatory. The neural model stays research-only until it clears blocked-time and explicit spatial holdout gates.'],
                 ['Calibration', 'Public-facing bands come from calibrated exceedance probabilities. Unsupported stations do not receive a colored risk claim or a fallback model badge on public surfaces.'],
               ].map(([h, b]) => (

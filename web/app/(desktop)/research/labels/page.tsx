@@ -4,10 +4,10 @@ import Link from 'next/link';
 // Use standard Tailwind components instead of old RiskComponents
 const RISK_ORDER = ['Low', 'Moderate', 'High', 'Very High'];
 const RISK_COPY: Record<string, any> = {
-  'Low': { head: 'Safe', sub: 'Water quality is good.', cfu: '< 35' },
-  'Moderate': { head: 'Moderate', sub: 'Elevated bacteria.', cfu: '35–104' },
-  'High': { head: 'High Risk', sub: 'Avoid contact.', cfu: '104–320' },
-  'Very High': { head: 'Closure', sub: 'Significant hazard.', cfu: '> 320' },
+  'Low': { head: 'Below standard', sub: 'Lower modeled exceedance risk.', cfu: '< 35' },
+  'Moderate': { head: 'Moderate', sub: 'Elevated modeled risk.', cfu: '35–104' },
+  'High': { head: 'High risk', sub: 'Avoid water contact and check advisories.', cfu: '104–320' },
+  'Very High': { head: 'Closure level', sub: 'Check posted county advisory.', cfu: '> 320' },
 };
 
 function RiskChip({ band }: { band: string }) {
@@ -27,7 +27,7 @@ function RiskChip({ band }: { band: string }) {
 const BAND_DETAIL: Record<string, { threshold: string; action: string; 'regulatory reference': string }> = {
   Low: {
     threshold: 'Predicted exceedance probability < 15 %',
-    action: 'Water is suitable for body-contact recreation.',
+    action: 'Lower modeled exceedance risk, but still check county advisories and posted warnings.',
     'regulatory reference': 'Below EPA STV (104 CFU/100mL) and state action threshold.',
   },
   Moderate: {
@@ -37,12 +37,12 @@ const BAND_DETAIL: Record<string, { threshold: string; action: string; 'regulato
   },
   High: {
     threshold: 'Predicted exceedance probability 35–65 %',
-    action: 'Avoid water contact, especially for sensitive groups.',
+    action: 'Avoid water contact and check county advisories, especially for sensitive groups.',
     'regulatory reference': 'Exceeds 104 CFU/100mL with high probability; county may post advisory.',
   },
   'Very High': {
     threshold: 'Predicted exceedance probability > 65 %',
-    action: 'Stay out of water. Check posted county advisory.',
+    action: 'Check posted county advisory before entering the water.',
     'regulatory reference': 'Model predicts likely ≥ 320 CFU/100mL; corresponds to CDPH closure threshold.',
   },
 };
