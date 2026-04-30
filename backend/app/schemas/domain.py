@@ -57,6 +57,8 @@ class ForecastRecord(BaseModel):
     forecast_date: date
     risk_band: RiskBand
     p_exceed: float = Field(ge=0.0, le=1.0)
+    p_exceed_lower: float | None = Field(default=None, ge=0.0, le=1.0)
+    p_exceed_upper: float | None = Field(default=None, ge=0.0, le=1.0)
     predicted_log_enterococcus: float | None = None
     lower_prediction_interval: float | None = None
     upper_prediction_interval: float | None = None

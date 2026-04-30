@@ -7,7 +7,10 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/daily-forecast.yml'
-      - 'backend/**'
+      - 'backend/app/core/**'
+      - 'backend/app/data/**'
+      - 'backend/app/ml/**'
+      - 'backend/pyproject.toml'
       - 'scripts/**'
   workflow_dispatch:
 
