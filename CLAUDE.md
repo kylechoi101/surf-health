@@ -23,7 +23,6 @@ backend/           Python FastAPI service + ML pipeline
     ml/
       training.py              --curated --spatial-backtests --spatial-strategy [quick|shortlist|full]
       feature_agent/
-        run_agent.py           LLM-driven feature search (parked; use marine-bio features instead)
         agent_features.py      AGENT_BUILDERS list (currently empty after pivot)
 mobile/            Expo/React Native app (shorelife brand)
 web/               Next.js app (shorelife.app)

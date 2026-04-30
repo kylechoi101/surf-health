@@ -1,7 +1,5 @@
 """
-Auto-generated features from the meta-learning feature-discovery agent.
-Do not edit manually — entries are appended by run_agent.py when a feature
-passes both the univariate AUCPR gate and the CV gate.
+Legacy auto-generated features from the retired meta-learning feature-discovery agent.
 
 Each function signature:
     def build_novel_feature_NNN(beach_day_df, advisories_df, stations_df, **kwargs)
