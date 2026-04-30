@@ -77,6 +77,10 @@ jobs:
             --curated ../data/curated/
         working-directory: backend
 
+      - name: Build API serving snapshot
+        run: python -m app.data.pipeline.serving_snapshot --curated ../data/curated/
+        working-directory: backend
+
       - name: Commit and push if changed
         run: |
           git config user.name "github-actions[bot]"
