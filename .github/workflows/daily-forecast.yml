@@ -3,6 +3,12 @@ name: Daily forecast refresh
 on:
   schedule:
     - cron: '0 13 * * *'   # 6 AM PDT / 5 AM PST
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/daily-forecast.yml'
+      - 'backend/**'
+      - 'scripts/**'
   workflow_dispatch:
 
 jobs:
@@ -36,11 +42,13 @@ jobs:
             data/raw/usgs_streamflow
             data/raw/cnrfc
             data/raw/ceden_fib_enterococcus_beachwatch_subset_2020-present.csv
-          key: hydro-${{ runner.os }}-v3
+            data/raw/safetoswim_geomeans_2020-present.csv
+            data/raw/stormwater
+          key: hydro-${{ runner.os }}-v4
           restore-keys: hydro-${{ runner.os }}-
 
       - name: Create data directories
-        run: mkdir -p data/curated data/raw/cnrfc data/raw/usgs_streamflow data/raw/nhdplus
+        run: mkdir -p data/curated data/raw/cnrfc data/raw/usgs_streamflow data/raw/nhdplus data/raw/stormwater
 
       - name: Fetch BeachWatch CSVs from data.ca.gov
         run: |
@@ -50,6 +58,13 @@ jobs:
             'https://data.ca.gov/dataset/b9c8ce91-40ff-4ad3-8164-bc17c46afb44/resource/7bd961cf-abe4-433b-8033-378161237ff3/download/beach-monitoring-results.csv'
           curl -fsSL -o /tmp/bw_advisories.csv \
             'https://data.ca.gov/dataset/b9c8ce91-40ff-4ad3-8164-bc17c46afb44/resource/d5cd6a23-829c-426d-a63e-689a55a3db9c/download/beach-advisories.csv'
+
+      - name: Fetch Safe to Swim CEDEN results for stormwater features
+        run: |
+          if [ ! -f data/raw/safetoswim_geomeans_2020-present.csv ]; then
+            curl -fsSL -o data/raw/safetoswim_geomeans_2020-present.csv \
+              'https://data.ca.gov/dataset/6723ab78-4530-4e97-ba5e-6ffd17a4c139/resource/15a63495-8d9f-4a49-b43a-3092ef3106b9/download/safetoswim_geomeans_2020-present.csv'
+          fi
 
       - name: Run data pipeline
         run: |
@@ -65,10 +80,19 @@ jobs:
             --with-solar-wind
         working-directory: backend
 
+      - name: Run stormwater/outfall feature pipeline
+        run: |
+          python -m app.data.pipeline.stormwater \
+            --curated-dir ../data/curated \
+            --raw-dir ../data/raw/stormwater \
+            --download \
+            --ceden-results-csv ../data/raw/safetoswim_geomeans_2020-present.csv
+        working-directory: backend
+
       - name: Run ML training + forecasts
         run: |
           FORECAST_DATE=$(TZ=America/Los_Angeles date +%Y-%m-%d)
-          python -m app.ml.training --curated --forecast-date "$FORECAST_DATE" --winner-only --spatial-backtests --spatial-strategy quick --training-window-days 365
+          python -m app.ml.training --curated --forecast-date "$FORECAST_DATE" --winner-only --spatial-backtests --spatial-strategy requested --spatial-beach-limit 50 --spatial-county-limit 12 --training-window-days 365
         working-directory: backend
 
       - name: Audit forecasts vs advisories
@@ -81,11 +105,14 @@ jobs:
         run: python -m app.data.pipeline.serving_snapshot --curated ../data/curated/
         working-directory: backend
 
+      - name: Bake web static data
+        run: python scripts/bake_static_data.py
+
       - name: Commit and push if changed
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/curated/
+          git add data/curated/ web/public/data/
           if git diff --staged --quiet; then
             echo "No data changes."
           else
