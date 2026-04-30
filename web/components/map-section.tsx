@@ -1,5 +1,6 @@
 import { CoastalMap } from "@/components/coastal-map";
 import { siteForMap, siteStats } from "@/lib/curated";
+import { getMapSectionStats } from "@/lib/mapPresentation";
 
 export function MapSection() {
   const sites = siteForMap();
@@ -22,11 +23,7 @@ export function MapSection() {
           </div>
 
           <div className="grid gap-4 sm:grid-cols-3">
-            {[
-              { value: stats.totalStations, label: "monitoring stations" },
-              { value: stats.modeledStations, label: "modeled stations" },
-              { value: stats.unsupportedStations, label: "official-sample only" },
-            ].map((stat) => (
+            {getMapSectionStats(stats).map((stat) => (
               <div key={stat.label} className="paper-panel rounded-[1.5rem] p-5">
                 <div className="sl-display text-3xl text-[var(--sl-navy)]">{stat.value}</div>
                 <div className="sl-label mt-3 text-[var(--sl-muted)]">{stat.label}</div>
