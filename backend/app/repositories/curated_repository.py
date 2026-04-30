@@ -473,5 +473,6 @@ class CuratedBeachRepository(BeachRepository):
             "app_env": os.getenv("APP_ENV", "development"),
             "active_advisories_count": active_count,
             "forecast_audit": audit,
+            "repository_mode": "parquet",
             **payload
         })

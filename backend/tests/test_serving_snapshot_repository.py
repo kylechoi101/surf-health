@@ -191,6 +191,7 @@ def test_serving_snapshot_limits_hot_path_rows_and_repository_serves_contract(tm
 
     health = repository.get_system_health()
     assert health.active_advisories_count == 1
+    assert health.repository_mode == "sqlite"
 
 
 def test_repository_factory_prefers_serving_snapshot_when_present(tmp_path):

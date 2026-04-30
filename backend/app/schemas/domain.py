@@ -98,6 +98,8 @@ class SystemHealthResponse(BaseModel):
     model_registry: dict[str, Any]
     active_advisories_count: int | None = None
     forecast_audit: dict[str, Any] | None = None
+    repository_mode: str | None = None
+    serving_snapshot: dict[str, Any] | None = None
 
 
 class ForecastExplanationRequest(BaseModel):
