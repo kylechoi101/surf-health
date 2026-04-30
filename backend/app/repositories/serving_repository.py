@@ -60,16 +60,24 @@ def _parse_date(value: object) -> date:
 
 
 def _derive_friendly_name(row: sqlite3.Row) -> str:
-    beach_id = str(row["beach_id"])
-    beach_id = re.sub(r"^ca\d+-", "", beach_id)
-    county_slug = str(row["county"] or "").lower().replace(" ", "-")
-    if beach_id.startswith(county_slug + "-"):
-        beach_id = beach_id[len(county_slug) + 1 :]
-    station_raw = str(row["name"] or "")
-    station_slug = re.sub(r"[^a-z0-9]+", "-", station_raw.lower()).strip("-")
-    if station_slug and beach_id.endswith("-" + station_slug):
-        beach_id = beach_id[: -(len(station_slug) + 1)]
-    return beach_id.replace("-", " ").title() if beach_id else station_raw
+    b_name = str(row["beach_name"]) if "beach_name" in row.keys() and row["beach_name"] else ""
+    if not b_name:
+        beach_id = str(row["beach_id"])
+        beach_id = re.sub(r"^ca\d+-", "", beach_id)
+        county_slug = str(row["county"] or "").lower().replace(" ", "-")
+        if beach_id.startswith(county_slug + "-"):
+            beach_id = beach_id[len(county_slug) + 1 :]
+        station_raw = str(row["name"] or "")
+        station_slug = re.sub(r"[^a-z0-9]+", "-", station_raw.lower()).strip("-")
+        if station_slug and beach_id.endswith("-" + station_slug):
+            beach_id = beach_id[: -(len(station_slug) + 1)]
+        b_name = beach_id.replace("-", " ").title() if beach_id else station_raw
+
+    s_name = str(row["name"] or "")
+    
+    if b_name and s_name and b_name.lower() != s_name.lower() and s_name.lower() not in b_name.lower():
+        return f"{b_name} ({s_name})"
+    return b_name or s_name
 
 
 class ServingSnapshotRepository(BeachRepository):

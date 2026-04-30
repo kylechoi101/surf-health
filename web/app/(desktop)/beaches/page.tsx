@@ -15,12 +15,14 @@ export default function BeachesDirectoryPage() {
   }, []);
 
   const counties = useMemo(() => {
-    const set = new Set(beaches.map(b => b.county));
+    const supportedBeaches = beaches.filter(b => b.support_status !== "unsupported");
+    const set = new Set(supportedBeaches.map(b => b.county));
     return ["All", ...Array.from(set).sort()];
   }, [beaches]);
 
   const filtered = useMemo(() => {
     return beaches.filter(b => {
+      if (b.support_status === "unsupported") return false;
       const matchesSearch = b.name.toLowerCase().includes(search.toLowerCase()) || 
                            b.county.toLowerCase().includes(search.toLowerCase());
       const matchesCounty = selectedCounty === "All" || b.county === selectedCounty;
@@ -32,7 +34,7 @@ export default function BeachesDirectoryPage() {
     <main className="min-h-screen bg-background pt-32 pb-24">
       <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="text-primary text-sm tracking-widest uppercase font-medium mb-4">
-          Directory · {beaches.length} Stations
+          Directory · {filtered.length} Stations
         </div>
         <h1 className="text-5xl md:text-7xl font-light mb-12 text-foreground">
           California Beaches
