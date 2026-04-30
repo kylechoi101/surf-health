@@ -7,6 +7,7 @@ from datetime import UTC, date, datetime
 from functools import cached_property
 from math import log10
 from pathlib import Path
+from threading import RLock
 
 import pandas as pd
 import pyarrow.parquet as pq
@@ -98,6 +99,29 @@ class CuratedBeachRepository(BeachRepository):
     def __init__(self, curated_dir: Path, stv_threshold: float) -> None:
         self.curated_dir = curated_dir
         self.stv_threshold = stv_threshold
+        self._per_beach_read_lock = RLock()
+        self._obs_cache: dict[str, pd.DataFrame] = {}
+        self._beach_day_cache: dict[str, pd.DataFrame] = {}
+
+    def _cached_filtered_parquet(
+        self,
+        cache: dict[str, pd.DataFrame],
+        path: Path,
+        beach_id: str,
+        columns: list[str],
+    ) -> pd.DataFrame:
+        cached = cache.get(beach_id)
+        if cached is not None:
+            return cached
+
+        with self._per_beach_read_lock:
+            cached = cache.get(beach_id)
+            if cached is not None:
+                return cached
+
+            frame = _read_filtered_parquet(path, beach_id, columns)
+            cache[beach_id] = frame
+            return frame
 
     @cached_property
     def beaches_frame(self) -> pd.DataFrame:
@@ -119,13 +143,23 @@ class CuratedBeachRepository(BeachRepository):
         path = self.curated_dir / "observations.parquet"
         if not path.exists():
             return pd.DataFrame()
-        return _read_filtered_parquet(path, beach_id, OBSERVATION_COLUMNS)
+        return self._cached_filtered_parquet(
+            self._obs_cache,
+            path,
+            beach_id,
+            OBSERVATION_COLUMNS,
+        )
 
     def _beach_day_for_beach(self, beach_id: str) -> pd.DataFrame:
         path = self.curated_dir / "beach_day.parquet"
         if not path.exists():
             return pd.DataFrame()
-        return _read_filtered_parquet(path, beach_id, BEACH_DAY_RECENT_COLUMNS)
+        return self._cached_filtered_parquet(
+            self._beach_day_cache,
+            path,
+            beach_id,
+            BEACH_DAY_RECENT_COLUMNS,
+        )
 
     @cached_property
     def forecasts_frame(self) -> pd.DataFrame:
@@ -317,7 +351,7 @@ class CuratedBeachRepository(BeachRepository):
         }
 
     def _derived_forecast(self, beach_id: str, forecast_date: date) -> ForecastRecord:
-        beach_obs = self._obs_for_beach(beach_id)
+        beach_obs = self._obs_for_beach(beach_id).copy()
         if beach_obs.empty:
             raise HTTPException(status_code=404, detail="Forecast data not available")
         beach_obs["sample_time"] = pd.to_datetime(beach_obs["sample_time"], errors="coerce")

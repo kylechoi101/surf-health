@@ -1,4 +1,6 @@
 import json
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pandas as pd
@@ -129,6 +131,9 @@ def test_curated_repository_limits_parquet_columns_for_per_beach_reads(monkeypat
     curated_dir.mkdir()
     (curated_dir / "observations.parquet").write_bytes(b"placeholder")
     (curated_dir / "beach_day.parquet").write_bytes(b"placeholder")
+    pd.DataFrame(
+        columns=["beach_id", "advisory_type", "started_at", "ended_at", "status"]
+    ).to_parquet(curated_dir / "advisories.parquet", index=False)
 
     calls: list[tuple[str, tuple[str, ...]]] = []
 
@@ -205,3 +210,124 @@ def test_curated_repository_limits_parquet_columns_for_per_beach_reads(monkeypat
             ),
         ),
     ]
+
+
+def test_curated_repository_caches_per_beach_observation_reads(monkeypatch, tmp_path):
+    curated_dir = tmp_path / "curated"
+    curated_dir.mkdir()
+    (curated_dir / "observations.parquet").write_bytes(b"placeholder")
+    (curated_dir / "beach_day.parquet").write_bytes(b"placeholder")
+    pd.DataFrame(
+        columns=["beach_id", "advisory_type", "started_at", "ended_at", "status"]
+    ).to_parquet(curated_dir / "advisories.parquet", index=False)
+
+    calls: list[str] = []
+
+    def fake_read_table(path, *, filters, columns=None):
+        calls.append(Path(path).name)
+        beach_id = filters[0][2]
+        if Path(path).name == "observations.parquet":
+            return pa.table(
+                {
+                    "beach_id": [beach_id],
+                    "sample_time": ["2026-04-18T08:00:00"],
+                    "sample_date": ["2026-04-18"],
+                    "analyte": ["enterococcus"],
+                    "method": ["Culture"],
+                    "units": ["CFU/100ml"],
+                    "value": [120.0],
+                    "exceeds_stv": [True],
+                    "weather": ["Sunny"],
+                    "storm_drain_flow": ["No"],
+                }
+            )
+        return pa.table(
+            {
+                "beach_id": [beach_id],
+                "sample_date": ["2026-04-18"],
+                "wave_height_m": [1.1],
+                "dominant_period_s": [8.0],
+                "water_temperature_c": [16.2],
+                "salinity_psu": [33.0],
+                "weather": ["Sunny"],
+                "storm_drain_flow": ["No"],
+                "tidal_height": [1.2],
+                "surf_height_observed": [2.0],
+                "turbidity_observed": [5.0],
+            }
+        )
+
+    monkeypatch.setattr("app.repositories.curated_repository.pq.read_table", fake_read_table)
+
+    repository = CuratedBeachRepository(curated_dir, stv_threshold=104.0)
+    repository.__dict__["advisories_frame"] = pd.DataFrame(
+        columns=["beach_id", "advisory_type", "started_at", "ended_at", "status"]
+    )
+    repository.get_observations("ca123-orange-main-beach-main-beach-pier")
+    repository.get_observations("ca123-orange-main-beach-main-beach-pier")
+
+    assert calls == ["observations.parquet", "beach_day.parquet"]
+
+
+def test_curated_repository_coalesces_concurrent_per_beach_observation_reads(
+    monkeypatch, tmp_path
+):
+    curated_dir = tmp_path / "curated"
+    curated_dir.mkdir()
+    (curated_dir / "observations.parquet").write_bytes(b"placeholder")
+    (curated_dir / "beach_day.parquet").write_bytes(b"placeholder")
+
+    calls: list[str] = []
+
+    def fake_read_table(path, *, filters, columns=None):
+        calls.append(Path(path).name)
+        time.sleep(0.05)
+        beach_id = filters[0][2]
+        if Path(path).name == "observations.parquet":
+            return pa.table(
+                {
+                    "beach_id": [beach_id],
+                    "sample_time": ["2026-04-18T08:00:00"],
+                    "sample_date": ["2026-04-18"],
+                    "analyte": ["enterococcus"],
+                    "method": ["Culture"],
+                    "units": ["CFU/100ml"],
+                    "value": [120.0],
+                    "exceeds_stv": [True],
+                    "weather": ["Sunny"],
+                    "storm_drain_flow": ["No"],
+                }
+            )
+        return pa.table(
+            {
+                "beach_id": [beach_id],
+                "sample_date": ["2026-04-18"],
+                "wave_height_m": [1.1],
+                "dominant_period_s": [8.0],
+                "water_temperature_c": [16.2],
+                "salinity_psu": [33.0],
+                "weather": ["Sunny"],
+                "storm_drain_flow": ["No"],
+                "tidal_height": [1.2],
+                "surf_height_observed": [2.0],
+                "turbidity_observed": [5.0],
+            }
+        )
+
+    monkeypatch.setattr("app.repositories.curated_repository.pq.read_table", fake_read_table)
+
+    repository = CuratedBeachRepository(curated_dir, stv_threshold=104.0)
+    repository.__dict__["advisories_frame"] = pd.DataFrame(
+        columns=["beach_id", "advisory_type", "started_at", "ended_at", "status"]
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(
+            executor.map(
+                repository.get_observations,
+                ["ca123-orange-main-beach-main-beach-pier"] * 2,
+            )
+        )
+
+    assert [len(result.observations) for result in results] == [1, 1]
+    assert calls == ["observations.parquet", "beach_day.parquet"]
