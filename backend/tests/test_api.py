@@ -5,6 +5,7 @@ os.environ["PREFERRED_REPOSITORY"] = "fixture"
 
 from fastapi.testclient import TestClient
 
+from app.api import routes
 from app.main import app
 
 
@@ -32,3 +33,22 @@ def test_system_health_endpoint():
     assert response.status_code == 200
     payload = response.json()
     assert "model_registry" in payload
+
+
+def test_repository_dependency_is_cached(monkeypatch):
+    routes.get_repository.cache_clear()
+    calls = []
+
+    def fake_build_repository(settings):
+        calls.append(settings)
+        return object()
+
+    monkeypatch.setattr(routes, "build_repository", fake_build_repository)
+
+    first = routes.get_repository()
+    second = routes.get_repository()
+
+    assert first is second
+    assert len(calls) == 1
+
+    routes.get_repository.cache_clear()

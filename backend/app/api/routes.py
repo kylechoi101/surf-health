@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 from datetime import date
+from functools import lru_cache
 
 from fastapi import APIRouter, Depends
 
-from app.core.config import Settings, get_settings
+from app.core.config import get_settings
 from app.repositories.base import BeachRepository
 from app.repositories.factory import build_repository
 from app.services.beach_service import BeachService
 
 
-def get_repository(settings: Settings = Depends(get_settings)) -> BeachRepository:
-    return build_repository(settings)
+@lru_cache(maxsize=1)
+def get_repository() -> BeachRepository:
+    return build_repository(get_settings())
 
 
 def get_service(
