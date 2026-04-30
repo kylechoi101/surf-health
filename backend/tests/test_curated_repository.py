@@ -1,6 +1,8 @@
 import json
+from pathlib import Path
 
 import pandas as pd
+import pyarrow as pa
 
 from app.repositories.curated_repository import CuratedBeachRepository
 
@@ -120,3 +122,86 @@ def test_curated_repository_derives_forecast_and_observations(tmp_path):
     observations = repository.get_observations("ca123-orange-main-beach-main-beach-pier")
     assert len(observations.observations) == 1
     assert len(observations.advisories) == 1
+
+
+def test_curated_repository_limits_parquet_columns_for_per_beach_reads(monkeypatch, tmp_path):
+    curated_dir = tmp_path / "curated"
+    curated_dir.mkdir()
+    (curated_dir / "observations.parquet").write_bytes(b"placeholder")
+    (curated_dir / "beach_day.parquet").write_bytes(b"placeholder")
+
+    calls: list[tuple[str, tuple[str, ...]]] = []
+
+    def fake_read_table(path, *, filters, columns=None):
+        calls.append((Path(path).name, tuple(columns or ())))
+        beach_id = filters[0][2]
+        if Path(path).name == "observations.parquet":
+            return pa.table(
+                {
+                    "beach_id": [beach_id],
+                    "sample_time": ["2026-04-18T08:00:00"],
+                    "sample_date": ["2026-04-18"],
+                    "analyte": ["enterococcus"],
+                    "method": ["Culture"],
+                    "units": ["CFU/100ml"],
+                    "value": [120.0],
+                    "exceeds_stv": [True],
+                    "weather": ["Sunny"],
+                    "storm_drain_flow": ["No"],
+                }
+            )
+        return pa.table(
+            {
+                "beach_id": [beach_id],
+                "sample_date": ["2026-04-18"],
+                "wave_height_m": [1.1],
+                "dominant_period_s": [8.0],
+                "water_temperature_c": [16.2],
+                "salinity_psu": [33.0],
+                "weather": ["Sunny"],
+                "storm_drain_flow": ["No"],
+                "tidal_height": [1.2],
+                "surf_height_observed": [2.0],
+                "turbidity_observed": [5.0],
+            }
+        )
+
+    monkeypatch.setattr("app.repositories.curated_repository.pq.read_table", fake_read_table)
+
+    repository = CuratedBeachRepository(curated_dir, stv_threshold=104.0)
+    repository.get_forecast("ca123-orange-main-beach-main-beach-pier", pd.Timestamp("2026-04-20").date())
+    repository._beach_day_for_beach("ca123-orange-main-beach-main-beach-pier")
+
+    assert calls == [
+        (
+            "observations.parquet",
+            (
+                "beach_id",
+                "sample_time",
+                "sample_date",
+                "analyte",
+                "method",
+                "units",
+                "value",
+                "exceeds_stv",
+                "weather",
+                "storm_drain_flow",
+            ),
+        ),
+        (
+            "beach_day.parquet",
+            (
+                "beach_id",
+                "sample_date",
+                "wave_height_m",
+                "dominant_period_s",
+                "water_temperature_c",
+                "salinity_psu",
+                "weather",
+                "storm_drain_flow",
+                "tidal_height",
+                "surf_height_observed",
+                "turbidity_observed",
+            ),
+        ),
+    ]
