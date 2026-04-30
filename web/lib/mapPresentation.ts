@@ -22,12 +22,6 @@ export type MapMemberCandidate = {
   env?: EnvLike;
 };
 
-export type MapSectionStatsInput = {
-  totalStations: number;
-  modeledStations: number;
-  groupedCoastSites: number;
-};
-
 const RISK_PRIORITY: Record<RiskBandName, number> = {
   Low: 1,
   Moderate: 2,
@@ -56,6 +50,10 @@ export function hasModeledCoverage(site: MapPresentationSite) {
   return Boolean(site.forecast) && (site.modeled_member_count ?? 0) > 0;
 }
 
+export function getActiveForecastGroupCount<T extends MapPresentationSite>(sites: T[]) {
+  return getVisibleMapSites(sites, "forecast").length;
+}
+
 export function getInitialMapSelection<T extends MapPresentationSite>(sites: T[]) {
   return (
     sites.find((site) => hasModeledCoverage(site)) ??
@@ -74,14 +72,6 @@ export function getVisibleMapSites<T extends MapPresentationSite>(
   }
 
   return sites;
-}
-
-export function getMapSectionStats(stats: MapSectionStatsInput) {
-  return [
-    { value: stats.totalStations, label: "monitoring stations" },
-    { value: stats.modeledStations, label: "modeled sites" },
-    { value: stats.groupedCoastSites, label: "grouped coast sites" },
-  ];
 }
 
 function markerPriority(site: MapPresentationSite, activeSiteId?: string | null) {

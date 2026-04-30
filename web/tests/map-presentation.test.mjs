@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  getActiveForecastGroupCount,
   getInitialMapSelection,
-  getMapSectionStats,
   getMarkerRenderSites,
   getVisibleMapSites,
 } from "../lib/mapPresentation.ts";
@@ -52,6 +52,10 @@ test("forecast mode hides official-only sites from the default map", () => {
   );
 });
 
+test("active forecast group count matches the default map coverage", () => {
+  assert.equal(getActiveForecastGroupCount([officialOnlySite, lowForecastSite, highForecastSite]), 2);
+});
+
 test("all-sites mode renders official-only sites below modeled markers and keeps the active marker last", () => {
   assert.deepEqual(
     getMarkerRenderSites(
@@ -60,21 +64,5 @@ test("all-sites mode renders official-only sites below modeled markers and keeps
       "low-forecast"
     ).map((site) => site.id),
     ["official-only", "high-forecast", "low-forecast"]
-  );
-});
-
-test("map section stats show the actively modeled network and grouped map coverage", () => {
-  assert.deepEqual(
-    getMapSectionStats({
-      totalStations: 924,
-      modeledStations: 377,
-      unsupportedStations: 547,
-      groupedCoastSites: 346,
-    }),
-    [
-      { value: 924, label: "monitoring stations" },
-      { value: 377, label: "modeled sites" },
-      { value: 346, label: "grouped coast sites" },
-    ]
   );
 });

@@ -1,7 +1,11 @@
 import fs from "fs";
 import path from "path";
 
-import { getBestEnvMember, getLatestOfficialSampleMember } from "@/lib/mapPresentation";
+import {
+  getActiveForecastGroupCount,
+  getBestEnvMember,
+  getLatestOfficialSampleMember,
+} from "@/lib/mapPresentation";
 import { RiskBand } from "@/lib/riskData";
 
 export interface ForecastData {
@@ -72,6 +76,9 @@ export interface SiteStats {
   modeledStations: number;
   unsupportedStations: number;
   groupedCoastSites: number;
+  activeForecastGroups: number;
+  sampleOnlyGroups: number;
+  groupedForecastCoverage: number;
   latestPublishAt: string | null;
   productionModel: string | null;
 }
@@ -123,14 +130,19 @@ export function listParentBeaches(): ParentBeach[] {
 export function siteStats(): SiteStats {
   const beaches = listBeaches();
   const parents = listParentBeaches();
+  const activeForecastGroups = getActiveForecastGroupCount(siteForMap());
   const systemHealth = readSystemHealth();
   const modeledStations = beaches.filter((beach) => beach.support_status === "production").length;
+  const sampleOnlyGroups = Math.max(parents.length - activeForecastGroups, 0);
 
   return {
     totalStations: beaches.length,
     modeledStations,
     unsupportedStations: beaches.length - modeledStations,
     groupedCoastSites: parents.length,
+    activeForecastGroups,
+    sampleOnlyGroups,
+    groupedForecastCoverage: parents.length > 0 ? activeForecastGroups / parents.length : 0,
     latestPublishAt: systemHealth.pipeline_freshness ?? null,
     productionModel: systemHealth.model_registry?.production_model ?? null,
   };

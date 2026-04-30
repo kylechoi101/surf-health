@@ -35,9 +35,9 @@ export function HeroSection() {
               Shorelife turns official bacteria samples and coastal conditions into one-day
               health forecasts for{" "}
               <span className="font-semibold text-[var(--sl-navy)]">
-                {stats.modeledStations} modeled beaches
+                {stats.activeForecastGroups} actively modeled beach groups
               </span>{" "}
-              across {stats.totalStations} California monitoring stations.
+              shown on today's default map.
             </p>
 
             <div className="mt-8 flex flex-col gap-3 sm:flex-row">
@@ -137,9 +137,12 @@ export function HeroSection() {
 
             <div className="mt-8 grid gap-4 sm:grid-cols-3">
               {[
-                { value: stats.totalStations, label: "monitoring stations" },
-                { value: stats.modeledStations, label: "modeled sites" },
-                { value: stats.groupedCoastSites, label: "grouped coast sites" },
+                { value: stats.activeForecastGroups, label: "forecast groups shown" },
+                { value: stats.sampleOnlyGroups, label: "sample-only groups optional" },
+                {
+                  value: `${Math.round(stats.groupedForecastCoverage * 100)}%`,
+                  label: "grouped coast coverage",
+                },
               ].map((stat) => (
                 <div key={stat.label} className="border-t border-[var(--sl-line)] pt-4">
                   <div className="sl-display text-3xl text-[var(--sl-navy)] sm:text-4xl">
