@@ -163,6 +163,61 @@ def test_build_inference_features_keeps_unlabeled_rows_without_sequence_history(
     assert dataset.feature_frame.iloc[0]["wave_height_m_lag_1"] == 1.0
 
 
+def test_build_inference_features_adds_constrained_hydrology_lag_kernel():
+    frame = pd.DataFrame(
+        [
+            {
+                "beach_id": "alpha",
+                "sample_date": "2026-04-01",
+                "sample_time": "2026-04-01T08:00:00-07:00",
+                "enterococcus_value": 21.0,
+                "exceeds_stv": 0,
+                "wave_height_m": 1.0,
+                "dominant_period_s": 10.0,
+                "water_temperature_c": 14.0,
+                "salinity_psu": 33.0,
+                "uv_index": 5.0,
+                "wind_speed_mps": 4.0,
+                "precip_mm_6h": 2.0,
+                "precip_mm_24h": 5.0,
+                "precip_mm_48h": 8.0,
+                "precip_mm_72h": 13.0,
+                "precip_mm_7d": 21.0,
+                "streamflow_cfs_latest": 10.0,
+                "streamflow_cfs_mean_24h": 6.0,
+                "streamflow_cfs_max_24h": 14.0,
+            },
+            {
+                "beach_id": "alpha",
+                "sample_date": "2026-04-02",
+                "sample_time": "2026-04-02T05:00:00-07:00",
+                "enterococcus_value": None,
+                "exceeds_stv": None,
+                "wave_height_m": 1.1,
+                "dominant_period_s": 10.0,
+                "water_temperature_c": 14.0,
+                "salinity_psu": 33.0,
+                "uv_index": 6.0,
+                "wind_speed_mps": 4.0,
+                "precip_mm_6h": 0.0,
+                "precip_mm_24h": 1.0,
+                "precip_mm_48h": 2.0,
+                "precip_mm_72h": 3.0,
+                "precip_mm_7d": 4.0,
+                "streamflow_cfs_latest": 8.0,
+                "streamflow_cfs_mean_24h": 7.0,
+                "streamflow_cfs_max_24h": 9.0,
+            },
+        ]
+    )
+
+    dataset = build_inference_features(frame)
+
+    assert "precip_runoff_lag_kernel_7d" in dataset.feature_frame.columns
+    assert dataset.feature_frame.iloc[0]["precip_runoff_lag_kernel_7d"] >= 0.0
+    assert dataset.feature_frame.iloc[0]["streamflow_lag_kernel_24h"] >= 0.0
+
+
 def test_build_sliding_windows_uses_calendar_day_lags_for_sparse_history():
     frame = pd.DataFrame(
         [

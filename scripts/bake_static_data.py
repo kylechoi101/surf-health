@@ -73,6 +73,8 @@ def main() -> None:
             forecast_lookup[bid] = {
                 "risk_band": clean_text(row.get("risk_band")),
                 "p_exceed": safe_float(row.get("p_exceed")),
+                "p_exceed_lower": safe_float(row.get("p_exceed_lower")),
+                "p_exceed_upper": safe_float(row.get("p_exceed_upper")),
                 "model_version": clean_text(row.get("model_version")),
                 "forecast_generated_at": to_iso(row.get("forecast_generated_at")),
                 "top_drivers": to_driver_list(row.get("top_drivers")),

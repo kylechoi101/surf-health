@@ -23,12 +23,18 @@ from torch.utils.data import DataLoader, Subset
 
 from app.core.config import get_settings
 from app.data.pipeline.features import (
+    STORMWATER_EXPERT_NUMERIC_COLUMNS,
     SlidingWindowDataset,
     build_inference_features,
     build_inference_windows,
     build_sliding_windows,
 )
-from app.ml.calibration import ProbabilityCalibrator, _VERY_HIGH_THRESHOLD as _CAL_VERY_HIGH, risk_band
+from app.ml.calibration import (
+    HierarchicalProbabilityCalibrator,
+    ProbabilityCalibrator,
+    _VERY_HIGH_THRESHOLD as _CAL_VERY_HIGH,
+    risk_band,
+)
 from app.ml.datasets import SequenceDataset
 from app.ml.evaluation import classification_metrics, regression_metrics
 from app.ml.models import (
@@ -305,6 +311,7 @@ def _load_curated_training_frame(curated_dir: Path) -> pd.DataFrame:
         "distance_to_pour_point_km",
         "distance_to_gage_km",
         "watershed_area_km2",
+        *STORMWATER_EXPERT_NUMERIC_COLUMNS,
     ):
         if column not in frame.columns:
             frame[column] = np.nan
@@ -348,6 +355,7 @@ def _load_curated_training_frame(curated_dir: Path) -> pd.DataFrame:
             "distance_to_pour_point_km",
             "distance_to_gage_km",
             "watershed_area_km2",
+            *STORMWATER_EXPERT_NUMERIC_COLUMNS,
         ]
     ].dropna(subset=["sample_time", "enterococcus_value"])
     return _filter_plausible_training_rows(filtered)
@@ -860,14 +868,21 @@ def _spatial_holdout_fold_result(
             features.iloc[inner_valid_rows],
             metadata.iloc[inner_valid_rows].reset_index(drop=True),
         )
-        _, calibrator = _identity_or_calibrated(valid_raw, labels[inner_valid_rows])
+        _, calibrator = _identity_or_calibrated(
+            valid_raw,
+            labels[inner_valid_rows],
+            metadata.iloc[inner_valid_rows].reset_index(drop=True),
+        )
         test_probabilities, _, _ = _predict_coastal_cell_logistic_raw(
             artifacts,
             features.iloc[test_rows],
             metadata.iloc[test_rows].reset_index(drop=True),
         )
-        if calibrator is not None:
-            test_probabilities = calibrator.transform(test_probabilities)
+        test_probabilities = _apply_calibrator(
+            calibrator,
+            test_probabilities,
+            metadata.iloc[test_rows].reset_index(drop=True),
+        )
         return labels[test_rows], test_probabilities
 
     if model_name == "logistic_hierarchical":
@@ -882,44 +897,59 @@ def _spatial_holdout_fold_result(
             features.iloc[inner_valid_rows],
             metadata.iloc[inner_valid_rows].reset_index(drop=True),
         )
-        _, calibrator = _identity_or_calibrated(valid_raw, labels[inner_valid_rows])
+        _, calibrator = _identity_or_calibrated(
+            valid_raw,
+            labels[inner_valid_rows],
+            metadata.iloc[inner_valid_rows].reset_index(drop=True),
+        )
         test_probabilities, _ = _predict_hierarchical_logistic_raw(
             artifacts,
             features.iloc[test_rows],
             metadata.iloc[test_rows].reset_index(drop=True),
         )
-        if calibrator is not None:
-            test_probabilities = calibrator.transform(test_probabilities)
+        test_probabilities = _apply_calibrator(
+            calibrator,
+            test_probabilities,
+            metadata.iloc[test_rows].reset_index(drop=True),
+        )
         return labels[test_rows], test_probabilities
 
     if model_name == "stacked_ensemble":
         # Logistic
         log_clf = make_baselines(features).logistic.fit(features.iloc[inner_train_rows], labels[inner_train_rows])
         log_val = log_clf.predict_proba(features.iloc[inner_valid_rows])[:, 1]
-        _, log_cal = _identity_or_calibrated(log_val, labels[inner_valid_rows])
+        _, log_cal = _identity_or_calibrated(log_val, labels[inner_valid_rows], metadata.iloc[inner_valid_rows].reset_index(drop=True))
         log_test = log_clf.predict_proba(features.iloc[test_rows])[:, 1]
-        if log_cal is not None: log_val = log_cal.transform(log_val); log_test = log_cal.transform(log_test)
+        if log_cal is not None:
+            log_val = _apply_calibrator(log_cal, log_val, metadata.iloc[inner_valid_rows].reset_index(drop=True))
+            log_test = _apply_calibrator(log_cal, log_test, metadata.iloc[test_rows].reset_index(drop=True))
         
         # Coastal
         cc_art = _fit_coastal_cell_logistic_artifacts(features, labels, metadata, inner_train_rows)
         cc_val, _, _ = _predict_coastal_cell_logistic_raw(cc_art, features.iloc[inner_valid_rows], metadata.iloc[inner_valid_rows].reset_index(drop=True))
-        _, cc_cal = _identity_or_calibrated(cc_val, labels[inner_valid_rows])
+        _, cc_cal = _identity_or_calibrated(cc_val, labels[inner_valid_rows], metadata.iloc[inner_valid_rows].reset_index(drop=True))
         cc_test, _, _ = _predict_coastal_cell_logistic_raw(cc_art, features.iloc[test_rows], metadata.iloc[test_rows].reset_index(drop=True))
-        if cc_cal is not None: cc_val = cc_cal.transform(cc_val); cc_test = cc_cal.transform(cc_test)
+        if cc_cal is not None:
+            cc_val = _apply_calibrator(cc_cal, cc_val, metadata.iloc[inner_valid_rows].reset_index(drop=True))
+            cc_test = _apply_calibrator(cc_cal, cc_test, metadata.iloc[test_rows].reset_index(drop=True))
 
         # Hierarchical
         h_art = _fit_hierarchical_logistic_artifacts(features, labels, metadata, inner_train_rows)
         h_val, _ = _predict_hierarchical_logistic_raw(h_art, features.iloc[inner_valid_rows], metadata.iloc[inner_valid_rows].reset_index(drop=True))
-        _, h_cal = _identity_or_calibrated(h_val, labels[inner_valid_rows])
+        _, h_cal = _identity_or_calibrated(h_val, labels[inner_valid_rows], metadata.iloc[inner_valid_rows].reset_index(drop=True))
         h_test, _ = _predict_hierarchical_logistic_raw(h_art, features.iloc[test_rows], metadata.iloc[test_rows].reset_index(drop=True))
-        if h_cal is not None: h_val = h_cal.transform(h_val); h_test = h_cal.transform(h_test)
+        if h_cal is not None:
+            h_val = _apply_calibrator(h_cal, h_val, metadata.iloc[inner_valid_rows].reset_index(drop=True))
+            h_test = _apply_calibrator(h_cal, h_test, metadata.iloc[test_rows].reset_index(drop=True))
 
         # GBM
         gbm_clf = make_baselines(features).tree_classifier.fit(features.iloc[inner_train_rows], labels[inner_train_rows])
         gbm_val = gbm_clf.predict_proba(features.iloc[inner_valid_rows])[:, 1]
-        _, gbm_cal = _identity_or_calibrated(gbm_val, labels[inner_valid_rows])
+        _, gbm_cal = _identity_or_calibrated(gbm_val, labels[inner_valid_rows], metadata.iloc[inner_valid_rows].reset_index(drop=True))
         gbm_test = gbm_clf.predict_proba(features.iloc[test_rows])[:, 1]
-        if gbm_cal is not None: gbm_val = gbm_cal.transform(gbm_val); gbm_test = gbm_cal.transform(gbm_test)
+        if gbm_cal is not None:
+            gbm_val = _apply_calibrator(gbm_cal, gbm_val, metadata.iloc[inner_valid_rows].reset_index(drop=True))
+            gbm_test = _apply_calibrator(gbm_cal, gbm_test, metadata.iloc[test_rows].reset_index(drop=True))
 
         # ensemble weights based on AUCPR
         from sklearn.metrics import average_precision_score
@@ -937,10 +967,17 @@ def _spatial_holdout_fold_result(
     classifier = _fit_classifier_for_name(features, model_name)
     classifier.fit(features.iloc[inner_train_rows], labels[inner_train_rows])
     valid_raw = classifier.predict_proba(features.iloc[inner_valid_rows])[:, 1]
-    _, calibrator = _identity_or_calibrated(valid_raw, labels[inner_valid_rows])
+    _, calibrator = _identity_or_calibrated(
+        valid_raw,
+        labels[inner_valid_rows],
+        metadata.iloc[inner_valid_rows].reset_index(drop=True),
+    )
     test_probabilities = classifier.predict_proba(features.iloc[test_rows])[:, 1]
-    if calibrator is not None:
-        test_probabilities = calibrator.transform(test_probabilities)
+    test_probabilities = _apply_calibrator(
+        calibrator,
+        test_probabilities,
+        metadata.iloc[test_rows].reset_index(drop=True),
+    )
     return labels[test_rows], test_probabilities
 
 
@@ -1247,12 +1284,19 @@ def train_sequence_model(
     valid_probabilities, valid_density = _predict_sequence_subset(model, sequence_dataset, valid_idx, device)
     valid_metrics = classification_metrics(dataset.targets_exceed[valid_idx], valid_probabilities)
     valid_metrics.update(regression_metrics(dataset.targets_log_density[valid_idx], valid_density))
-    _, calibrator = _identity_or_calibrated(valid_probabilities, dataset.targets_exceed[valid_idx])
+    _, calibrator = _identity_or_calibrated(
+        valid_probabilities,
+        dataset.targets_exceed[valid_idx],
+        dataset.metadata.iloc[valid_idx].reset_index(drop=True),
+    )
 
     if len(test_idx):
         test_probabilities, test_density = _predict_sequence_subset(model, sequence_dataset, test_idx, device)
-        if calibrator is not None:
-            test_probabilities = calibrator.transform(test_probabilities)
+        test_probabilities = _apply_calibrator(
+            calibrator,
+            test_probabilities,
+            dataset.metadata.iloc[test_idx].reset_index(drop=True),
+        )
         test_metrics = classification_metrics(dataset.targets_exceed[test_idx], test_probabilities)
         test_metrics.update(regression_metrics(dataset.targets_log_density[test_idx], test_density))
     else:
@@ -1271,7 +1315,11 @@ def train_sequence_model(
 
 def _blocked_indices(metadata: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     sample_dates = pd.to_datetime(metadata["sample_date"], errors="coerce").dt.normalize()
-    unique_dates = np.array(sorted(sample_dates.dropna().unique()))
+    unique_dates = (
+        pd.DatetimeIndex(sample_dates.dropna().unique())
+        .sort_values()
+        .to_numpy(dtype="datetime64[ns]")
+    )
     if len(unique_dates) == 0:
         empty = np.array([], dtype=int)
         return empty, empty, empty
@@ -1292,7 +1340,7 @@ def _blocked_indices(metadata: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np
         valid_dates = unique_dates[train_end:valid_end]
         test_dates = unique_dates[valid_end:]
 
-    sample_dates_array = sample_dates.to_numpy()
+    sample_dates_array = sample_dates.to_numpy(dtype="datetime64[ns]")
     train_idx = np.flatnonzero(np.isin(sample_dates_array, train_dates))
     valid_idx = np.flatnonzero(np.isin(sample_dates_array, valid_dates))
     test_idx = np.flatnonzero(np.isin(sample_dates_array, test_dates))
@@ -1300,13 +1348,42 @@ def _blocked_indices(metadata: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np
 
 
 def _identity_or_calibrated(
-    probabilities: np.ndarray, labels: np.ndarray
-) -> tuple[np.ndarray, ProbabilityCalibrator | None]:
+    probabilities: np.ndarray,
+    labels: np.ndarray,
+    metadata: pd.DataFrame | None = None,
+) -> tuple[np.ndarray, ProbabilityCalibrator | HierarchicalProbabilityCalibrator | None]:
     labels = np.asarray(labels)
     if len(probabilities) == 0 or len(labels) == 0 or len(np.unique(labels)) < 2:
         return probabilities, None
+    if metadata is not None and not metadata.empty and {"county", "beach_id"}.issubset(metadata.columns):
+        calibrator = HierarchicalProbabilityCalibrator(min_county_rows=4, min_site_rows=4).fit(
+            probabilities, labels, metadata.reset_index(drop=True)
+        )
+        return calibrator.transform(probabilities, metadata.reset_index(drop=True)), calibrator
     calibrator = ProbabilityCalibrator().fit(probabilities, labels)
     return calibrator.transform(probabilities), calibrator
+
+
+def _apply_calibrator(
+    calibrator: ProbabilityCalibrator | HierarchicalProbabilityCalibrator | None,
+    probabilities: np.ndarray,
+    metadata: pd.DataFrame | None = None,
+) -> np.ndarray:
+    if calibrator is None:
+        return probabilities
+    if isinstance(calibrator, HierarchicalProbabilityCalibrator):
+        return calibrator.transform(probabilities, metadata)
+    return calibrator.transform(probabilities)
+
+
+def _calibration_interval(
+    calibrator: ProbabilityCalibrator | HierarchicalProbabilityCalibrator | None,
+    probabilities: np.ndarray,
+    metadata: pd.DataFrame | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    if isinstance(calibrator, HierarchicalProbabilityCalibrator):
+        return calibrator.predict_interval(probabilities, metadata)
+    return np.full(len(probabilities), np.nan), np.full(len(probabilities), np.nan)
 
 
 def _split_conformal_half_width(
@@ -1633,8 +1710,11 @@ def _predict_sequence_inference(
         np.arange(len(static_features)),
         device,
     )
-    if artifacts.calibrator is not None:
-        probabilities = artifacts.calibrator.transform(probabilities)
+    probabilities = _apply_calibrator(
+        artifacts.calibrator,
+        probabilities,
+        inference_dataset.metadata.reset_index(drop=True),
+    )
     return probabilities, density_predictions
 
 
@@ -1706,8 +1786,12 @@ def _compute_local_drivers(
                 driver_strings.append(f"saturated watershed after sustained rain (AWI {val:.0f})")
             elif col == "precip_mm_7d":
                 driver_strings.append(f"high 7-day cumulative rainfall ({val:.0f} mm)")
+            elif col == "precip_runoff_lag_kernel_7d":
+                driver_strings.append(f"distributed-lag runoff signal ({val:.1f} weighted mm)")
             elif col == "streamflow_cfs_latest":
                 driver_strings.append(f"elevated stream discharge ({val:.0f} cfs)")
+            elif col == "streamflow_lag_kernel_24h":
+                driver_strings.append(f"distributed-lag streamflow signal ({val:.0f} cfs)")
             elif col == "wave_height_m" or col.startswith("wave_height_m_lag_"):
                 driver_strings.append(f"elevated surf ({val:.1f} m)")
             elif col.startswith("wave_height_m_mean_"):
@@ -1718,6 +1802,26 @@ def _compute_local_drivers(
                 driver_strings.append("recent turbidity noted in field observations")
             elif col.startswith("salinity_psu_lag_") and val < 25:
                 driver_strings.append(f"freshwater input detected (low salinity {val:.0f} psu)")
+            elif col == "nearest_stormwater_outfall_km":
+                driver_strings.append(f"mapped stormwater outfall nearby ({val:.1f} km)")
+            elif col == "nearest_stormwater_asset_km":
+                driver_strings.append(f"mapped stormwater infrastructure nearby ({val:.1f} km)")
+            elif col == "nearest_tmdl_stormwater_site_km":
+                driver_strings.append(f"TMDL/WQIP stormwater site nearby ({val:.1f} km)")
+            elif col.startswith("stormwater_outfall_count_"):
+                distance = col.removeprefix("stormwater_outfall_count_")
+                driver_strings.append(f"multiple mapped stormwater outfalls within {distance}")
+            elif col.startswith("stormwater_asset_count_"):
+                distance = col.removeprefix("stormwater_asset_count_").replace("_", ".")
+                driver_strings.append(f"dense mapped stormwater infrastructure within {distance}")
+            elif col == "stormwater_tmdl_site_count_2km":
+                driver_strings.append("mapped TMDL/WQIP stormwater sites within 2 km")
+            elif col == "rain_72h_general_advisory_flag":
+                driver_strings.append("72-hour rainfall exceeds the 0.2 inch advisory threshold")
+            elif col == "rain_72h_monitoring_pause_flag":
+                driver_strings.append("72-hour rainfall exceeds the 0.1 inch monitoring threshold")
+            elif col == "rain_72h_inches":
+                driver_strings.append(f"recent rainfall ({val:.2f} in over 72 h)")
             # else: feature has no human-readable mapping — skip it rather than
             # leaking internal names like "day of year (114.0)" to end users.
 
@@ -1819,44 +1923,74 @@ def _export_forecasts(
     ) if not forecast_metadata.empty else pd.DataFrame()
     scopes = np.full(len(baseline_forecast_features), "global", dtype=object)
     assigned_cells = np.full(len(baseline_forecast_features), "unknown", dtype=object)
+    probability_lower = np.full(len(baseline_forecast_features), np.nan, dtype=float)
+    probability_upper = np.full(len(baseline_forecast_features), np.nan, dtype=float)
     if winner == "stacked_ensemble":
         _ens_logistic = logistic.predict_proba(baseline_forecast_features)[:, 1]
         if logistic_calibrator is not None:
-            _ens_logistic = logistic_calibrator.transform(_ens_logistic)
+            _ens_logistic = _apply_calibrator(logistic_calibrator, _ens_logistic, forecast_group_metadata)
         _ens_coastal, _, _ens_coastal_scopes = _predict_coastal_cell_logistic_raw(
             coastal_cell_logistic, baseline_forecast_features, forecast_group_metadata,
         )
         if coastal_cell_logistic.calibrator is not None:
-            _ens_coastal = coastal_cell_logistic.calibrator.transform(_ens_coastal)
+            _ens_coastal = _apply_calibrator(
+                coastal_cell_logistic.calibrator,
+                _ens_coastal,
+                forecast_group_metadata,
+            )
         _ens_hier, _ens_hier_scopes = _predict_hierarchical_logistic_raw(
             hierarchical_logistic, baseline_forecast_features, forecast_group_metadata,
         )
         if hierarchical_logistic.calibrator is not None:
-            _ens_hier = hierarchical_logistic.calibrator.transform(_ens_hier)
+            _ens_hier = _apply_calibrator(
+                hierarchical_logistic.calibrator,
+                _ens_hier,
+                forecast_group_metadata,
+            )
         _ens_tree = tree_classifier.predict_proba(baseline_forecast_features)[:, 1]
         if tree_calibrator is not None:
-            _ens_tree = tree_calibrator.transform(_ens_tree)
+            _ens_tree = _apply_calibrator(tree_calibrator, _ens_tree, forecast_group_metadata)
         probabilities = (
             np.stack([_ens_logistic, _ens_coastal, _ens_hier, _ens_tree], axis=1)
             @ ensemble_weights
         )
         scopes = _ens_hier_scopes
     elif winner == "logistic_coastal_cells":
-        probabilities, assigned_cells, scopes = _predict_coastal_cell_logistic_raw(
+        raw_probabilities, assigned_cells, scopes = _predict_coastal_cell_logistic_raw(
             coastal_cell_logistic, baseline_forecast_features, forecast_group_metadata,
         )
-        if coastal_cell_logistic.calibrator is not None:
-            probabilities = coastal_cell_logistic.calibrator.transform(probabilities)
+        probabilities = _apply_calibrator(
+            coastal_cell_logistic.calibrator,
+            raw_probabilities,
+            forecast_group_metadata,
+        )
+        probability_lower, probability_upper = _calibration_interval(
+            coastal_cell_logistic.calibrator,
+            raw_probabilities,
+            forecast_group_metadata,
+        )
     elif winner == "logistic_hierarchical":
-        probabilities, scopes = _predict_hierarchical_logistic_raw(
+        raw_probabilities, scopes = _predict_hierarchical_logistic_raw(
             hierarchical_logistic, baseline_forecast_features, forecast_group_metadata,
         )
-        if hierarchical_logistic.calibrator is not None:
-            probabilities = hierarchical_logistic.calibrator.transform(probabilities)
+        probabilities = _apply_calibrator(
+            hierarchical_logistic.calibrator,
+            raw_probabilities,
+            forecast_group_metadata,
+        )
+        probability_lower, probability_upper = _calibration_interval(
+            hierarchical_logistic.calibrator,
+            raw_probabilities,
+            forecast_group_metadata,
+        )
     else:
-        probabilities = classifier.predict_proba(baseline_forecast_features)[:, 1]
-        if calibrator is not None:
-            probabilities = calibrator.transform(probabilities)
+        raw_probabilities = classifier.predict_proba(baseline_forecast_features)[:, 1]
+        probabilities = _apply_calibrator(calibrator, raw_probabilities, forecast_group_metadata)
+        probability_lower, probability_upper = _calibration_interval(
+            calibrator,
+            raw_probabilities,
+            forecast_group_metadata,
+        )
     density_predictions = regressor.predict(baseline_forecast_features)
     _VERY_HIGH_THRESHOLD = _CAL_VERY_HIGH
     _DEGENERATE_VERY_HIGH_FRACTION = 0.30
@@ -1905,12 +2039,20 @@ def _export_forecasts(
             advisory_recent = _safe_float(feature_row.get("advisory_recent_active")) or 0.0
             p_raw = float(probability)
             p_final = max(p_raw, 0.20) if advisory_recent else p_raw
+            p_lower = probability_lower[i] if i < len(probability_lower) else np.nan
+            p_upper = probability_upper[i] if i < len(probability_upper) else np.nan
+            p_lower_final = max(float(p_lower), 0.20) if advisory_recent and np.isfinite(p_lower) else (
+                float(p_lower) if np.isfinite(p_lower) else None
+            )
+            p_upper_final = max(float(p_upper), p_final) if np.isfinite(p_upper) else None
             forecasts.append({
                 "beach_id": beach_id,
                 "forecast_date": forecast_date.isoformat(),
                 "risk_band": risk_band(p_final),
                 "p_exceed": p_final,
                 "p_exceed_raw": p_raw,
+                "p_exceed_lower": p_lower_final,
+                "p_exceed_upper": p_upper_final,
                 "predicted_log_enterococcus": float(density_prediction),
                 "lower_prediction_interval": (
                     float(density_prediction - regression_interval_half_width)
@@ -1983,6 +2125,7 @@ def _export_forecasts(
 def _run_winner_only(
     curated_dir: Path,
     forecast_date: date,
+    training_window_days: int,
     spatial_strategy: str,
     spatial_backtests: bool,
     spatial_beach_limit: int | None,
@@ -1995,7 +2138,9 @@ def _run_winner_only(
     full_frame = _load_curated_training_frame(curated_dir)
     full_frame["sample_date"] = pd.to_datetime(full_frame["sample_date"])
     max_date = full_frame["sample_date"].max()
-    frame = full_frame.loc[full_frame["sample_date"] > (max_date - pd.Timedelta(days=60))].copy()
+    frame = full_frame.loc[
+        full_frame["sample_date"] > (max_date - pd.Timedelta(days=training_window_days))
+    ].copy()
     stations = pd.read_parquet(curated_dir / "beaches.parquet")
     uv_daily_path = curated_dir / "uv_daily.parquet"
     uv_daily = pd.read_parquet(uv_daily_path) if uv_daily_path.exists() else pd.DataFrame()
@@ -2023,10 +2168,12 @@ def _run_winner_only(
     tree_classifier = baselines.tree_classifier.fit(features.iloc[train_idx], labels[train_idx])
     tree_valid_raw = tree_classifier.predict_proba(features.iloc[valid_idx])[:, 1]
     metrics["hist_gbm_valid"] = classification_metrics(labels[valid_idx], tree_valid_raw)
-    _, tree_calibrator = _identity_or_calibrated(tree_valid_raw, labels[valid_idx])
+    valid_metadata = metadata.iloc[valid_idx].reset_index(drop=True)
+    eval_metadata = metadata.iloc[eval_idx].reset_index(drop=True)
+    _, tree_calibrator = _identity_or_calibrated(tree_valid_raw, labels[valid_idx], valid_metadata)
     tree_eval = tree_classifier.predict_proba(features.iloc[eval_idx])[:, 1]
-    if tree_calibrator is not None and len(test_idx):
-        tree_eval = tree_calibrator.transform(tree_eval)
+    if len(test_idx):
+        tree_eval = _apply_calibrator(tree_calibrator, tree_eval, eval_metadata)
     metrics["hist_gbm"] = classification_metrics(labels[eval_idx], tree_eval)
 
     logistic = logistic_calibrator = None
@@ -2038,11 +2185,13 @@ def _run_winner_only(
         print("Training global logistic model...", file=sys.stderr, flush=True)
         logistic = baselines.logistic.fit(features.iloc[train_idx], labels[train_idx])
         logistic_valid_raw = logistic.predict_proba(features.iloc[valid_idx])[:, 1]
-        _, logistic_calibrator = _identity_or_calibrated(logistic_valid_raw, labels[valid_idx])
+        _, logistic_calibrator = _identity_or_calibrated(
+            logistic_valid_raw, labels[valid_idx], valid_metadata
+        )
         metrics["logistic_valid"] = classification_metrics(labels[valid_idx], logistic_valid_raw)
         logistic_eval = logistic.predict_proba(features.iloc[eval_idx])[:, 1]
-        if logistic_calibrator is not None and len(test_idx):
-            logistic_eval = logistic_calibrator.transform(logistic_eval)
+        if len(test_idx):
+            logistic_eval = _apply_calibrator(logistic_calibrator, logistic_eval, eval_metadata)
         metrics["logistic"] = classification_metrics(labels[eval_idx], logistic_eval)
         classifier, calibrator = logistic, logistic_calibrator
 
@@ -2053,7 +2202,9 @@ def _run_winner_only(
             coastal_cell_logistic, features.iloc[valid_idx], metadata.iloc[valid_idx].reset_index(drop=True),
         )
         metrics["logistic_coastal_cells_valid"] = classification_metrics(labels[valid_idx], coastal_valid_raw)
-        _, coastal_calibrator = _identity_or_calibrated(coastal_valid_raw, labels[valid_idx])
+        _, coastal_calibrator = _identity_or_calibrated(
+            coastal_valid_raw, labels[valid_idx], valid_metadata
+        )
         coastal_cell_logistic.calibrator = coastal_calibrator
 
     elif winner == "logistic_hierarchical":
@@ -2063,14 +2214,18 @@ def _run_winner_only(
             hierarchical_logistic, features.iloc[valid_idx], metadata.iloc[valid_idx].reset_index(drop=True),
         )
         metrics["logistic_hierarchical_valid"] = classification_metrics(labels[valid_idx], hier_valid_raw)
-        _, hierarchical_calibrator = _identity_or_calibrated(hier_valid_raw, labels[valid_idx])
+        _, hierarchical_calibrator = _identity_or_calibrated(
+            hier_valid_raw, labels[valid_idx], valid_metadata
+        )
         hierarchical_logistic.calibrator = hierarchical_calibrator
 
     elif winner == "stacked_ensemble":
         print("Training all base classifiers for stacked ensemble...", file=sys.stderr, flush=True)
         logistic = baselines.logistic.fit(features.iloc[train_idx], labels[train_idx])
         logistic_valid_raw = logistic.predict_proba(features.iloc[valid_idx])[:, 1]
-        _, logistic_calibrator = _identity_or_calibrated(logistic_valid_raw, labels[valid_idx])
+        _, logistic_calibrator = _identity_or_calibrated(
+            logistic_valid_raw, labels[valid_idx], valid_metadata
+        )
         metrics["logistic_valid"] = classification_metrics(labels[valid_idx], logistic_valid_raw)
 
         coastal_cell_logistic = _fit_coastal_cell_logistic_artifacts(features, labels, metadata, train_idx)
@@ -2078,7 +2233,9 @@ def _run_winner_only(
             coastal_cell_logistic, features.iloc[valid_idx], metadata.iloc[valid_idx].reset_index(drop=True),
         )
         metrics["logistic_coastal_cells_valid"] = classification_metrics(labels[valid_idx], coastal_valid_raw)
-        _, coastal_calibrator = _identity_or_calibrated(coastal_valid_raw, labels[valid_idx])
+        _, coastal_calibrator = _identity_or_calibrated(
+            coastal_valid_raw, labels[valid_idx], valid_metadata
+        )
         coastal_cell_logistic.calibrator = coastal_calibrator
 
         hierarchical_logistic = _fit_hierarchical_logistic_artifacts(features, labels, metadata, train_idx)
@@ -2086,7 +2243,9 @@ def _run_winner_only(
             hierarchical_logistic, features.iloc[valid_idx], metadata.iloc[valid_idx].reset_index(drop=True),
         )
         metrics["logistic_hierarchical_valid"] = classification_metrics(labels[valid_idx], hier_valid_raw)
-        _, hierarchical_calibrator = _identity_or_calibrated(hier_valid_raw, labels[valid_idx])
+        _, hierarchical_calibrator = _identity_or_calibrated(
+            hier_valid_raw, labels[valid_idx], valid_metadata
+        )
         hierarchical_logistic.calibrator = hierarchical_calibrator
 
         persisted_ew = registry.get("ensemble_weights")
@@ -2229,6 +2388,8 @@ def train_curated_and_export(
     baselines = make_baselines(features)
     metrics: dict[str, dict[str, float]] = {}
     eval_idx = test_idx if len(test_idx) else valid_idx
+    valid_metadata = metadata.iloc[valid_idx].reset_index(drop=True)
+    eval_metadata = metadata.iloc[eval_idx].reset_index(drop=True)
 
     if winner_only:
         registry = _read_production_model_registry(curated_dir)
@@ -2236,6 +2397,7 @@ def train_curated_and_export(
             return _run_winner_only(
                 curated_dir=curated_dir,
                 forecast_date=forecast_date,
+                training_window_days=training_window_days,
                 spatial_strategy=spatial_strategy,
                 spatial_backtests=spatial_backtests,
                 spatial_beach_limit=spatial_beach_limit,
@@ -2255,10 +2417,12 @@ def train_curated_and_export(
     logistic = baselines.logistic.fit(features.iloc[train_idx], labels[train_idx])
     logistic_valid_raw = logistic.predict_proba(features.iloc[valid_idx])[:, 1]
     metrics["logistic_valid"] = classification_metrics(labels[valid_idx], logistic_valid_raw)
-    _, logistic_calibrator = _identity_or_calibrated(logistic_valid_raw, labels[valid_idx])
+    _, logistic_calibrator = _identity_or_calibrated(
+        logistic_valid_raw, labels[valid_idx], valid_metadata
+    )
     logistic_eval = logistic.predict_proba(features.iloc[eval_idx])[:, 1]
-    if logistic_calibrator is not None and len(test_idx):
-        logistic_eval = logistic_calibrator.transform(logistic_eval)
+    if len(test_idx):
+        logistic_eval = _apply_calibrator(logistic_calibrator, logistic_eval, eval_metadata)
     metrics["logistic"] = classification_metrics(labels[eval_idx], logistic_eval)
 
     print("Training coastal cells logistic model...", file=sys.stderr, flush=True)
@@ -2269,7 +2433,9 @@ def train_curated_and_export(
         metadata.iloc[valid_idx].reset_index(drop=True),
     )
     metrics["logistic_coastal_cells_valid"] = classification_metrics(labels[valid_idx], coastal_valid_raw)
-    _, coastal_calibrator = _identity_or_calibrated(coastal_valid_raw, labels[valid_idx])
+    _, coastal_calibrator = _identity_or_calibrated(
+        coastal_valid_raw, labels[valid_idx], valid_metadata
+    )
     coastal_cell_logistic.calibrator = coastal_calibrator
     coastal_eval_raw, _, _ = _predict_coastal_cell_logistic_raw(
         coastal_cell_logistic,
@@ -2277,8 +2443,8 @@ def train_curated_and_export(
         metadata.iloc[eval_idx].reset_index(drop=True),
     )
     coastal_eval = coastal_eval_raw.copy()
-    if coastal_calibrator is not None and len(test_idx):
-        coastal_eval = coastal_calibrator.transform(coastal_eval)
+    if len(test_idx):
+        coastal_eval = _apply_calibrator(coastal_calibrator, coastal_eval, eval_metadata)
     metrics["logistic_coastal_cells"] = classification_metrics(labels[eval_idx], coastal_eval)
 
     print("Training hierarchical logistic model...", file=sys.stderr, flush=True)
@@ -2289,7 +2455,9 @@ def train_curated_and_export(
         metadata.iloc[valid_idx].reset_index(drop=True),
     )
     metrics["logistic_hierarchical_valid"] = classification_metrics(labels[valid_idx], hierarchical_valid_raw)
-    _, hierarchical_calibrator = _identity_or_calibrated(hierarchical_valid_raw, labels[valid_idx])
+    _, hierarchical_calibrator = _identity_or_calibrated(
+        hierarchical_valid_raw, labels[valid_idx], valid_metadata
+    )
     hierarchical_logistic.calibrator = hierarchical_calibrator
     hierarchical_eval_raw, _ = _predict_hierarchical_logistic_raw(
         hierarchical_logistic,
@@ -2297,18 +2465,18 @@ def train_curated_and_export(
         metadata.iloc[eval_idx].reset_index(drop=True),
     )
     hierarchical_eval = hierarchical_eval_raw.copy()
-    if hierarchical_calibrator is not None and len(test_idx):
-        hierarchical_eval = hierarchical_calibrator.transform(hierarchical_eval)
+    if len(test_idx):
+        hierarchical_eval = _apply_calibrator(hierarchical_calibrator, hierarchical_eval, eval_metadata)
     metrics["logistic_hierarchical"] = classification_metrics(labels[eval_idx], hierarchical_eval)
 
     print("Training hist GBM model...", file=sys.stderr, flush=True)
     tree_classifier = baselines.tree_classifier.fit(features.iloc[train_idx], labels[train_idx])
     tree_valid_raw = tree_classifier.predict_proba(features.iloc[valid_idx])[:, 1]
     metrics["hist_gbm_valid"] = classification_metrics(labels[valid_idx], tree_valid_raw)
-    _, tree_calibrator = _identity_or_calibrated(tree_valid_raw, labels[valid_idx])
+    _, tree_calibrator = _identity_or_calibrated(tree_valid_raw, labels[valid_idx], valid_metadata)
     tree_eval = tree_classifier.predict_proba(features.iloc[eval_idx])[:, 1]
-    if tree_calibrator is not None and len(test_idx):
-        tree_eval = tree_calibrator.transform(tree_eval)
+    if len(test_idx):
+        tree_eval = _apply_calibrator(tree_calibrator, tree_eval, eval_metadata)
     metrics["hist_gbm"] = classification_metrics(labels[eval_idx], tree_eval)
 
     print("Computing stacked ensemble...", file=sys.stderr, flush=True)
@@ -2332,13 +2500,12 @@ def train_curated_and_export(
     )
     metrics["stacked_ensemble_valid"] = classification_metrics(labels[valid_idx], ensemble_valid)
     # calibrated eval preds — used for the test score and for production forecasts
-    _cal = lambda raw, cal: cal.transform(raw) if cal is not None else raw  # noqa: E731
     ensemble_eval = (
         np.stack([
-            _cal(logistic_eval, logistic_calibrator if len(test_idx) else None),
-            _cal(coastal_eval, coastal_calibrator if len(test_idx) else None),
-            _cal(hierarchical_eval, hierarchical_calibrator if len(test_idx) else None),
-            _cal(tree_eval, tree_calibrator if len(test_idx) else None),
+            logistic_eval,
+            coastal_eval,
+            hierarchical_eval,
+            tree_eval,
         ], axis=1)
         @ ensemble_weights
     )

@@ -7,6 +7,7 @@ from app.data.pipeline.features import build_sliding_windows
 from app.ml.training import (
     _blocked_indices,
     _build_forecast_candidates,
+    _compute_local_drivers,
     _fit_coastal_cell_logistic_artifacts,
     _fit_hierarchical_logistic_artifacts,
     _metadata_with_groups,
@@ -15,10 +16,12 @@ from app.ml.training import (
     _promotion_assessment,
     _spatial_holdout_metrics,
     _spatial_backtest_metrics,
+    _identity_or_calibrated,
     _split_conformal_half_width,
     _two_stage_training_plan,
     train_all,
 )
+from app.ml.calibration import HierarchicalProbabilityCalibrator
 
 
 def test_blocked_indices_keep_same_dates_in_same_split():
@@ -48,6 +51,73 @@ def test_blocked_indices_keep_same_dates_in_same_split():
     assert train_dates.isdisjoint(test_dates)
     assert valid_dates.isdisjoint(test_dates)
     assert train_dates | valid_dates | test_dates == set(sample_dates)
+
+
+def test_blocked_indices_handles_timestamp_metadata_from_feature_builder():
+    metadata = pd.DataFrame(
+        {
+            "sample_date": pd.to_datetime(
+                [
+                    "2026-04-01",
+                    "2026-04-02",
+                    "2026-04-03",
+                    "2026-04-04",
+                    "2026-04-05",
+                    "2026-04-06",
+                ]
+            )
+        }
+    )
+
+    train_idx, valid_idx, test_idx = _blocked_indices(metadata)
+
+    assert len(train_idx) > 0
+    assert len(valid_idx) > 0
+    assert len(test_idx) > 0
+    assert len(train_idx) + len(valid_idx) + len(test_idx) == len(metadata)
+
+
+def test_compute_local_drivers_maps_stormwater_features():
+    class StormwaterOnlyClassifier:
+        def predict_proba(self, frame):
+            probs = np.where(frame["nearest_stormwater_outfall_km"].to_numpy() > 0, 0.82, 0.12)
+            return np.column_stack([1 - probs, probs])
+
+    features = pd.DataFrame(
+        {
+            "nearest_stormwater_outfall_km": [0.4],
+            "precip_mm_24h": [0.0],
+        }
+    )
+
+    drivers = _compute_local_drivers(
+        StormwaterOnlyClassifier(),
+        features,
+        baseline_probs=np.array([0.82]),
+    )
+
+    assert any("outfall" in driver for driver in drivers[0])
+
+
+def test_identity_or_calibrated_uses_hierarchical_metadata():
+    probabilities = np.array([0.2, 0.3, 0.4, 0.5, 0.2, 0.3, 0.4, 0.5])
+    labels = np.array([1, 1, 0, 1, 0, 0, 0, 1])
+    metadata = pd.DataFrame(
+        {
+            "county": ["high"] * 4 + ["low"] * 4,
+            "beach_id": ["high-site"] * 4 + ["low-site"] * 4,
+        }
+    )
+
+    calibrated, calibrator = _identity_or_calibrated(probabilities, labels, metadata)
+
+    assert isinstance(calibrator, HierarchicalProbabilityCalibrator)
+    assert len(calibrated) == len(probabilities)
+    high_low = calibrator.transform(
+        np.array([0.3, 0.3]),
+        pd.DataFrame({"county": ["high", "low"], "beach_id": ["high-site", "low-site"]}),
+    )
+    assert high_low[0] > high_low[1]
 
 
 def test_build_forecast_candidates_uses_only_prior_observations():

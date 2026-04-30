@@ -5,6 +5,8 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from app.data.pipeline.stormwater import STORMWATER_NUMERIC_COLUMNS
+
 
 WINDOW_DAYS = 30
 LAGS = (1, 2, 3, 7, 14, 21, 28)
@@ -50,6 +52,10 @@ MARINE_MICROBIOLOGY_NUMERIC_COLUMNS = [
     "is_near_pier",
     "is_near_estuary_mouth",
 ]
+
+# Explicit storm-drain/outfall and expert rain-policy features populated by
+# app.data.pipeline.stormwater.
+STORMWATER_EXPERT_NUMERIC_COLUMNS = STORMWATER_NUMERIC_COLUMNS
 
 PROSPECTIVE_EXOGENOUS_COLUMNS = [
     column for column in BASE_NUMERIC_COLUMNS if column != "enterococcus_value"
@@ -175,6 +181,34 @@ def _rolling_and_spacing_features(enriched: pd.DataFrame) -> pd.DataFrame:
     return pd.concat(feature_frames).reindex(enriched.index) if feature_frames else pd.DataFrame()
 
 
+def _distributed_lag_hydrology_features(enriched: pd.DataFrame) -> pd.DataFrame:
+    frame = pd.DataFrame(index=enriched.index)
+    precip_6h = pd.to_numeric(enriched["precip_mm_6h"], errors="coerce").fillna(0.0).clip(lower=0)
+    precip_24h = pd.to_numeric(enriched["precip_mm_24h"], errors="coerce").fillna(0.0).clip(lower=0)
+    precip_48h = pd.to_numeric(enriched["precip_mm_48h"], errors="coerce").fillna(0.0).clip(lower=0)
+    precip_72h = pd.to_numeric(enriched["precip_mm_72h"], errors="coerce").fillna(0.0).clip(lower=0)
+    precip_7d = pd.to_numeric(enriched["precip_mm_7d"], errors="coerce").fillna(0.0).clip(lower=0)
+
+    increment_0_6h = precip_6h
+    increment_6_24h = (precip_24h - precip_6h).clip(lower=0)
+    increment_24_48h = (precip_48h - precip_24h).clip(lower=0)
+    increment_48_72h = (precip_72h - precip_48h).clip(lower=0)
+    increment_72h_7d = (precip_7d - precip_72h).clip(lower=0)
+    frame["precip_runoff_lag_kernel_7d"] = (
+        increment_0_6h
+        + 0.70 * increment_6_24h
+        + 0.45 * increment_24_48h
+        + 0.25 * increment_48_72h
+        + 0.10 * increment_72h_7d
+    )
+
+    latest = pd.to_numeric(enriched["streamflow_cfs_latest"], errors="coerce").fillna(0.0).clip(lower=0)
+    mean_24h = pd.to_numeric(enriched["streamflow_cfs_mean_24h"], errors="coerce").fillna(0.0).clip(lower=0)
+    max_24h = pd.to_numeric(enriched["streamflow_cfs_max_24h"], errors="coerce").fillna(0.0).clip(lower=0)
+    frame["streamflow_lag_kernel_24h"] = 0.60 * latest + 0.30 * mean_24h + 0.10 * max_24h
+    return frame
+
+
 def add_temporal_features(frame: pd.DataFrame) -> pd.DataFrame:
     enriched = frame.copy()
     missing_base_columns = {
@@ -197,6 +231,11 @@ def add_temporal_features(frame: pd.DataFrame) -> pd.DataFrame:
     }
     if missing_mmb:
         enriched = enriched.assign(**missing_mmb)
+    missing_stormwater = {
+        column: np.nan for column in STORMWATER_EXPERT_NUMERIC_COLUMNS if column not in enriched.columns
+    }
+    if missing_stormwater:
+        enriched = enriched.assign(**missing_stormwater)
 
     for column in ("county", "region", "cdip_station_id", "erddap_source_name"):
         if column not in enriched.columns:
@@ -215,6 +254,7 @@ def add_temporal_features(frame: pd.DataFrame) -> pd.DataFrame:
 
     lagged_features = _exact_lag_features(enriched)
     rolling_features = _rolling_and_spacing_features(enriched)
+    distributed_lag_features = _distributed_lag_hydrology_features(enriched)
 
     missing_indicators = pd.DataFrame(
         {f"{column}_missing": enriched[column].isna().astype(int) for column in BASE_NUMERIC_COLUMNS},
@@ -227,6 +267,7 @@ def add_temporal_features(frame: pd.DataFrame) -> pd.DataFrame:
             seasonal_features,
             lagged_features,
             rolling_features,
+            distributed_lag_features,
             missing_indicators,
         ],
         axis=1,
