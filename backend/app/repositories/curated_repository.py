@@ -26,6 +26,33 @@ from app.schemas.domain import (
     SystemHealthResponse,
 )
 
+OBSERVATION_COLUMNS = [
+    "beach_id",
+    "sample_time",
+    "sample_date",
+    "analyte",
+    "method",
+    "units",
+    "value",
+    "exceeds_stv",
+    "weather",
+    "storm_drain_flow",
+]
+
+BEACH_DAY_RECENT_COLUMNS = [
+    "beach_id",
+    "sample_date",
+    "wave_height_m",
+    "dominant_period_s",
+    "water_temperature_c",
+    "salinity_psu",
+    "weather",
+    "storm_drain_flow",
+    "tidal_height",
+    "surf_height_observed",
+    "turbidity_observed",
+]
+
 
 def _derive_friendly_name(row: object) -> str:
     beach_id = str(row["beach_id"])
@@ -47,6 +74,24 @@ def _safe_float(value: object) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _read_filtered_parquet(path: Path, beach_id: str, columns: list[str]) -> pd.DataFrame:
+    try:
+        available_columns = set(pq.ParquetFile(path).schema.names)
+        read_columns = [column for column in columns if column in available_columns]
+    except Exception:
+        read_columns = columns
+
+    frame = pq.read_table(
+        path,
+        columns=read_columns,
+        filters=[("beach_id", "==", beach_id)],
+    ).to_pandas()
+    for column in columns:
+        if column not in frame.columns:
+            frame[column] = None
+    return frame[columns]
 
 
 class CuratedBeachRepository(BeachRepository):
@@ -74,13 +119,13 @@ class CuratedBeachRepository(BeachRepository):
         path = self.curated_dir / "observations.parquet"
         if not path.exists():
             return pd.DataFrame()
-        return pq.read_table(path, filters=[("beach_id", "==", beach_id)]).to_pandas()
+        return _read_filtered_parquet(path, beach_id, OBSERVATION_COLUMNS)
 
     def _beach_day_for_beach(self, beach_id: str) -> pd.DataFrame:
         path = self.curated_dir / "beach_day.parquet"
         if not path.exists():
             return pd.DataFrame()
-        return pq.read_table(path, filters=[("beach_id", "==", beach_id)]).to_pandas()
+        return _read_filtered_parquet(path, beach_id, BEACH_DAY_RECENT_COLUMNS)
 
     @cached_property
     def forecasts_frame(self) -> pd.DataFrame:
