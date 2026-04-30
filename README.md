@@ -87,3 +87,4 @@ python -m app.ml.training --curated --forecast-date 2026-04-20
 ## Acknowledgement 
 
 - This project is inspired by the project my team attempted to do: https://github.com/SatrunsDream/DataTide
+- Speacial thanks to Allison Sharpe, Stormwater Environmental Specialist at City of San Diego
