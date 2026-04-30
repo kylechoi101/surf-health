@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useState, useMemo } from 'react';
+import Link from 'next/link';
 import { getBeaches, type BeachSummary } from '@/lib/api';
 
 export default function BeachesDirectoryPage() {
@@ -59,7 +60,7 @@ export default function BeachesDirectoryPage() {
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {filtered.map(b => (
-              <a 
+              <Link 
                 key={b.id} 
                 href={`/beaches/${b.id}/`}
                 className="block p-6 bg-muted/30 border border-border/50 rounded-2xl hover:border-primary hover:-translate-y-1 transition-all duration-300 group"
@@ -76,7 +77,7 @@ export default function BeachesDirectoryPage() {
                   </span>
                   <span className="text-muted-foreground group-hover:text-primary transition-colors group-hover:translate-x-1">→</span>
                 </div>
-              </a>
+              </Link>
             ))}
           </div>
         )}
