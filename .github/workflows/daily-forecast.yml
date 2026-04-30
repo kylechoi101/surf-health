@@ -44,8 +44,6 @@ jobs:
           path: |
             data/raw/usgs_streamflow
             data/raw/cnrfc
-            data/raw/ceden_fib_enterococcus_beachwatch_subset_2020-present.csv
-            data/raw/safetoswim_geomeans_2020-present.csv
             data/raw/stormwater
           key: hydro-${{ runner.os }}-v4
           restore-keys: hydro-${{ runner.os }}-
@@ -78,6 +76,7 @@ jobs:
             --advisories-csv /tmp/bw_advisories.csv \
             --merge-ceden \
             --max-ceden-rows 50000 \
+            --force-ceden-fetch \
             --with-external-covariates \
             --with-hydrology \
             --with-solar-wind
