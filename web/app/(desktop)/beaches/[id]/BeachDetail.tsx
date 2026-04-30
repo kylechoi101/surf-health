@@ -1,5 +1,6 @@
 "use client";
 import React, { useEffect, useState } from "react";
+import Link from "next/link";
 import { useParams } from "next/navigation";
 import { getBeaches, getForecast, getObservations, preferredForecastDate, type BeachSummary, type ForecastRecord, type ObservationResponse } from "@/lib/api";
 import { DropRow, SeverityBar, RiskChip } from "@/components/RiskComponents";
@@ -83,9 +84,9 @@ export default function BeachDetailPage() {
           <p className="text-xl text-muted-foreground leading-relaxed max-w-2xl mb-12">
             No forecast is available for {beach.name} on {date}. The model runs each morning — check back after 6 AM PT.
           </p>
-          <a href="/beaches" className="font-mono text-[11px] tracking-widest text-primary border-b border-border/50 hover:border-primary transition-colors pb-0.5">
+          <Link href="/beaches" className="font-mono text-[11px] tracking-widest text-primary border-b border-border/50 hover:border-primary transition-colors pb-0.5">
             ← Back to all beaches
-          </a>
+          </Link>
         </div>
       </main>
     );

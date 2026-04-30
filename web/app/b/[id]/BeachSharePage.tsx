@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { useParams } from "next/navigation";
 import { getBeaches, getForecast, preferredForecastDate, type BeachSummary, type ForecastRecord } from "@/lib/api";
 import { DropRow, SeverityBar } from "@/components/RiskComponents";
@@ -92,7 +93,7 @@ export default function BeachSharePage({ beachId }: BeachSharePageProps) {
   if (notFound || !beach) return (
     <main className="min-h-screen bg-background flex flex-col items-center justify-center gap-6">
       <p className="text-xl text-muted-foreground">Beach not found.</p>
-      <a href="/" className="font-mono text-xs tracking-widest text-primary border-b border-border/50 hover:border-primary transition-colors pb-0.5">← Go to Shorelife</a>
+      <Link href="/" className="font-mono text-xs tracking-widest text-primary border-b border-border/50 hover:border-primary transition-colors pb-0.5">← Go to Shorelife</Link>
     </main>
   );
 

@@ -2,6 +2,7 @@ import React from 'react';
 import { promises as fs } from 'fs';
 import path from 'path';
 import Link from 'next/link';
+import { siteStats } from '@/lib/curated';
 
 function MetricCell({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (
@@ -14,6 +15,10 @@ function MetricCell({ label, value, sub }: { label: string; value: string; sub?:
 }
 
 export default async function CalibrationPage() {
+  const stats = siteStats();
+  const coveragePct = stats.totalStations > 0
+    ? Math.round((stats.modeledStations / stats.totalStations) * 100)
+    : 0;
   let health: Record<string, any> = {};
   try {
     const healthPath = path.join(process.cwd(), '../data/curated/system_health.json');
@@ -50,7 +55,8 @@ export default async function CalibrationPage() {
         <p className="text-xl text-muted-foreground leading-relaxed max-w-3xl mb-14">
           All metrics on this page are read directly from the daily pipeline output. Spatial
           backtests use county-level GroupKFold holdout; the persistence baseline gives a lower
-          bound on skill.
+          bound on skill. The current public forecast covers {stats.modeledStations} of
+          {' '}{stats.totalStations} monitored stations ({coveragePct}%).
         </p>
 
         {/* Production model strip */}
@@ -93,7 +99,9 @@ export default async function CalibrationPage() {
             </div>
             <div className="p-5 bg-muted/30 rounded-xl border border-border/50 text-sm text-muted-foreground leading-relaxed">
               <strong className="text-foreground font-mono text-[11px] mr-1">AUCPR baseline</strong> 
-              — the persistence model (yesterday&apos;s result as today&apos;s prediction) scores ≈ 0.22–0.25 at a 17–21% exceedance base rate. The production model must clear this by a statistically significant margin under the block-bootstrap gate.
+              — the persistence model (yesterday&apos;s result as today&apos;s prediction) scores about
+              {' '}0.172 at the county holdout level and 0.241 at the beach holdout level in the current
+              pipeline snapshot. The production model must clear that margin before promotion.
             </div>
           </div>
         </div>

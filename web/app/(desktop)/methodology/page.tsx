@@ -1,10 +1,15 @@
 import React from 'react';
 import { promises as fs } from 'fs';
 import path from 'path';
+import { siteStats } from '@/lib/curated';
 
 export default async function MethodologyPage() {
   let versionLabel = 'v1.5';
   let dateLabel = 'Apr 2026';
+  const stats = siteStats();
+  const coveragePct = stats.totalStations > 0
+    ? Math.round((stats.modeledStations / stats.totalStations) * 100)
+    : 0;
   try {
     const mvPath = path.join(process.cwd(), '../data/curated/model_version.json');
     const mv = JSON.parse(await fs.readFile(mvPath, 'utf8'));
@@ -25,9 +30,11 @@ export default async function MethodologyPage() {
           How the forecast<br/>is built.
         </h1>
         <p className="text-xl text-muted-foreground leading-relaxed max-w-3xl mb-24">
-          Shorelife models marine enterococcus risk using official California sample history and daily
-          environmental context from nearshore ocean and weather sources. We publish a calibrated
-          exceedance probability, banded into four public-facing risk levels.
+          Shorelife publishes a daily marine enterococcus forecast using official California sample
+          history and nearshore ocean and weather context. Today&apos;s public release covers
+          {' '}{stats.modeledStations} of {stats.totalStations} monitored stations ({coveragePct}% coverage);
+          unsupported stations stay neutral and point back to the latest official sample instead of
+          claiming model confidence.
         </p>
 
         {/* Two-column editorial */}
@@ -45,9 +52,9 @@ export default async function MethodologyPage() {
             <div className="grid sm:grid-cols-2 gap-8">
               {[
                 ['Label policy', 'V1 uses culture-based marine enterococcus only. Freshwater E. coli, total coliform, fecal coliform, and ddPCR stay in the warehouse but outside the pooled forecast label.'],
-                ['Daily forecast', 'We train only on observed sample days, then infer unsampled days from sliding-window history instead of pseudo-labeling the gaps.'],
+                ['Daily forecast', 'The pipeline refreshes once each morning. It is a batch forecast, not a real-time nowcast, and it cannot react to an intra-day spill after publication.'],
                 ['Baselines first', 'Persistence, logistic/linear, and gradient-boosted tree baselines are mandatory. The neural model stays research-only until it clears blocked-time and explicit spatial holdout gates.'],
-                ['Calibration', 'Public-facing bands come from calibrated exceedance probabilities with a stronger penalty on false negatives than false positives.'],
+                ['Calibration', 'Public-facing bands come from calibrated exceedance probabilities. Unsupported stations do not receive a colored risk claim or a fallback model badge on public surfaces.'],
               ].map(([h, b]) => (
                 <div key={h} className="pt-6 border-t border-border/50">
                   <h3 className="text-lg font-medium mb-3 text-foreground">{h}</h3>
@@ -73,8 +80,8 @@ export default async function MethodologyPage() {
             <ul className="space-y-6">
               {[
                 'Forecasts complement official monitoring; they do not replace county advisories.',
-                'Sparse sites may remain in beta mode with wider prediction intervals.',
-                'Heavy storm, sewage, or spill events can outrun any historical statistical model.',
+                'Only a subset of beaches currently has model coverage; the rest should be read as latest-official-sample views, not forecast gaps filled by guesswork.',
+                'Heavy storm, sewage, or spill events can outrun any historical statistical model, especially after the morning publish cutoff.',
                 'LLM explanations summarize the forecast; the numeric risk comes from the ML model.',
               ].map((li, i) => (
                 <li key={i} className="flex gap-4 pt-6 border-t border-dashed border-border/50 text-base text-muted-foreground leading-relaxed">

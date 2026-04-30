@@ -13,7 +13,7 @@ const researchAreas = [
     icon: Microscope,
     title: "Fecal indicator bacteria",
     description:
-      "The production model forecasts Enterococcus exceedance risk using official California sample history and coastal covariates.",
+      "The live daily forecast estimates Enterococcus exceedance risk from official California sample history plus coastal and weather covariates.",
     status: "Active",
     href: "/research",
   },

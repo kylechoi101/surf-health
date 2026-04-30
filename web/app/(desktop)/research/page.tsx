@@ -11,6 +11,9 @@ export default async function ResearchPage() {
   const allBeaches = listBeaches();
   const stats = siteStats();
   const modeledCount = allBeaches.filter((beach) => beach.support_status === 'production').length;
+  const coveragePct = stats.totalStations > 0
+    ? Math.round((modeledCount / stats.totalStations) * 100)
+    : 0;
 
   const model = healthData.model_registry.production_model;
   const prodMetrics = healthData.model_registry.production_metrics ?? {};
@@ -41,8 +44,8 @@ export default async function ResearchPage() {
           Model health &<br/>deployment traceability.
         </h1>
         <p className="text-xl text-muted-foreground leading-relaxed max-w-3xl mb-14">
-          The operator view tracks model registry status, source freshness, and which stations are
-          ready for production versus beta fallback.
+          The operator view tracks production model status, source freshness, and current public
+          coverage. Shorelife is a daily forecast product, not a real-time spill detector.
         </p>
 
         {/* Registry stats */}
@@ -51,7 +54,7 @@ export default async function ResearchPage() {
             ['Production model', model, 'font-light text-xl', ''],
             ['Test AUCPR', testAucpr, 'font-mono text-2xl', ''],
             ['Test Brier', testBrier, 'font-mono text-2xl', ''],
-            ['Coverage', `${modeledCount} / ${stats.totalStations}`, 'font-mono text-2xl', 'modeled / monitored'],
+            ['Coverage', `${modeledCount} / ${stats.totalStations}`, 'font-mono text-2xl', `${coveragePct}% of monitored stations`],
             ['Public release', isEligible, 'font-light text-xl', ''],
           ].map((r, i) => (
             <div key={i} className="bg-muted/30 p-6 md:p-8 flex flex-col justify-center">
@@ -128,7 +131,7 @@ export default async function ResearchPage() {
               <div>
                 <h3 className="text-xl font-light mb-2 text-foreground">Technical Methodology</h3>
                 <p className="text-sm text-muted-foreground leading-relaxed mb-3">
-                  Model design, risk-band calibration, spatial holdout protocol, and known limitations.
+                  Model design, coverage limits, risk-band calibration, spatial holdout protocol, and known limitations.
                 </p>
                 <div className="text-[10px] text-muted-foreground font-mono uppercase tracking-widest">
                   Shorelife Team

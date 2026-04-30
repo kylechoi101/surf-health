@@ -1,4 +1,5 @@
 import Image from "next/image";
+import { siteAsset } from "@/lib/site";
 
 interface ShoreLifeLogoProps {
   size?: number;
@@ -8,7 +9,7 @@ interface ShoreLifeLogoProps {
 export function ShoreLifeLogo({ size = 48, className = "" }: ShoreLifeLogoProps) {
   return (
     <Image
-      src="/images/shorelife-logo.png"
+      src={siteAsset("/images/shorelife-logo.png")}
       alt="ShoreLife Logo - Ocean waves forming an S shape on a beach coastline"
       width={size}
       height={size}

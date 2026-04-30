@@ -2,25 +2,26 @@ import type { Metadata, Viewport } from "next";
 import { Analytics } from "@vercel/analytics/next";
 
 import "./globals.css";
+import { siteAsset } from "@/lib/site";
 
 export const metadata: Metadata = {
   title: "Shorelife | Daily California beach health forecasts",
   description:
     "Daily California beach health forecasts built from official bacteria samples, surf context, and coastal environmental data.",
   applicationName: "Shorelife",
-  metadataBase: new URL("https://kylechoi101.github.io/surf-health"),
+  metadataBase: new URL("https://kylechoi101.github.io"),
   icons: {
     icon: [
       {
-        url: "/icon-light-32x32.png",
+        url: siteAsset("/icon-light-32x32.png"),
         media: "(prefers-color-scheme: light)",
       },
       {
-        url: "/icon-dark-32x32.png",
+        url: siteAsset("/icon-dark-32x32.png"),
         media: "(prefers-color-scheme: dark)",
       },
     ],
-    apple: "/apple-icon.png",
+    apple: siteAsset("/apple-icon.png"),
   },
   openGraph: {
     title: "Shorelife | Daily California beach health forecasts",
