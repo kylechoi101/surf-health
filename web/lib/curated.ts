@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 
+import { getBestEnvMember, getLatestOfficialSampleMember } from "@/lib/mapPresentation";
 import { RiskBand } from "@/lib/riskData";
 
 export interface ForecastData {
@@ -63,6 +64,7 @@ export interface MapSite extends ParentBeach {
   forecast: ForecastData | null;
   env: EnvData | null;
   latest_modeled_beach: Beach | null;
+  latest_official_beach: Beach | null;
 }
 
 export interface SiteStats {
@@ -153,6 +155,8 @@ export function siteForMap(): MapSite[] {
       });
 
     const latestModeledBeach = supportedMembers[0] ?? null;
+    const latestOfficialBeach = getLatestOfficialSampleMember<Beach>(members);
+    const envSourceBeach = latestModeledBeach ?? getBestEnvMember<Beach>(members) ?? latestOfficialBeach;
 
     return {
       ...parent,
@@ -160,8 +164,9 @@ export function siteForMap(): MapSite[] {
       modeled_member_count: supportedMembers.length,
       unsupported_member_count: Math.max(parent.member_beach_ids.length - supportedMembers.length, 0),
       forecast: latestModeledBeach?.forecast ?? null,
-      env: latestModeledBeach?.env ?? null,
+      env: envSourceBeach?.env ?? null,
       latest_modeled_beach: latestModeledBeach,
+      latest_official_beach: latestOfficialBeach,
     };
   });
 }

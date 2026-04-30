@@ -1,8 +1,7 @@
 import Link from "next/link";
 
 import { DropRow, SeverityBar } from "@/components/RiskComponents";
-import { PosterMap } from "@/components/poster-map";
-import { featuredMapSite, siteForMap, siteStats } from "@/lib/curated";
+import { featuredMapSite, siteStats } from "@/lib/curated";
 import { RISK_COPY, RISK_TOKEN } from "@/lib/riskData";
 import {
   formatPacificTimestamp,
@@ -14,7 +13,6 @@ import {
 
 export function HeroSection() {
   const stats = siteStats();
-  const sites = siteForMap();
   const featuredSite = featuredMapSite();
   const forecast = featuredSite.forecast;
   const answerCopy = forecast ? RISK_COPY[forecast.risk_band] : null;
@@ -24,8 +22,7 @@ export function HeroSection() {
   return (
     <section className="site-shell overflow-hidden border-b border-[var(--sl-line)]">
       <div className="mx-auto max-w-7xl px-4 pb-20 pt-10 sm:px-6 sm:pt-14 lg:px-8 lg:pb-24">
-        <div className="grid gap-10 lg:grid-cols-[minmax(0,1.02fr)_minmax(0,0.98fr)] lg:items-start">
-          <div className="max-w-2xl">
+        <div className="max-w-3xl">
             <div className="sl-eyebrow text-[var(--sl-sun-deep)]">
               Daily forecast · {formatPacificTimestamp(stats.latestPublishAt)}
             </div>
@@ -152,9 +149,6 @@ export function HeroSection() {
                 </div>
               ))}
             </div>
-          </div>
-
-          <PosterMap sites={sites} featuredSite={featuredSite} />
         </div>
       </div>
     </section>
