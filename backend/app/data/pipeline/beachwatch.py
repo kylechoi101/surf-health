@@ -110,9 +110,24 @@ def normalize_station_metadata(frame: pd.DataFrame) -> pd.DataFrame:
 
     marine = frame.loc[is_marine_station(frame)].copy()
     marine["beach_id"] = derive_beach_id(marine)
-    marine["name"] = _column(marine, "Station_Name").fillna(_column(marine, "Beach_Name")).fillna(
-        "Unknown Station"
-    )
+    desc = _column(marine, "Station_Description").replace(r"^\s*$", pd.NA, regex=True)
+    st_name = _column(marine, "Station_Name").replace(r"^\s*$", pd.NA, regex=True)
+    b_name = _column(marine, "Beach_Name").replace(r"^\s*$", pd.NA, regex=True)
+
+    def _best_name(d, s, b):
+        d_str = str(d).strip() if pd.notna(d) else ""
+        s_str = str(s).strip() if pd.notna(s) else ""
+        b_str = str(b).strip() if pd.notna(b) else ""
+
+        if d_str and d_str.lower() != b_str.lower() and d_str.lower() != s_str.lower():
+            return d_str
+        if s_str:
+            return s_str
+        if b_str:
+            return b_str
+        return "Unknown Station"
+
+    marine["name"] = [_best_name(d, s, b) for d, s, b in zip(desc, st_name, b_name, strict=False)]
     marine["county"] = _column(marine, "CountyName").fillna(_column(marine, "County")).fillna("Unknown")
     marine["region"] = _column(marine, "Regional Board Name").fillna(_column(marine, "Regional Board"))
     marine["support_status"] = _column(marine, "Status", "Unknown").fillna("Unknown").map(

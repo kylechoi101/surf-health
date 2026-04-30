@@ -170,8 +170,9 @@ def fetch_ceden_datastore_subset(
     try:
         for stn_batch in station_batches:
             offset = 0
+            batch_frames = 0
             while True:
-                limit = batch_size if max_rows is None else min(batch_size, max_rows - len(frames) * batch_size)
+                limit = batch_size if max_rows is None else min(batch_size, max_rows - batch_frames * batch_size)
                 if limit <= 0:
                     break
                 sql = build_ceden_datastore_sql(
@@ -188,6 +189,7 @@ def fetch_ceden_datastore_subset(
                 frame = pd.DataFrame(records)
                 frames.append(frame)
                 offset += len(frame)
+                batch_frames += 1
                 if len(frame) < limit:
                     break
     finally:
