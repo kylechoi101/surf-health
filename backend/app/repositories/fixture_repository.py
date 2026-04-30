@@ -53,6 +53,6 @@ class FixtureBeachRepository(BeachRepository):
         return SystemHealthResponse.model_validate({
             "app_env": "development",
             "active_advisories_count": 5,
+            "repository_mode": "fixture",
             **payload
         })
-

@@ -354,6 +354,10 @@ class ServingSnapshotRepository(BeachRepository):
     def get_system_health(self) -> SystemHealthResponse:
         row = self._fetch_one("select payload from system_health where key = 'health'")
         payload = json.loads(row["payload"]) if row is not None else {}
+        snapshot_row = self._fetch_one(
+            "select payload from system_health where key = 'serving_snapshot'"
+        )
+        snapshot = json.loads(snapshot_row["payload"]) if snapshot_row is not None else None
         active_count = self._fetch_one(
             "select count(*) as count from advisories_recent where status = 'active'"
         )
@@ -378,6 +382,8 @@ class ServingSnapshotRepository(BeachRepository):
                 "app_env": os.getenv("APP_ENV", "development"),
                 "active_advisories_count": int(active_count["count"]) if active_count else 0,
                 "forecast_audit": audit,
+                "repository_mode": "sqlite",
+                "serving_snapshot": snapshot,
                 **payload,
             }
         )
