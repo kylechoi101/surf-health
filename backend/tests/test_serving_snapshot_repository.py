@@ -64,6 +64,8 @@ def _write_curated_inputs(curated_dir):
                 "forecast_date": "2026-04-20",
                 "risk_band": "High",
                 "p_exceed": 0.72,
+                "p_exceed_lower": 0.61,
+                "p_exceed_upper": 0.84,
                 "predicted_log_enterococcus": 2.1,
                 "lower_prediction_interval": 1.3,
                 "upper_prediction_interval": 2.9,
@@ -178,6 +180,8 @@ def test_serving_snapshot_limits_hot_path_rows_and_repository_serves_contract(tm
 
     forecast = repository.get_forecast(beach_id, date(2026, 4, 20))
     assert forecast.risk_band == "High"
+    assert forecast.p_exceed_lower == 0.61
+    assert forecast.p_exceed_upper == 0.84
     assert forecast.environmental_summary.wave_height_m == 1.2
 
     observations = repository.get_observations(beach_id)

@@ -220,6 +220,8 @@ class ServingSnapshotRepository(BeachRepository):
             forecast_date=_parse_date(row.get("forecast_date")),
             risk_band=str(row["risk_band"]),
             p_exceed=float(row["p_exceed"]),
+            p_exceed_lower=_safe_float(row.get("p_exceed_lower")),
+            p_exceed_upper=_safe_float(row.get("p_exceed_upper")),
             predicted_log_enterococcus=_safe_float(row.get("predicted_log_enterococcus")),
             lower_prediction_interval=_safe_float(row.get("lower_prediction_interval")),
             upper_prediction_interval=_safe_float(row.get("upper_prediction_interval")),
