@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -19,6 +20,8 @@ def clean_text(value: object, fallback: str = "") -> str:
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return fallback
     text = str(value).strip()
+    text = re.sub(r"\\+(['\"])", r"\1", text)
+    text = re.sub(r"\s+", " ", text)
     return text or fallback
 
 
