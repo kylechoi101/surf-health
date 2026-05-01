@@ -56,13 +56,13 @@ test("active forecast group count matches the default map coverage", () => {
   assert.equal(getActiveForecastGroupCount([officialOnlySite, lowForecastSite, highForecastSite]), 2);
 });
 
-test("all-sites mode renders official-only sites below modeled markers and keeps the active marker last", () => {
+test("all-sites mode still hides official-only sites and keeps the active marker last", () => {
   assert.deepEqual(
     getMarkerRenderSites(
       [highForecastSite, officialOnlySite, lowForecastSite],
       "all",
       "low-forecast"
     ).map((site) => site.id),
-    ["official-only", "high-forecast", "low-forecast"]
+    ["high-forecast", "low-forecast"]
   );
 });

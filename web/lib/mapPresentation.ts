@@ -65,13 +65,9 @@ export function getInitialMapSelection<T extends MapPresentationSite>(sites: T[]
 
 export function getVisibleMapSites<T extends MapPresentationSite>(
   sites: T[],
-  mode: MapDisplayMode
+  _mode: MapDisplayMode
 ) {
-  if (mode === "forecast") {
-    return sites.filter((site) => hasModeledCoverage(site));
-  }
-
-  return sites;
+  return sites.filter((site) => hasModeledCoverage(site));
 }
 
 function markerPriority(site: MapPresentationSite, activeSiteId?: string | null) {

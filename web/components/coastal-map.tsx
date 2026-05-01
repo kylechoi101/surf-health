@@ -17,14 +17,10 @@ import {
   getMarkerRenderSites,
   getVisibleMapSites,
   hasModeledCoverage,
-  MapDisplayMode,
 } from "@/lib/mapPresentation";
 import { RISK_TOKEN } from "@/lib/riskData";
 import {
-  cn,
-  formatPacificDate,
   formatPercent,
-  formatRelativeSampleDate,
   formatWaveFeet,
   formatWaterFahrenheit,
 } from "@/lib/utils";
@@ -45,13 +41,8 @@ function markerColor(site: MapSite) {
   return RISK_TOKEN[site.forecast.risk_band].c;
 }
 
-function markerOpacity(site: MapSite) {
-  return hasModeledCoverage(site) ? 0.96 : 0.38;
-}
-
 export function CoastalMap({ sites }: { sites: MapSite[] }) {
   const [isMounted, setIsMounted] = useState(false);
-  const [mode, setMode] = useState<MapDisplayMode>("forecast");
   const [selectedSite, setSelectedSite] = useState<MapSite | null>(() =>
     getInitialMapSelection(sites)
   );
@@ -60,10 +51,10 @@ export function CoastalMap({ sites }: { sites: MapSite[] }) {
     zoom: 5,
   });
 
-  const visibleSites = useMemo(() => getVisibleMapSites(sites, mode), [mode, sites]);
+  const visibleSites = useMemo(() => getVisibleMapSites(sites, "forecast"), [sites]);
   const markerSites = useMemo(
-    () => getMarkerRenderSites(sites, mode, selectedSite?.id),
-    [mode, selectedSite?.id, sites]
+    () => getMarkerRenderSites(sites, "forecast", selectedSite?.id),
+    [selectedSite?.id, sites]
   );
   const forecastSiteCount = useMemo(
     () => sites.filter((site) => hasModeledCoverage(site)).length,
@@ -83,8 +74,6 @@ export function CoastalMap({ sites }: { sites: MapSite[] }) {
       return getInitialMapSelection(visibleSites);
     });
   }, [visibleSites]);
-
-  const selectedHasCoverage = selectedSite ? hasModeledCoverage(selectedSite) : false;
 
   return (
     <div className="paper-panel relative h-full min-h-[32rem] overflow-hidden rounded-[1.5rem]">
@@ -126,7 +115,6 @@ export function CoastalMap({ sites }: { sites: MapSite[] }) {
             {markerSites.map((site) => {
               const active = selectedSite?.id === site.id;
               const fill = markerColor(site);
-              const modeled = hasModeledCoverage(site);
 
               return (
                 <Marker
@@ -135,13 +123,13 @@ export function CoastalMap({ sites }: { sites: MapSite[] }) {
                   onClick={() => setSelectedSite(site)}
                 >
                   <g className="cursor-pointer">
-                    {active && <circle r={modeled ? 9 : 7.5} fill={fill} opacity={0.2} />}
+                    {active && <circle r={9} fill={fill} opacity={0.2} />}
                     <circle
-                      r={active ? 4.5 : modeled ? 3 : 2.2}
+                      r={active ? 4.5 : 3}
                       fill={fill}
-                      opacity={markerOpacity(site)}
+                      opacity={0.96}
                       stroke="var(--sl-bone)"
-                      strokeWidth={active ? 1.8 : modeled ? 1.1 : 0.8}
+                      strokeWidth={active ? 1.8 : 1.1}
                     />
                   </g>
                 </Marker>
@@ -158,31 +146,8 @@ export function CoastalMap({ sites }: { sites: MapSite[] }) {
           <div>
             <div className="sl-label text-[var(--sl-muted)]">Map view</div>
             <div className="mt-1 text-sm font-medium text-[var(--sl-navy)]">
-              {mode === "forecast"
-                ? `${forecastSiteCount} forecast groups`
-                : `${sites.length} grouped sites`}
+              {forecastSiteCount} forecast groups
             </div>
-          </div>
-
-          <div className="flex rounded-full border border-[var(--sl-line)] bg-[var(--sl-bone)] p-1 text-xs font-semibold uppercase tracking-[0.16em] text-[var(--sl-muted)]">
-            {[
-              { value: "forecast" as const, label: "Forecasts" },
-              { value: "all" as const, label: "All sites" },
-            ].map((item) => (
-              <button
-                key={item.value}
-                type="button"
-                onClick={() => setMode(item.value)}
-                className={cn(
-                  "rounded-full px-3 py-2 transition",
-                  mode === item.value
-                    ? "bg-[var(--sl-navy)] text-[var(--sl-bone)]"
-                    : "text-[var(--sl-muted)] hover:text-[var(--sl-navy)]"
-                )}
-              >
-                {item.label}
-              </button>
-            ))}
           </div>
         </div>
 
@@ -191,7 +156,7 @@ export function CoastalMap({ sites }: { sites: MapSite[] }) {
             { label: "Low", color: RISK_TOKEN.Low.c },
             { label: "Moderate", color: RISK_TOKEN.Moderate.c },
             { label: "High", color: RISK_TOKEN.High.c },
-            { label: "Sample only", color: "rgba(94, 107, 115, 0.9)" },
+            { label: "Very High", color: RISK_TOKEN["Very High"].c },
           ].map((item) => (
             <div key={item.label} className="flex min-w-0 items-center gap-2">
               <span
@@ -223,7 +188,7 @@ export function CoastalMap({ sites }: { sites: MapSite[] }) {
             <div>
               <div className="sl-label text-[var(--sl-muted)]">Risk</div>
               <div className="mt-2 font-medium text-[var(--sl-ink)]">
-                {selectedSite.forecast ? selectedSite.forecast.risk_band : "Sample only"}
+                {selectedSite.forecast?.risk_band}
               </div>
             </div>
             <div>
@@ -246,30 +211,13 @@ export function CoastalMap({ sites }: { sites: MapSite[] }) {
             </div>
           </div>
 
-          {selectedHasCoverage && selectedSite.latest_modeled_beach ? (
+          {selectedSite.latest_modeled_beach && (
             <Link
               href={`/beaches/${selectedSite.latest_modeled_beach.id}`}
               className="sl-label mt-5 inline-flex items-center rounded-full bg-[var(--sl-navy)] px-4 py-2 text-[var(--sl-bone)]"
             >
               Open forecast beach
             </Link>
-          ) : (
-            <div className="mt-5 rounded-[0.75rem] border border-[var(--sl-line)] bg-[var(--sl-ecru-deep)] px-4 py-3 text-sm text-[var(--sl-muted)]">
-              <div className="font-medium text-[var(--sl-ink)]">
-                {formatRelativeSampleDate(selectedSite.latest_official_sample_at)}
-              </div>
-              <div className="mt-1">
-                Latest official sample: {formatPacificDate(selectedSite.latest_official_sample_at)}
-              </div>
-              {selectedSite.latest_official_beach && (
-                <Link
-                  href={`/beaches/${selectedSite.latest_official_beach.id}`}
-                  className="sl-label mt-3 inline-flex text-[var(--sl-navy)]"
-                >
-                  Open sample beach
-                </Link>
-              )}
-            </div>
           )}
         </div>
       )}

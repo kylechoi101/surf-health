@@ -3,6 +3,7 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import Link from 'next/link';
 import { getBeaches, type BeachSummary } from '@/lib/api';
+import { filterModeledBeaches } from '@/lib/coverage';
 
 export default function BeachesDirectoryPage() {
   const [beaches, setBeaches] = useState<BeachSummary[]>([]);
@@ -15,14 +16,12 @@ export default function BeachesDirectoryPage() {
   }, []);
 
   const counties = useMemo(() => {
-    const supportedBeaches = beaches.filter(b => b.support_status !== "unsupported");
-    const set = new Set(supportedBeaches.map(b => b.county));
+    const set = new Set(filterModeledBeaches(beaches).map(b => b.county));
     return ["All", ...Array.from(set).sort()];
   }, [beaches]);
 
   const filtered = useMemo(() => {
-    return beaches.filter(b => {
-      if (b.support_status === "unsupported") return false;
+    return filterModeledBeaches(beaches).filter(b => {
       const matchesSearch = b.name.toLowerCase().includes(search.toLowerCase()) || 
                            b.county.toLowerCase().includes(search.toLowerCase());
       const matchesCounty = selectedCounty === "All" || b.county === selectedCounty;

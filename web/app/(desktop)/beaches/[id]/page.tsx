@@ -1,8 +1,9 @@
 import { listBeaches } from "@/lib/curated";
+import { filterModeledBeaches } from "@/lib/coverage";
 import BeachDetail from "./BeachDetail";
 
 export async function generateStaticParams() {
-  return listBeaches().map((beach) => ({
+  return filterModeledBeaches(listBeaches()).map((beach) => ({
     id: beach.id,
   }));
 }

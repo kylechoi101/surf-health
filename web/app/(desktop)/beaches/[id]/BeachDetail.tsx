@@ -3,6 +3,7 @@ import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { getBeaches, getForecast, getObservations, preferredForecastDate, type BeachSummary, type ForecastRecord, type ObservationResponse } from "@/lib/api";
+import { findModeledBeach } from "@/lib/coverage";
 import { DropRow, SeverityBar, RiskChip } from "@/components/RiskComponents";
 import { RISK_COPY, RISK_TOKEN } from "@/lib/riskData";
 import { Skeleton, SkeletonCard } from "@/components/Skeleton";
@@ -36,7 +37,7 @@ export default function BeachDetailPage() {
     const date = preferredForecastDate();
 
     Promise.all([
-      getBeaches().then(bs => bs.find(b => b.id === bid) || null),
+      getBeaches().then(bs => findModeledBeach(bs, bid)),
       getForecast(bid, date).catch(() => null),
       getObservations(bid).catch(() => null),
     ]).then(([b, f, o]) => {
@@ -92,14 +93,12 @@ export default function BeachDetailPage() {
     );
   }
 
-  const isUnsupported = beach.support_status === 'unsupported';
   const band = forecast.risk_band;
-  // Fallback to Tailwind-like styles for unsupported
-  const cardBgClass = isUnsupported ? 'bg-muted/30' : RISK_TOKEN[band]?.bgClass || 'bg-muted/30';
-  const cardBorderClass = isUnsupported ? 'border-border/50' : RISK_TOKEN[band]?.borderClass || 'border-border/50';
-  const cardTextClass = isUnsupported ? 'text-muted-foreground' : RISK_TOKEN[band]?.textClass || 'text-foreground';
+  const cardBgClass = RISK_TOKEN[band]?.bgClass || 'bg-muted/30';
+  const cardBorderClass = RISK_TOKEN[band]?.borderClass || 'border-border/50';
+  const cardTextClass = RISK_TOKEN[band]?.textClass || 'text-foreground';
   
-  const copy = isUnsupported ? { head: "No model coverage", sub: "This beach is not in Shorelife's modeled coverage yet. Use the latest official sample as the primary signal." } : RISK_COPY[band];
+  const copy = RISK_COPY[band];
   const env = forecast?.environmental_summary;
   
   const prevEnv = obs?.recent_environment && obs.recent_environment.length > 1 ? obs.recent_environment[1] : null;
@@ -150,7 +149,7 @@ export default function BeachDetailPage() {
             </h1>
           </div>
           <div className="text-left md:text-right">
-            {!isUnsupported && <RiskChip band={band}/>}
+            <RiskChip band={band}/>
             <div className="mt-3 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
               LAT {beach.geometry.latitude.toFixed(3)} · LON {Math.abs(beach.geometry.longitude).toFixed(3)}
             </div>
@@ -161,20 +160,12 @@ export default function BeachDetailPage() {
           <div>
             {/* Main Risk Card */}
             <div className={`rounded-3xl p-8 md:p-10 border ${cardBgClass} ${cardBorderClass}`}>
-              {isUnsupported ? (
-                <div className="flex items-center gap-3">
-                  <div className={`font-mono text-xs tracking-[0.2em] font-semibold uppercase ${cardTextClass}`}>
-                    Official sample only
-                  </div>
+              <div className="flex items-center gap-3">
+                <DropRow band={band} size={18}/>
+                <div className={`font-mono text-xs tracking-[0.2em] font-semibold uppercase ${cardTextClass}`}>
+                  {band} · Forecast
                 </div>
-              ) : (
-                <div className="flex items-center gap-3">
-                  <DropRow band={band} size={18}/>
-                  <div className={`font-mono text-xs tracking-[0.2em] font-semibold uppercase ${cardTextClass}`}>
-                    {band} · Forecast
-                  </div>
-                </div>
-              )}
+              </div>
               <div className={`text-6xl sm:text-7xl md:text-[5.5rem] leading-[0.9] mt-8 mb-6 font-light tracking-tight ${cardTextClass}`}>
                 {copy.head}
               </div>
@@ -183,25 +174,16 @@ export default function BeachDetailPage() {
               </p>
               
               <div className={`mt-10 pt-6 border-t border-dashed ${cardBorderClass}`}>
-                {isUnsupported ? (
-                  <div className={`flex flex-wrap justify-between gap-3 font-mono text-[10px] uppercase tracking-widest opacity-80 ${cardTextClass}`}>
-                    <span>Latest official sample</span>
-                    <span>{beach.latest_official_sample_at ? new Date(beach.latest_official_sample_at).toLocaleDateString() : 'Unknown'}</span>
-                  </div>
-                ) : (
-                  <>
-                    <SeverityBar band={band} width="100%" height={8}/>
-                    <div className={`flex justify-between items-center mt-4 font-mono text-[10px] uppercase tracking-widest opacity-80 ${cardTextClass}`}>
-                      <span>Exceedance chance: {forecast ? Math.round(forecast.p_exceed * 100) : '--'}%</span>
-                      <span>Threshold: 104 CFU</span>
-                    </div>
-                  </>
-                )}
+                <SeverityBar band={band} width="100%" height={8}/>
+                <div className={`flex justify-between items-center mt-4 font-mono text-[10px] uppercase tracking-widest opacity-80 ${cardTextClass}`}>
+                  <span>Exceedance chance: {forecast ? Math.round(forecast.p_exceed * 100) : '--'}%</span>
+                  <span>Threshold: 104 CFU</span>
+                </div>
               </div>
             </div>
 
             {/* Forecast Drivers */}
-            {!isUnsupported && forecast && forecast.top_drivers.length > 0 && (
+            {forecast && forecast.top_drivers.length > 0 && (
               <div className="mt-16">
                 <h2 className="text-2xl font-light text-foreground mb-6">Model drivers</h2>
                 <div className="flex flex-col gap-3">

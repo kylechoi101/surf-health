@@ -223,7 +223,7 @@ export function PosterMap({
           <div className="sl-label text-[var(--sl-muted)]">{featuredSite.county} County</div>
           <h4 className="mt-2 text-xl font-medium text-[var(--sl-navy)]">{featuredSite.name}</h4>
           <div className="mt-3 flex items-center gap-3">
-            {featuredSite.forecast ? (
+            {featuredSite.forecast && (
               <>
                 <DropRow band={featuredSite.forecast.risk_band} size={12} />
                 <div className="sl-label text-[var(--sl-navy)]">{featuredSite.forecast.risk_band}</div>
@@ -231,8 +231,6 @@ export function PosterMap({
                   {formatPercent(featuredSite.forecast.p_exceed)} exceedance
                 </div>
               </>
-            ) : (
-              <div className="sl-label text-[var(--sl-muted)]">No model coverage yet</div>
             )}
           </div>
           <div className="mt-4 flex items-center justify-between border-t border-[var(--sl-line-soft)] pt-3">

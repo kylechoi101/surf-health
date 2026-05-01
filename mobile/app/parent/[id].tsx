@@ -1,12 +1,18 @@
 import { useEffect, useState } from "react";
-import { View, Text, TouchableOpacity, ScrollView, StyleSheet, ActivityIndicator } from "react-native";
+import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import {
-  getParentBeaches, getBeaches, getForecast, todayLA,
-  type ParentBeachSummary, type BeachSummary, type ForecastRecord,
+  getBeaches,
+  getForecast,
+  getParentBeaches,
+  todayLA,
+  type BeachSummary,
+  type ForecastRecord,
+  type ParentBeachSummary,
 } from "../../lib/api";
-import { RISK_COLORS, riskAdvice, riskHead, daysSince } from "../../lib/utils";
+import { filterModeledBeaches, findModeledBeach } from "../../lib/coverage";
+import { daysSince, RISK_COLORS, riskAdvice, riskHead } from "../../lib/utils";
 import { DropRow, SeverityBar, type RiskBand } from "../../components/RiskSystem";
 
 export default function ParentBeachScreen() {
@@ -20,22 +26,27 @@ export default function ParentBeachScreen() {
   useEffect(() => {
     if (!id) return;
     const today = todayLA();
-    getParentBeaches().then(async (parents) => {
-      const p = parents.find((pb) => pb.id === id) ?? null;
-      setParent(p);
-      if (!p) return;
-      const [beaches, forecasts] = await Promise.all([
-        getBeaches(),
-        Promise.all(
-          p.member_beach_ids.map(async (mid) => {
-            const f = await getForecast(mid, today).catch(() => null);
-            return [mid, f] as [string, ForecastRecord | null];
+
+    getParentBeaches()
+      .then(async (parents) => {
+        const nextParent = findModeledBeach(parents, id);
+        setParent(nextParent);
+        if (!nextParent) return;
+
+        const modeledMembers = filterModeledBeaches(await getBeaches()).filter((beach) =>
+          nextParent.member_beach_ids.includes(beach.id)
+        );
+        const forecasts = await Promise.all(
+          modeledMembers.map(async (beach) => {
+            const forecast = await getForecast(beach.id, today).catch(() => null);
+            return [beach.id, forecast] as [string, ForecastRecord | null];
           })
-        ),
-      ]);
-      setMemberBeaches(beaches.filter((b) => p.member_beach_ids.includes(b.id)));
-      setMemberForecasts(Object.fromEntries(forecasts));
-    }).finally(() => setLoading(false));
+        );
+
+        setMemberBeaches(modeledMembers);
+        setMemberForecasts(Object.fromEntries(forecasts));
+      })
+      .finally(() => setLoading(false));
   }, [id]);
 
   if (loading) {
@@ -57,14 +68,12 @@ export default function ParentBeachScreen() {
     );
   }
 
-  const isUnsupported = parent.support_status === "unsupported";
   const band = (parent.risk_band ?? "Moderate") as RiskBand;
-  const colors = isUnsupported ? { hero: ["#64748b", "#475569"], deep: "#334155", bg: "#e2e8f0" } : (RISK_COLORS[band] ?? RISK_COLORS.Moderate);
+  const colors = RISK_COLORS[band] ?? RISK_COLORS.Moderate;
 
   return (
     <View style={{ flex: 1 }}>
       <ScrollView contentContainerStyle={{ paddingBottom: 48 }}>
-        {/* Hero */}
         <View style={[s.hero, { backgroundColor: colors.hero[0] }]}>
           <SafeAreaView edges={["top"]}>
             <View style={s.navRow}>
@@ -75,23 +84,19 @@ export default function ParentBeachScreen() {
             <Text style={s.heroSub}>{parent.county} County · {parent.region}</Text>
             <Text style={s.heroTitle}>{parent.name}</Text>
             <View style={s.heroMeta}>
-              <Text style={s.heroMetaText}>{parent.station_count} monitoring station{parent.station_count !== 1 ? "s" : ""}</Text>
-              {parent.risk_band && !isUnsupported && (
+              <Text style={s.heroMetaText}>
+                {memberBeaches.length} forecast station{memberBeaches.length !== 1 ? "s" : ""}
+              </Text>
+              {parent.risk_band && (
                 <View style={s.riskPill}>
                   <Text style={s.riskPillText}>{parent.risk_band} risk</Text>
                 </View>
               )}
             </View>
-            {parent.p_exceed != null && !isUnsupported && (
-              <Text style={s.heroAdvice}>{riskAdvice(band)}</Text>
-            )}
-            {isUnsupported && (
-              <Text style={s.heroAdvice}>No model coverage yet — showing latest official sample.</Text>
-            )}
+            {parent.p_exceed != null && <Text style={s.heroAdvice}>{riskAdvice(band)}</Text>}
           </SafeAreaView>
         </View>
 
-        {/* Advisory banner */}
         {parent.has_active_advisory && (
           <View style={{ padding: 16, paddingBottom: 0 }}>
             <View style={s.advisoryCard}>
@@ -103,8 +108,7 @@ export default function ParentBeachScreen() {
           </View>
         )}
 
-        {/* Aggregate risk */}
-        {parent.p_exceed != null && !isUnsupported && (
+        {parent.p_exceed != null && (
           <View style={{ padding: 16, paddingBottom: 0 }}>
             <Text style={s.sectionLabel}>Overall forecast</Text>
             <View style={[s.riskBanner, { backgroundColor: colors.bg }]}>
@@ -115,48 +119,53 @@ export default function ParentBeachScreen() {
                     <Text style={[s.riskAdviceText, { color: colors.deep }]}>{riskAdvice(band)}</Text>
                   </View>
                   <View style={{ alignItems: "flex-end", gap: 6 }}>
-                    <DropRow band={band as RiskBand} size={14} />
+                    <DropRow band={band} size={14} />
                     <Text style={[s.pctBig, { color: colors.deep }]}>
-                      {Math.round(parent.p_exceed * 100)}<Text style={{ fontSize: 14 }}>%</Text>
+                      {Math.round(parent.p_exceed * 100)}
+                      <Text style={{ fontSize: 14 }}>%</Text>
                     </Text>
                     <Text style={[s.pctSub, { color: colors.deep }]}>exceed chance</Text>
                   </View>
                 </View>
                 <View style={{ marginTop: 12 }}>
-                  <SeverityBar band={band as RiskBand} height={6} />
+                  <SeverityBar band={band} height={6} />
                 </View>
               </View>
             </View>
           </View>
         )}
 
-        {/* Station list */}
-        <View style={{ padding: 16, paddingTop: parent.p_exceed != null && !isUnsupported ? 16 : 16 }}>
-          <Text style={s.sectionLabel}>Monitoring stations</Text>
+        <View style={{ padding: 16, paddingTop: 16 }}>
+          <Text style={s.sectionLabel}>Forecast stations</Text>
           <View style={s.stationCard}>
-            {parent.member_beach_ids.map((mid, i) => {
-              const b = memberBeaches.find((bch) => bch.id === mid);
-              const f = memberForecasts[mid];
-              const isMemUnsupported = b?.support_status === "unsupported";
-              const stBand = f?.risk_band ?? null;
-              const stColors = stBand && !isMemUnsupported ? (RISK_COLORS[stBand] ?? RISK_COLORS.Moderate) : null;
-              const ds = b ? daysSince(b.latest_official_sample_at) : null;
+            {memberBeaches.map((beach, index) => {
+              const forecast = memberForecasts[beach.id];
+              const stationBand = forecast?.risk_band ?? null;
+              const stationColors = stationBand ? RISK_COLORS[stationBand] ?? RISK_COLORS.Moderate : null;
+              const sampleAge = daysSince(beach.latest_official_sample_at);
+
               return (
                 <TouchableOpacity
-                  key={mid}
-                  onPress={() => router.push(`/beach/${mid}` as any)}
-                  style={[s.stationRow, i > 0 && { borderTopWidth: 1, borderTopColor: "#f1f5f9" }]}
+                  key={beach.id}
+                  onPress={() => router.push(`/beach/${beach.id}` as any)}
+                  style={[s.stationRow, index > 0 && { borderTopWidth: 1, borderTopColor: "#f1f5f9" }]}
                 >
-                  <View style={[s.stationDot, { backgroundColor: isMemUnsupported ? "#94a3b8" : (stColors?.hero[0] ?? "#94a3b8") }]} />
+                  <View style={[s.stationDot, { backgroundColor: stationColors?.hero[0] ?? "#94a3b8" }]} />
                   <View style={{ flex: 1 }}>
-                    <Text style={s.stationName}>{b?.name ?? mid}</Text>
+                    <Text style={s.stationName}>{beach.name}</Text>
                     <Text style={s.stationSub}>
-                      {isMemUnsupported ? "No model coverage" : (f ? `${Math.round(f.p_exceed * 100)}% exceed chance` : "Forecast unavailable")}
-                      {ds != null ? ` · sampled ${ds === 0 ? "today" : ds === 1 ? "yesterday" : `${ds}d ago`}` : ""}
+                      {forecast ? `${Math.round(forecast.p_exceed * 100)}% exceed chance` : "Forecast unavailable"}
+                      {sampleAge != null
+                        ? ` · sampled ${
+                            sampleAge === 0 ? "today" : sampleAge === 1 ? "yesterday" : `${sampleAge}d ago`
+                          }`
+                        : ""}
                     </Text>
                   </View>
-                  {stBand && !isMemUnsupported && (
-                    <Text style={[s.stationRisk, { color: stColors?.hero[0] ?? "#64748b" }]}>{stBand}</Text>
+                  {stationBand && (
+                    <Text style={[s.stationRisk, { color: stationColors?.hero[0] ?? "#64748b" }]}>
+                      {stationBand}
+                    </Text>
                   )}
                   <Text style={s.chevron}>›</Text>
                 </TouchableOpacity>
@@ -186,7 +195,6 @@ const s = StyleSheet.create({
   advisoryBody: { color: "#991b1b", marginTop: 4, fontSize: 15, lineHeight: 22 },
   sectionLabel: { fontSize: 11, fontWeight: "700", color: "#64748b", textTransform: "uppercase", letterSpacing: 1, marginBottom: 10 },
   riskBanner: { borderRadius: 18, padding: 16, flexDirection: "row", alignItems: "center", gap: 12 },
-  riskIcon: { width: 44, height: 44, borderRadius: 14, alignItems: "center", justifyContent: "center" },
   riskBandText: { fontSize: 18, fontWeight: "700" },
   riskAdviceText: { fontSize: 12, marginTop: 3, lineHeight: 17 },
   pctBig: { fontSize: 26, fontWeight: "700", lineHeight: 30 },

@@ -4,6 +4,7 @@ import { useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import * as Location from "expo-location";
 import { getParentBeaches, getSystemHealth, type ParentBeachSummary, type SystemHealthResponse } from "../../lib/api";
+import { filterModeledBeaches } from "../../lib/coverage";
 import { RISK_COLORS } from "../../lib/utils";
 import { DropRow, SeverityBar, RISK_COPY, type RiskBand } from "../../components/RiskSystem";
 
@@ -35,7 +36,7 @@ export default function HomeTab() {
       getParentBeaches(),
       getSystemHealth().catch(() => null),
     ]).then(([bs, h]) => {
-      setBeaches(bs);
+      setBeaches(filterModeledBeaches(bs));
       setHealth(h);
     }).finally(() => setLoading(false));
 

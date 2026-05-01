@@ -44,7 +44,7 @@ export default function LocationScreen({ beaches }: { beaches: BeachSummary[] })
           <span className="opacity-70 font-light block mt-1">—before you paddle out.</span>
         </h1>
         <p className="text-[15px] opacity-80 mt-4 leading-relaxed max-w-[300px]">
-          Daily bacteria + surf forecast for 290+ California beaches.
+          Daily bacteria + surf forecast for forecast-ready California beaches.
         </p>
       </div>
 

@@ -3,7 +3,8 @@ import { View, Text, TouchableOpacity, ScrollView, StyleSheet, ActivityIndicator
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { getBeaches, getForecast, todayLA, type BeachSummary, type ForecastRecord } from "../../lib/api";
-import { riskVerdict, riskAdvice, riskHead, RISK_COLORS, mToFt, cToF, fmtPeriod, fmtUv } from "../../lib/utils";
+import { findModeledBeach } from "../../lib/coverage";
+import { riskAdvice, riskHead, RISK_COLORS, mToFt, cToF, fmtPeriod, fmtUv } from "../../lib/utils";
 import { DropRow, SeverityBar, type RiskBand } from "../../components/RiskSystem";
 
 export default function BeachHome() {
@@ -16,7 +17,7 @@ export default function BeachHome() {
   useEffect(() => {
     if (!id) return;
     Promise.all([
-      getBeaches().then((bs) => bs.find((b) => b.id === id) ?? null),
+      getBeaches().then((bs) => findModeledBeach(bs, id)),
       getForecast(id, todayLA()).catch(() => null),
     ]).then(([b, f]) => {
       setBeach(b);
@@ -43,9 +44,8 @@ export default function BeachHome() {
     );
   }
 
-  const isUnsupported = beach.support_status === "unsupported";
   const band = (forecast?.risk_band ?? "Moderate") as RiskBand;
-  const colors = isUnsupported ? { hero: ["#64748b", "#475569"], deep: "#334155" } : (RISK_COLORS[band] ?? RISK_COLORS.Moderate);
+  const colors = RISK_COLORS[band] ?? RISK_COLORS.Moderate;
   const env = forecast?.environmental_summary;
 
   async function onShare() {
@@ -77,35 +77,26 @@ export default function BeachHome() {
             {/* Big answer */}
             <View style={s.answerBlock}>
               <Text style={s.answerLabel}>Can I swim today?</Text>
-              {!isUnsupported && forecast && forecast.forecast_age_hours !== undefined && forecast.forecast_age_hours > 24 && (
+              {forecast && forecast.forecast_age_hours !== undefined && forecast.forecast_age_hours > 24 && (
                 <View style={s.staleBadge}>
                   <Text style={{ fontSize: 11, fontWeight: "600", color: "rgba(255,255,255,0.85)" }}>
                     Forecast is {Math.floor(forecast.forecast_age_hours / 24)}d old
                   </Text>
                 </View>
               )}
-              {isUnsupported ? (
-                <>
-                  <Text style={[s.verdict, { fontSize: 24, marginTop: 8 }]}>No model coverage yet</Text>
-                  <Text style={s.advice}>Showing latest official sample. Treat uncertainty seriously.</Text>
-                </>
-              ) : (
-                <>
-                  <Text style={s.verdict}>{riskHead(band)}</Text>
-                  <Text style={s.advice}>{riskAdvice(band)}</Text>
-                  <View style={s.dropSeverityRow}>
-                    <DropRow band={band} size={16} />
-                    <View style={{ flex: 1, marginLeft: 12 }}>
-                      <SeverityBar band={band} height={5} />
-                    </View>
-                  </View>
-                </>
-              )}
+              <Text style={s.verdict}>{riskHead(band)}</Text>
+              <Text style={s.advice}>{riskAdvice(band)}</Text>
+              <View style={s.dropSeverityRow}>
+                <DropRow band={band} size={16} />
+                <View style={{ flex: 1, marginLeft: 12 }}>
+                  <SeverityBar band={band} height={5} />
+                </View>
+              </View>
             </View>
 
             {/* Stat tiles */}
             <View style={s.stats}>
-              <StatTile icon="🧫" label="Bacteria" value={isUnsupported ? "—" : (forecast ? `${Math.round(forecast.p_exceed * 100)}%` : "—")} sub={isUnsupported ? "no forecast" : "exceed chance"} />
+              <StatTile icon="🧫" label="Bacteria" value={forecast ? `${Math.round(forecast.p_exceed * 100)}%` : "—"} sub="exceed chance" />
               <StatTile icon="🌊" label="Surf" value={mToFt(env?.wave_height_m)} sub={fmtPeriod(env?.dominant_period_s) || "—"} />
               <StatTile icon="🌡" label="Water" value={cToF(env?.water_temperature_c)} sub={env?.uv_index != null ? `UV ${fmtUv(env.uv_index)}` : "—"} />
             </View>
@@ -120,7 +111,7 @@ export default function BeachHome() {
         </View>
 
         {/* Drivers preview */}
-        {!isUnsupported && forecast && forecast.top_drivers.length > 0 && (
+        {forecast && forecast.top_drivers.length > 0 && (
           <View style={s.section}>
             <Text style={s.sectionLabel}>Key factors</Text>
             {forecast.top_drivers.slice(0, 3).map((d, i) => (
@@ -140,7 +131,7 @@ export default function BeachHome() {
         {forecast && (
           <View style={{ padding: 20, paddingTop: 8 }}>
             <Text style={{ fontSize: 11, color: "#94a3b8", lineHeight: 17 }}>
-              {isUnsupported ? "Model: None (latest official sample) · " : `Model: ${forecast.model_version} · `}This is a forecast, not a lab result. Treat uncertainty seriously if you have a cut or weaker immune system.
+              Model: {forecast.model_version} · This is a forecast, not a lab result. Treat uncertainty seriously if you have a cut or weaker immune system.
             </Text>
           </View>
         )}

@@ -1,15 +1,11 @@
 import { Metadata } from "next";
 import BeachSharePage from "./BeachSharePage";
 import { listBeaches } from "@/lib/curated";
+import { filterModeledBeaches, findModeledBeach } from "@/lib/coverage";
 import { RISK_COPY } from "@/lib/riskData";
 
-const UNSUPPORTED_SHARE_COPY = {
-  head: "No model coverage",
-  sub: "Showing the latest official sample instead of a calibrated Shorelife forecast.",
-};
-
 export async function generateStaticParams() {
-  return listBeaches().map((beach) => ({
+  return filterModeledBeaches(listBeaches()).map((beach) => ({
     id: beach.id,
   }));
 }
@@ -17,16 +13,13 @@ export async function generateStaticParams() {
 export async function generateMetadata(props: { params: Promise<{ id: string }> }): Promise<Metadata> {
   const params = await props.params;
   const id = params.id;
-  const beach = listBeaches().find((candidate) => candidate.id === id);
+  const beach = findModeledBeach(listBeaches(), id);
   if (!beach) {
     return { title: "Beach not found · Shorelife" };
   }
 
-  const isUnsupported = beach.support_status === "unsupported";
   const band = beach.forecast?.risk_band || "Moderate";
-  const copy = isUnsupported
-    ? UNSUPPORTED_SHARE_COPY
-    : beach.forecast
+  const copy = beach.forecast
       ? RISK_COPY[band]
       : {
           head: "Forecast unavailable",

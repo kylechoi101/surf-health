@@ -15,16 +15,14 @@ export function MapSection() {
               Grouped sites across the California coast.
             </h2>
             <p className="mt-5 text-lg leading-8 text-[var(--sl-muted)]">
-              The public map opens on {stats.activeForecastGroups} forecast-ready coast groups.
-              Markers show the latest modeled risk where coverage exists; the All sites toggle keeps
-              official-sample-only groups available without making unsupported forecast claims.
+              The public map shows {stats.activeForecastGroups} forecast-ready coast groups.
+              Markers focus on the latest modeled risk so every visible site has active coverage.
             </p>
           </div>
 
-          <div className="grid gap-4 sm:grid-cols-3">
+          <div className="grid gap-4 sm:grid-cols-2">
             {[
               { value: stats.activeForecastGroups, label: "forecast groups shown" },
-              { value: stats.sampleOnlyGroups, label: "sample-only groups optional" },
               {
                 value: `${Math.round(stats.groupedForecastCoverage * 100)}%`,
                 label: "grouped coast coverage",

@@ -86,7 +86,7 @@ export function HeroSection() {
                   </div>
                 ) : (
                   <div className="rounded-[1.5rem] border border-[var(--sl-line)] bg-[var(--sl-ecru-deep)] px-4 py-4 text-sm text-[var(--sl-muted)]">
-                    No model coverage yet
+                    Forecast unavailable
                   </div>
                 )}
               </div>
@@ -138,7 +138,7 @@ export function HeroSection() {
             <div className="mt-8 grid gap-4 sm:grid-cols-3">
               {[
                 { value: stats.activeForecastGroups, label: "forecast groups shown" },
-                { value: stats.sampleOnlyGroups, label: "sample-only groups optional" },
+                { value: stats.modeledStations, label: "modeled stations" },
                 {
                   value: `${Math.round(stats.groupedForecastCoverage * 100)}%`,
                   label: "grouped coast coverage",

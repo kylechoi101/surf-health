@@ -4,6 +4,7 @@ import { useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import MapView, { Marker, PROVIDER_DEFAULT } from "react-native-maps";
 import { getBeaches, type BeachSummary } from "../../lib/api";
+import { filterModeledBeaches } from "../../lib/coverage";
 
 const CA_REGION = {
   latitude: 36.5,
@@ -20,7 +21,7 @@ export default function MapTab() {
   const mapRef = useRef<MapView>(null);
 
   useEffect(() => {
-    getBeaches().then(setBeaches).finally(() => setLoading(false));
+    getBeaches().then((items) => setBeaches(filterModeledBeaches(items))).finally(() => setLoading(false));
   }, []);
 
   const markers = useMemo(
@@ -62,7 +63,7 @@ export default function MapTab() {
               latitude: b.geometry.latitude,
               longitude: b.geometry.longitude,
             }}
-            pinColor={b.support_status === "production" ? "#0b4266" : "#4dd5a8"}
+            pinColor="#0b4266"
             onPress={(e) => {
               e.stopPropagation?.();
               onMarkerPress(b);
@@ -92,7 +93,7 @@ export default function MapTab() {
               <Text style={s.calloutRegion}>{selected.region}</Text>
               <Text style={s.calloutName}>{selected.name}</Text>
               <Text style={s.calloutSub}>
-                {selected.county} County · {selected.support_status}
+                {selected.county} County
               </Text>
             </View>
             <TouchableOpacity

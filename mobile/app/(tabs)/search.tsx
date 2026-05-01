@@ -3,6 +3,7 @@ import { View, Text, TextInput, TouchableOpacity, SectionList, StyleSheet, Activ
 import { useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { getParentBeaches, type ParentBeachSummary } from "../../lib/api";
+import { filterModeledBeaches } from "../../lib/coverage";
 
 const REGIONS = ["All", "SoCal", "Central", "NorCal"];
 const REGION_LABELS: Record<string, string> = {
@@ -19,8 +20,16 @@ export default function SearchTab() {
   const router = useRouter();
 
   useEffect(() => {
-    getParentBeaches().then(setBeaches).finally(() => setLoading(false));
+    getParentBeaches().then((items) => setBeaches(filterModeledBeaches(items))).finally(() => setLoading(false));
   }, []);
+
+  function pick(b: ParentBeachSummary) {
+    if (b.station_count > 1) {
+      router.push(`/parent/${b.id}` as any);
+    } else {
+      router.push(`/beach/${b.member_beach_ids[0]}` as any);
+    }
+  }
 
   const filtered = beaches
     .filter((b) => region === "All" || b.region === REGION_LABELS[region] || b.region === region)
@@ -80,7 +89,7 @@ export default function SearchTab() {
           )}
           renderItem={({ item: b }) => (
             <TouchableOpacity
-              onPress={() => router.push(`/beach/${b.id}` as any)}
+              onPress={() => pick(b)}
               style={s.row}>
               <View style={s.dot} />
               <View style={{ flex: 1 }}>
