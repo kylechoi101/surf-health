@@ -5,6 +5,10 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
+export function cleanDisplayText(value: string) {
+  return value.replace(/\\+(['"])/g, "$1").replace(/\s+/g, " ").trim();
+}
+
 export function formatPercent(value: number | null | undefined) {
   if (value == null || Number.isNaN(value)) {
     return "—";

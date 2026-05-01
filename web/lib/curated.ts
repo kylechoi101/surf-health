@@ -7,6 +7,7 @@ import {
   getLatestOfficialSampleMember,
 } from "@/lib/mapPresentation";
 import { RiskBand } from "@/lib/riskData";
+import { cleanDisplayText } from "@/lib/utils";
 
 export interface ForecastData {
   risk_band: RiskBand;
@@ -116,15 +117,35 @@ function readSystemHealth(): SystemHealthFile {
 }
 
 export function listBeaches(): Beach[] {
-  return readJson<Beach[]>("beaches.json");
+  return readJson<Beach[]>("beaches.json").map((beach) => ({
+    ...beach,
+    name: cleanDisplayText(beach.name),
+    station_name: cleanDisplayText(beach.station_name),
+    county: cleanDisplayText(beach.county),
+    region: cleanDisplayText(beach.region),
+    forecast: beach.forecast
+      ? {
+          ...beach.forecast,
+          top_drivers: beach.forecast.top_drivers.map(cleanDisplayText),
+        }
+      : null,
+  }));
 }
 
 export function regionalSummary(): RegionalSummary[] {
-  return readJson<RegionalSummary[]>("regional_summary.json");
+  return readJson<RegionalSummary[]>("regional_summary.json").map((region) => ({
+    ...region,
+    region: cleanDisplayText(region.region),
+  }));
 }
 
 export function listParentBeaches(): ParentBeach[] {
-  return readJson<ParentBeach[]>("parent_beaches.json");
+  return readJson<ParentBeach[]>("parent_beaches.json").map((beach) => ({
+    ...beach,
+    name: cleanDisplayText(beach.name),
+    county: cleanDisplayText(beach.county),
+    region: cleanDisplayText(beach.region),
+  }));
 }
 
 export function siteStats(): SiteStats {

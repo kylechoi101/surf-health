@@ -1,3 +1,5 @@
+import { cleanDisplayText } from "@/lib/utils";
+
 export type SupportStatus = "production" | "beta" | "unsupported";
 export type RiskBand = "Low" | "Moderate" | "High" | "Very High";
 
@@ -112,8 +114,18 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 }
 
+function cleanBeachSummary(beach: BeachSummary): BeachSummary {
+  return {
+    ...beach,
+    name: cleanDisplayText(beach.name),
+    county: cleanDisplayText(beach.county),
+    region: cleanDisplayText(beach.region),
+  };
+}
+
 export async function getBeaches(init?: RequestInit) {
-  return request<BeachSummary[]>("/beaches", init);
+  const beaches = await request<BeachSummary[]>("/beaches", init);
+  return beaches.map(cleanBeachSummary);
 }
 
 export async function getForecast(beachId: string, date: string) {
