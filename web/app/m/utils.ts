@@ -66,11 +66,27 @@ export function fmtPeriod(s: number | null | undefined): string {
 
 export function regionLabel(region: string): string {
   const map: Record<string, string> = {
+    "San Diego": "Southern California",
+    "Los Angeles": "Southern California",
+    "Santa Ana": "Southern California",
+    "Central Coast": "Central California",
+    "San Francisco Bay": "Northern California",
+    "North Coast": "Northern California",
     SoCal: "Southern California",
     Central: "Central California",
     NorCal: "Northern California",
-    "Los Angeles": "Los Angeles County",
-    "San Diego": "San Diego County",
   };
   return map[region] ?? region;
+}
+
+export function getRegionGroup(region: string): string {
+  const dataToGroup: Record<string, string> = {
+    "San Diego": "SoCal",
+    "Los Angeles": "SoCal",
+    "Santa Ana": "SoCal",
+    "Central Coast": "Central",
+    "San Francisco Bay": "NorCal",
+    "North Coast": "NorCal",
+  };
+  return dataToGroup[region] ?? "Other";
 }

@@ -4,13 +4,9 @@ import { useRouter } from "next/navigation";
 import type { BeachSummary } from "@/lib/api";
 import { IconSearch, IconChevron, IconClose } from "../Icons";
 import TabBar from "../TabBar";
+import { getRegionGroup, regionLabel } from "../utils";
 
 const REGIONS = ["All", "SoCal", "Central", "NorCal"];
-const REGION_LABELS: Record<string, string> = {
-  SoCal: "Southern California",
-  Central: "Central California",
-  NorCal: "Northern California",
-};
 
 export default function SearchScreen({ beaches }: { beaches: BeachSummary[] }) {
   const [q, setQ] = useState("");
@@ -19,7 +15,7 @@ export default function SearchScreen({ beaches }: { beaches: BeachSummary[] }) {
 
   const uniqueBeaches = Array.from(new Map(beaches.map(b => [b.name, b])).values());
   const filtered = uniqueBeaches
-    .filter((b) => region === "All" || b.region === region || b.region === REGION_LABELS[region])
+    .filter((b) => region === "All" || getRegionGroup(b.region) === region)
     .filter(
       (b) =>
         !q ||
@@ -73,7 +69,7 @@ export default function SearchScreen({ beaches }: { beaches: BeachSummary[] }) {
         {regionOrder.map((r) => (
           <div key={r} className="mt-5">
             <div className="text-[11px] font-bold text-muted-foreground tracking-widest uppercase px-5 mb-2 flex justify-between">
-              <span>{REGION_LABELS[r] ?? r}</span>
+              <span>{regionLabel(r)}</span>
               <span className="opacity-60">{grouped[r].length}</span>
             </div>
             <div className="px-4 flex flex-col gap-2">
