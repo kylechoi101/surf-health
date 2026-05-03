@@ -3,8 +3,10 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import time
 from pathlib import Path
 from typing import Any
+from urllib.error import URLError
 from urllib.parse import urlencode
 from urllib.request import urlopen
 
@@ -420,6 +422,22 @@ def apply_stormwater_features(
     return add_rain_policy_features(output)
 
 
+def _fetch_with_retry(url: str, max_retries: int = 3, base_delay: float = 2.0, timeout: int = 120) -> bytes:
+    """Fetch URL with exponential backoff on timeouts/errors."""
+    for attempt in range(max_retries):
+        try:
+            with urlopen(url, timeout=timeout) as response:
+                return response.read()
+        except (TimeoutError, URLError) as e:
+            if attempt == max_retries - 1:
+                print(f"[stormwater] Failed to fetch {url} after {max_retries} attempts: {e}", flush=True)
+                raise
+            delay = base_delay * (2 ** attempt)
+            print(f"[stormwater] Fetch error ({e}). Retrying in {delay}s...", flush=True)
+            time.sleep(delay)
+    raise RuntimeError("Unreachable")
+
+
 def _arcgis_query_url(layer_url: str, offset: int, page_size: int) -> str:
     params = {
         "where": "1=1",
@@ -439,8 +457,8 @@ def _arcgis_count_url(layer_url: str) -> str:
 
 
 def _fetch_arcgis_count(layer_url: str) -> int | None:
-    with urlopen(_arcgis_count_url(layer_url), timeout=120) as response:
-        payload = json.loads(response.read().decode("utf-8"))
+    data = _fetch_with_retry(_arcgis_count_url(layer_url))
+    payload = json.loads(data.decode("utf-8"))
     count = payload.get("count")
     return int(count) if count is not None else None
 
@@ -450,8 +468,8 @@ def fetch_arcgis_geojson(layer_url: str, *, page_size: int = 1000, max_pages: in
     expected_count = _fetch_arcgis_count(layer_url)
     for page in range(max_pages):
         url = _arcgis_query_url(layer_url, page * page_size, page_size)
-        with urlopen(url, timeout=120) as response:
-            payload = json.loads(response.read().decode("utf-8"))
+        data = _fetch_with_retry(url)
+        payload = json.loads(data.decode("utf-8"))
         page_features = payload.get("features", [])
         features.extend(page_features)
         if expected_count is not None and len(features) >= expected_count:
