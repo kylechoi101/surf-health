@@ -4,7 +4,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { getBeaches, getForecast, todayLA, type BeachSummary, type ForecastRecord } from "../../lib/api";
 import { findModeledBeach } from "../../lib/coverage";
-import { riskAdvice, riskHead, RISK_COLORS, mToFt, cToF, fmtPeriod, fmtUv } from "../../lib/utils";
+import { riskAdvice, riskHead, RISK_COLORS, mToFt, cToF, fmtPeriod, fmtUv, mpsToMph } from "../../lib/utils";
 import { DropRow, SeverityBar, type RiskBand } from "../../components/RiskSystem";
 
 export default function BeachHome() {

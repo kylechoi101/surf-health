@@ -137,7 +137,7 @@ export default function BeachDetail() {
         )}
 
         {/* Last sample */}
-        {ds != null && (
+        {beach.latest_official_sample_at && (
           <View style={{ padding: 16, paddingBottom: 0 }}>
             <Text style={s.sectionLabel}>Last official sample</Text>
             <View style={[s.card, { flexDirection: "row", alignItems: "center", gap: 14, padding: 16 }]}>
@@ -146,7 +146,7 @@ export default function BeachDetail() {
               </View>
               <View style={{ flex: 1 }}>
                 <Text style={{ fontSize: 14, fontWeight: "600", color: "#0f172a" }}>
-                  {ds === 0 ? "Today" : ds === 1 ? "Yesterday" : `${ds} days ago`}
+                  {new Date(beach.latest_official_sample_at).toLocaleDateString()}
                 </Text>
                 <Text style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>Official county monitoring</Text>
               </View>

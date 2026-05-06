@@ -422,7 +422,7 @@ def apply_stormwater_features(
     return add_rain_policy_features(output)
 
 
-def _fetch_with_retry(url: str, max_retries: int = 3, base_delay: float = 2.0, timeout: int = 120) -> bytes:
+def _fetch_with_retry(url: str, max_retries: int = 5, base_delay: float = 5.0, timeout: int = 120) -> bytes:
     """Fetch URL with exponential backoff on timeouts/errors."""
     for attempt in range(max_retries):
         try:

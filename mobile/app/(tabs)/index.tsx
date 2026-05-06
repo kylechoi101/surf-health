@@ -87,7 +87,7 @@ export default function HomeTab() {
           <View style={s.waveDecor} />
 
           <View style={s.brand}>
-            <Image source={require('../../assets/lockup.png')} style={{width: 40, height: 22, marginRight: 8, borderRadius: 6}} resizeMode="contain" />
+            <Image source={require('../../assets/lockup.png')} style={{height: 27, aspectRatio: 1.85, marginRight: 8, borderRadius: 6}} resizeMode="contain" />
             <Text style={s.brandMark}>SHORELIFE</Text>
           </View>
 
