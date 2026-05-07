@@ -245,7 +245,7 @@ RISK_BAND_DESCRIPTIONS: dict[str, str] = {
     "Low": "Water quality appears typical for this beach. Swim at your own discretion.",
     "Moderate": "Slightly elevated risk. Conditions may be less ideal; consider checking again before swimming.",
     "High": "Elevated risk — estimated exceedance probability is roughly 3× the average beach. Caution advised, especially for vulnerable groups.",
-    "Very High": "High likelihood of unsafe bacteria levels. Swimming is not recommended until conditions improve.",
+    "Very High": "High likelihood of unsafe bacteria levels. Swimming is not recommended until conditions improve. This may be due to an active advisory or model prediction.",
 }
 
 

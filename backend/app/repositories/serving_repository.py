@@ -253,12 +253,12 @@ class ServingSnapshotRepository(BeachRepository):
 
         active_advisory = beach_id in self._active_advisory_beach_ids()
         base_drivers = [str(item) for item in _parse_json_list(row.get("top_drivers"))]
-        drivers = (
-            ["Official health advisory is active for this station.", *base_drivers][:5]
-            if active_advisory
-            else base_drivers
-        )
-        band = "Very High" if active_advisory else str(row["risk_band"])
+        if active_advisory:
+            drivers = ["Official health advisory is active for this station.", *base_drivers][:5]
+            band = "Very High"  # Override to Very High when advisory is active
+        else:
+            drivers = base_drivers
+            band = str(row["risk_band"])
 
         return ForecastRecord(
             beach_id=beach_id,
