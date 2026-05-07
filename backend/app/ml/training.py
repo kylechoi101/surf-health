@@ -396,13 +396,25 @@ def train_baselines(frame: pd.DataFrame) -> dict[str, dict[str, float]]:
 
 
 def _persistence_probabilities(features: pd.DataFrame, stv_threshold: float) -> np.ndarray:
-    lag_1 = pd.to_numeric(features.get("enterococcus_value_lag_1"), errors="coerce")
-    if lag_1 is None:
+    """A fair persistence baseline: use the most-recent prior official observation.
+
+    BeachWatch sampling is often weekly, so a strict lag-1 baseline degenerates into
+    predicting the majority class. ``enterococcus_value_last_obs`` is explicitly
+    constructed as the last observed value prior to the target row (forecast-safe),
+    so thresholding it is the right "do what we did last time" comparator.
+    """
+    last_obs = pd.to_numeric(features.get("enterococcus_value_last_obs"), errors="coerce")
+    if last_obs is None:
         return np.zeros(len(features), dtype=float)
-    return lag_1.fillna(0.0).gt(stv_threshold).astype(float).to_numpy()
+    return last_obs.fillna(0.0).gt(stv_threshold).astype(float).to_numpy()
 
 
-def _metadata_with_groups(metadata: pd.DataFrame, frame: pd.DataFrame) -> pd.DataFrame:
+def _metadata_with_groups(
+    metadata: pd.DataFrame,
+    frame: pd.DataFrame,
+    *,
+    stations: pd.DataFrame | None = None,
+) -> pd.DataFrame:
     enriched = metadata.copy()
     if "sample_date" in enriched.columns:
         enriched["sample_date"] = pd.to_datetime(enriched["sample_date"], errors="coerce")
@@ -425,6 +437,13 @@ def _metadata_with_groups(metadata: pd.DataFrame, frame: pd.DataFrame) -> pd.Dat
             .drop_duplicates(subset=["beach_id"])
         )
         enriched = enriched.merge(group_lookup, on="beach_id", how="left")
+    if stations is not None and not stations.empty and "station_code" in stations.columns:
+        station_lookup = (
+            stations[["beach_id", "station_code"]]
+            .dropna(subset=["beach_id"])
+            .drop_duplicates(subset=["beach_id"])
+        )
+        enriched = enriched.merge(station_lookup, on="beach_id", how="left")
     if "wave_direction_deg" in frame.columns and "sample_date" in frame.columns and "sample_date" in enriched.columns:
         wave_lookup = frame[["beach_id", "sample_date", "wave_direction_deg"]].copy()
         wave_lookup["sample_date"] = pd.to_datetime(wave_lookup["sample_date"], errors="coerce")
@@ -1347,6 +1366,98 @@ def _blocked_indices(metadata: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np
     return train_idx, valid_idx, test_idx
 
 
+def _active_beach_ids(
+    full_frame: pd.DataFrame,
+    forecast_date: date,
+    min_sample_recency_days: int,
+) -> set[str]:
+    """Return the set of beach_ids whose most-recent sample is within N days of forecast_date.
+
+    "Active" here means "currently being monitored" — the deployment-relevant
+    population. California beach monitoring funding has been cut multiple times
+    since 2020 and many stations have gone silent. Holdout metrics restricted
+    to this set answer the question "how good is the model for the beaches users
+    actually see in the app today" — not "how good is it across the historical
+    population including stations that no longer report data."
+    """
+    if full_frame.empty:
+        return set()
+    sample_dates = pd.to_datetime(full_frame["sample_date"], errors="coerce")
+    cutoff = pd.Timestamp(forecast_date) - pd.Timedelta(days=min_sample_recency_days)
+    most_recent = full_frame.assign(_sd=sample_dates).groupby("beach_id")["_sd"].max()
+    return set(most_recent[most_recent >= cutoff].index.astype(str))
+
+
+def _classification_metrics_on_subset(
+    labels_full: np.ndarray,
+    probs_full: np.ndarray,
+    metadata_full: pd.DataFrame,
+    keep_beach_ids: set[str],
+) -> dict[str, float] | None:
+    """Compute classification metrics on the rows whose beach_id is in keep_beach_ids."""
+    if not keep_beach_ids or len(metadata_full) == 0:
+        return None
+    mask = metadata_full["beach_id"].astype(str).isin(keep_beach_ids).to_numpy()
+    if not mask.any() or labels_full[mask].size == 0:
+        return None
+    return classification_metrics(labels_full[mask], probs_full[mask])
+
+
+def _calibration_split(
+    valid_idx: np.ndarray,
+    metadata: pd.DataFrame,
+    *,
+    seed: int = 17,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Split valid_idx into a calibrator-fit half and a metrics-reporting half.
+
+    The hierarchical calibrator is currently fit on the same valid_idx slice
+    that is then used to report validation AUCPR/Brier. That makes the published
+    "valid_metrics" partially in-sample for calibration, which inflates them.
+    Splitting forces the reported numbers to be honest out-of-sample on the
+    calibration step.
+
+    Stratifies by county where possible to keep both halves balanced. Counties
+    with only one valid sample go entirely into the calibration half (so the
+    calibrator sees every county at least once); the metrics half loses that row.
+    """
+    valid_idx = np.asarray(valid_idx, dtype=int)
+    if valid_idx.size < 4:
+        # Too small to split; fall back to using the whole slice for both.
+        return valid_idx, valid_idx
+
+    rng = np.random.default_rng(seed)
+    counties = metadata["county"].fillna("__unknown__").to_numpy()[valid_idx]
+    cal_pieces: list[np.ndarray] = []
+    metric_pieces: list[np.ndarray] = []
+
+    for county in np.unique(counties):
+        county_mask = counties == county
+        county_idx = valid_idx[county_mask]
+        permuted = rng.permutation(county_idx)
+        if permuted.size <= 1:
+            cal_pieces.append(permuted)
+            continue
+        half = max(permuted.size // 2, 1)
+        cal_pieces.append(permuted[:half])
+        metric_pieces.append(permuted[half:])
+
+    cal_idx = (
+        np.sort(np.concatenate(cal_pieces))
+        if cal_pieces
+        else np.array([], dtype=int)
+    )
+    metric_idx = (
+        np.sort(np.concatenate(metric_pieces))
+        if metric_pieces
+        else np.array([], dtype=int)
+    )
+    if metric_idx.size == 0:
+        # Degenerate case: every county had only one sample. Use cal for metrics too.
+        return cal_idx, cal_idx
+    return cal_idx, metric_idx
+
+
 def _identity_or_calibrated(
     probabilities: np.ndarray,
     labels: np.ndarray,
@@ -1417,11 +1528,40 @@ def _best_valid_brier_model(
     return min(candidates, key=lambda model_name: metrics[f"{model_name}_valid"]["brier"])
 
 
+def _best_valid_aucpr_model(
+    metrics: dict[str, dict[str, float]],
+    model_names: list[str] | tuple[str, ...],
+    *,
+    fallback: str | None = None,
+) -> str | None:
+    """Pick the model with the highest validation AUCPR; break ties by lower Brier.
+
+    AUCPR is a rank-only metric: it is invariant to monotonic recalibration, so
+    selecting on AUCPR rewards genuine discrimination rather than calibration.
+    The earlier selector minimized validation Brier, which favored well-calibrated
+    but flat models — a worse criterion when calibration is a downstream stage.
+    """
+    candidates = [
+        model_name
+        for model_name in model_names
+        if "aucpr" in metrics.get(f"{model_name}_valid", {})
+    ]
+    if not candidates:
+        return fallback
+
+    def _key(model_name: str) -> tuple[float, float]:
+        valid = metrics[f"{model_name}_valid"]
+        # max AUCPR (negate for min-key), tiebreak by min Brier.
+        return (-float(valid.get("aucpr", 0.0)), float(valid.get("brier", 0.0)))
+
+    return min(candidates, key=_key)
+
+
 def _two_stage_training_plan(
     metrics: dict[str, dict[str, float]],
     model_types_to_run: list[str],
 ) -> StageTwoTrainingPlan:
-    production_winner = _best_valid_brier_model(
+    production_winner = _best_valid_aucpr_model(
         metrics,
         PRODUCTION_MODEL_NAMES,
         fallback="logistic",
@@ -1430,7 +1570,7 @@ def _two_stage_training_plan(
         *PRODUCTION_MODEL_NAMES,
         *[model_name for model_name in model_types_to_run if model_name in SEQUENCE_MODEL_NAMES],
     ]
-    research_winner = _best_valid_brier_model(
+    research_winner = _best_valid_aucpr_model(
         metrics,
         research_candidates,
         fallback=production_winner,
@@ -1507,6 +1647,73 @@ def _forecast_model_version(model_name: str, scope: str = "global") -> str:
     if model_name == "logistic_hierarchical":
         return f"logistic-{scope}-curated-v0"
     return _registry_model_version(model_name)
+
+def _write_model_card(curated_dir: Path, health_payload: dict) -> None:
+    """Write a model card that cannot drift from system_health.json."""
+    model_registry = health_payload.get("model_registry") or {}
+    production_model = model_registry.get("production_model", "unknown")
+    deployment_stage = model_registry.get("deployment_stage", "unknown")
+    public_release_eligible = bool(model_registry.get("public_release_eligible", False))
+    blockers = model_registry.get("promotion_blockers") or []
+    blocker_line = str(blockers[-1]) if blockers else "None"
+
+    prod = model_registry.get("production_metrics") or {}
+    valid = model_registry.get("validation_metrics") or {}
+    spatial = model_registry.get("spatial_metrics") or {}
+    all_metrics = model_registry.get("metrics") or {}
+
+    def _fmt(x: object) -> str:
+        try:
+            if x is None:
+                return "—"
+            return f"{float(x):.3f}"
+        except (TypeError, ValueError):
+            return "—"
+
+    audit = health_payload.get("forecast_audit") or {}
+    agreement = audit.get("agreement_rate")
+
+    content = "\n".join(
+        [
+            f"# Model Card: Shorelife `{production_model}`",
+            "",
+            "## Deployment Status",
+            f"- **Generated at**: {health_payload.get('pipeline_freshness', 'unknown')}",
+            f"- **Deployment stage**: {deployment_stage}",
+            f"- **Public release eligible**: {str(public_release_eligible).lower()}",
+            f"- **Promotion blocker (latest)**: {blocker_line}",
+            "",
+            "## Headline Metrics (from `system_health.json`)",
+            "",
+            "### Temporal (held-out time slice)",
+            f"- **AUCPR**: {_fmt(prod.get('aucpr'))}",
+            f"- **Brier**: {_fmt(prod.get('brier'))}",
+            f"- **Log loss**: {_fmt(prod.get('log_loss'))}",
+            f"- **Calibration slope**: {_fmt(prod.get('calibration_slope'))}",
+            "",
+            "### Deployment (active stations only; recency-filtered roster)",
+            f"- **AUCPR**: {_fmt((all_metrics.get('hist_gbm_test_active_only') or {}).get('aucpr'))}",
+            f"- **Brier**: {_fmt((all_metrics.get('hist_gbm_test_active_only') or {}).get('brier'))}",
+            f"- **n_samples**: {int((all_metrics.get('hist_gbm_test_active_only') or {}).get('n_samples') or 0)}",
+            "",
+            "### Validation (calibration/training-time slice; not a public headline)",
+            f"- **AUCPR**: {_fmt(valid.get('aucpr'))}",
+            f"- **Brier**: {_fmt(valid.get('brier'))}",
+            "",
+            "### Spatial (holdouts)",
+            f"- **Spatial county AUCPR**: {_fmt((spatial.get('spatial_county_hist_gbm') or {}).get('aucpr'))}",
+            f"- **Spatial county persistence AUCPR**: {_fmt((spatial.get('spatial_county_persistence') or {}).get('aucpr'))}",
+            "",
+            "## Operational Agreement Check",
+            f"- **Active-advisory agreement rate** (model flags High band on advised beaches): {_fmt(agreement)}",
+            "",
+            "## Notes",
+            "- Forecasts are decision support and are not official lab results.",
+            "- Active official advisories override displayed risk in consumer surfaces.",
+            "",
+        ]
+    )
+    (Path(curated_dir) / "model_card.md").write_text(content)
 
 
 def _inject_agent_features(
@@ -1603,6 +1810,7 @@ def _build_forecast_candidates(
     *,
     full_frame: pd.DataFrame | None = None,
     advisories: pd.DataFrame | None = None,
+    min_sample_recency_days: int | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Build one synthetic forecast row per beach.
 
@@ -1612,6 +1820,16 @@ def _build_forecast_candidates(
     value from ``full_frame`` — the complete unfiltered history.  This gives
     us env-persistence rather than all-null inputs, which keeps the calibrated
     probability meaningful even when the ingest pipeline has schema drift.
+
+    ``min_sample_recency_days``, when set, drops any beach whose most-recent
+    sample is older than that many days before ``forecast_date``. California
+    beach monitoring funding has been cut multiple times since 2020 and many
+    stations have gone silent. Publishing a forecast for a station that has
+    not been sampled in months is misleading — the environmental covariates
+    are stale, the model has no recent label signal, and downstream agreement
+    metrics are inflated by these zombie stations. Use ``min_sample_recency_days=20``
+    to mirror California's typical AB411 weekly monitoring cadence (one missed
+    week is normal; three+ missed weeks is "the funding stopped").
     """
     history = frame.copy()
     history["sample_date"] = pd.to_datetime(history["sample_date"], errors="coerce")
@@ -1619,6 +1837,11 @@ def _build_forecast_candidates(
     history = history.loc[history["sample_date"].dt.date < forecast_date].copy()
     if history.empty:
         return history, pd.DataFrame()
+    recency_cutoff = (
+        pd.Timestamp(forecast_date) - pd.Timedelta(days=min_sample_recency_days)
+        if min_sample_recency_days is not None
+        else None
+    )
 
     # Build a per-beach lookup from the full history for covariate fallback.
     full_history_by_beach: dict[str, pd.DataFrame] = {}
@@ -1653,6 +1876,10 @@ def _build_forecast_candidates(
         if len(beach_history) < 3:
             continue
         latest_row = beach_history.iloc[-1]
+        if recency_cutoff is not None:
+            latest_sample_date = pd.to_datetime(latest_row.get("sample_date"), errors="coerce")
+            if pd.isna(latest_sample_date) or latest_sample_date < recency_cutoff:
+                continue
         candidate = {column: latest_row.get(column) for column in history.columns}
         candidate["beach_id"] = beach_id
         candidate["sample_date"] = pd.Timestamp(forecast_date)
@@ -1872,6 +2099,8 @@ def _export_forecasts(
     spatial_backtests: bool,
     spatial_backtest_models: list,
     spatial_strategy: str,
+    *,
+    min_sample_recency_days: int | None = None,
 ) -> "TrainingArtifacts":
     import sys
     winner = models.winner
@@ -1889,7 +2118,13 @@ def _export_forecasts(
         densities[valid_idx], models.regressor_valid_predictions,
     )
     history, forecast_candidates = _build_forecast_candidates(
-        frame, stations, uv_daily, forecast_date, full_frame=full_frame, advisories=advisories
+        frame,
+        stations,
+        uv_daily,
+        forecast_date,
+        full_frame=full_frame,
+        advisories=advisories,
+        min_sample_recency_days=min_sample_recency_days,
     )
     inference_input = (
         pd.concat([history, forecast_candidates], ignore_index=True)
@@ -1915,8 +2150,16 @@ def _export_forecasts(
     )
     forecast_group_metadata = forecast_metadata.merge(
         stations.reindex(
-            columns=["beach_id", "county", "region", "latitude", "longitude",
-                     "cdip_distance_km", "erddap_distance_km"]
+            columns=[
+                "beach_id",
+                "county",
+                "region",
+                "latitude",
+                "longitude",
+                "cdip_distance_km",
+                "erddap_distance_km",
+                "station_code",
+            ]
         ),
         on="beach_id",
         how="left",
@@ -2119,6 +2362,7 @@ def _export_forecasts(
     }
     health_payload["pipeline_freshness"] = datetime.now(UTC).isoformat()
     health_path.write_text(json.dumps(health_payload, indent=2))
+    _write_model_card(curated_dir, health_payload)
     return TrainingArtifacts(winner=winner, metrics=metrics)
 
 
@@ -2132,6 +2376,9 @@ def _run_winner_only(
     spatial_county_limit: int | None,
     spatial_jobs: int | None,
     registry: dict,
+    *,
+    min_sample_recency_days: int | None = None,
+    active_only_training: bool = False,
 ) -> "TrainingArtifacts":
     import sys
     settings = get_settings()
@@ -2151,10 +2398,11 @@ def _run_winner_only(
     features = _inject_agent_features(features, dataset.metadata, full_frame, advisories, stations)
     labels = dataset.targets_exceed
     densities = dataset.targets_log_density
-    metadata = _metadata_with_groups(dataset.metadata, frame)
+    metadata = _metadata_with_groups(dataset.metadata, frame, stations=stations)
     if len(features) < 20:
         return TrainingArtifacts(winner="insufficient-data", metrics={"warning": {"samples": float(len(features))}})
     train_idx, valid_idx, test_idx = _blocked_indices(dataset.metadata)
+    cal_idx, val_metric_idx = _calibration_split(valid_idx, metadata)
     eval_idx = test_idx if len(test_idx) else valid_idx
     baselines = make_baselines(features)
     metrics: dict[str, dict[str, float]] = {}
@@ -2162,19 +2410,91 @@ def _run_winner_only(
     winner = registry["winner"]
     regressor_type = registry.get("regressor", "elastic_net")
     print(f"Winner-only mode: retraining {winner} + {regressor_type}", file=sys.stderr, flush=True)
+    print(
+        f"Calibration holdout: cal={len(cal_idx)} fit / val_metric={len(val_metric_idx)} report",
+        file=sys.stderr,
+        flush=True,
+    )
+
+    # Active-station subset for the deployment-relevant test metric. This is the
+    # population the user actually sees in the app — stations sampled within the
+    # last N days. Reporting AUCPR/Brier on this subset answers the right question
+    # ("how good is the model for the beaches we forecast?") rather than the wrong
+    # question ("how good is it averaged across stations including ones whose env
+    # covariates are months stale because the funding stopped").
+    active_ids: set[str] = set()
+    if min_sample_recency_days is not None:
+        active_ids = _active_beach_ids(full_frame, forecast_date, min_sample_recency_days)
+        print(
+            f"Active stations (sampled within {min_sample_recency_days}d of {forecast_date}): "
+            f"{len(active_ids)} beaches",
+            file=sys.stderr,
+            flush=True,
+        )
+
+    # A/B ablation hook: optionally restrict the training set to active stations
+    # only. Validation and test slices are NOT filtered — both ablation arms
+    # evaluate on the same held-out samples for a clean apples-to-apples
+    # comparison. If active-only training improves the deployment metric, it
+    # means zombie history was net-negative for global generalization on the
+    # currently-active population. If it doesn't, more data wins.
+    if active_only_training and active_ids:
+        meta_beach_ids = metadata["beach_id"].astype(str).to_numpy()
+        active_mask = np.isin(meta_beach_ids, list(active_ids))
+        train_idx = train_idx[active_mask[train_idx]]
+        print(
+            f"Active-only training: train_idx filtered to {len(train_idx)} samples "
+            f"from {len(active_ids)} active stations",
+            file=sys.stderr,
+            flush=True,
+        )
+
+    valid_metadata = metadata.iloc[valid_idx].reset_index(drop=True)
+    cal_metadata = metadata.iloc[cal_idx].reset_index(drop=True)
+    val_metric_metadata = metadata.iloc[val_metric_idx].reset_index(drop=True)
+    eval_metadata = metadata.iloc[eval_idx].reset_index(drop=True)
+
+    def _record_valid_metrics(model_key: str, raw_probs_metric: np.ndarray, calibrator) -> None:
+        """Report validation metrics on the held-out half (val_metric_idx).
+
+        Always records the raw-probability metrics under {model}_valid for
+        backward compatibility with the AUCPR-based selector. Also records a
+        {model}_valid_calibrated record so downstream consumers can compare
+        post-calibration Brier/log-loss honestly (the calibrator was fit on
+        cal_idx, so val_metric_idx is genuinely out-of-sample for it).
+        """
+        metrics[f"{model_key}_valid"] = classification_metrics(
+            labels[val_metric_idx], raw_probs_metric
+        )
+        if calibrator is not None and len(val_metric_idx) > 0:
+            calibrated_probs = _apply_calibrator(
+                calibrator, raw_probs_metric, val_metric_metadata
+            )
+            metrics[f"{model_key}_valid_calibrated"] = classification_metrics(
+                labels[val_metric_idx], calibrated_probs
+            )
 
     # hist_gbm is always trained — local drivers always use it
     print("Training hist GBM model...", file=sys.stderr, flush=True)
     tree_classifier = baselines.tree_classifier.fit(features.iloc[train_idx], labels[train_idx])
-    tree_valid_raw = tree_classifier.predict_proba(features.iloc[valid_idx])[:, 1]
-    metrics["hist_gbm_valid"] = classification_metrics(labels[valid_idx], tree_valid_raw)
-    valid_metadata = metadata.iloc[valid_idx].reset_index(drop=True)
-    eval_metadata = metadata.iloc[eval_idx].reset_index(drop=True)
-    _, tree_calibrator = _identity_or_calibrated(tree_valid_raw, labels[valid_idx], valid_metadata)
+    tree_cal_raw = tree_classifier.predict_proba(features.iloc[cal_idx])[:, 1]
+    tree_metric_raw = tree_classifier.predict_proba(features.iloc[val_metric_idx])[:, 1]
+    _, tree_calibrator = _identity_or_calibrated(tree_cal_raw, labels[cal_idx], cal_metadata)
+    _record_valid_metrics("hist_gbm", tree_metric_raw, tree_calibrator)
     tree_eval = tree_classifier.predict_proba(features.iloc[eval_idx])[:, 1]
     if len(test_idx):
         tree_eval = _apply_calibrator(tree_calibrator, tree_eval, eval_metadata)
     metrics["hist_gbm"] = classification_metrics(labels[eval_idx], tree_eval)
+    if active_ids:
+        active_subset = _classification_metrics_on_subset(
+            labels[eval_idx], tree_eval, eval_metadata, active_ids,
+        )
+        if active_subset is not None:
+            metrics["hist_gbm_test_active_only"] = active_subset
+            metrics["hist_gbm_test_active_only"]["n_samples"] = float(
+                eval_metadata["beach_id"].astype(str).isin(active_ids).sum()
+            )
+            metrics["hist_gbm_test_active_only"]["n_total_test"] = float(len(eval_idx))
 
     logistic = logistic_calibrator = None
     coastal_cell_logistic = hierarchical_logistic = None
@@ -2184,11 +2504,12 @@ def _run_winner_only(
     if winner == "logistic":
         print("Training global logistic model...", file=sys.stderr, flush=True)
         logistic = baselines.logistic.fit(features.iloc[train_idx], labels[train_idx])
-        logistic_valid_raw = logistic.predict_proba(features.iloc[valid_idx])[:, 1]
+        logistic_cal_raw = logistic.predict_proba(features.iloc[cal_idx])[:, 1]
+        logistic_metric_raw = logistic.predict_proba(features.iloc[val_metric_idx])[:, 1]
         _, logistic_calibrator = _identity_or_calibrated(
-            logistic_valid_raw, labels[valid_idx], valid_metadata
+            logistic_cal_raw, labels[cal_idx], cal_metadata
         )
-        metrics["logistic_valid"] = classification_metrics(labels[valid_idx], logistic_valid_raw)
+        _record_valid_metrics("logistic", logistic_metric_raw, logistic_calibrator)
         logistic_eval = logistic.predict_proba(features.iloc[eval_idx])[:, 1]
         if len(test_idx):
             logistic_eval = _apply_calibrator(logistic_calibrator, logistic_eval, eval_metadata)
@@ -2198,54 +2519,67 @@ def _run_winner_only(
     elif winner == "logistic_coastal_cells":
         print("Training coastal cells logistic model...", file=sys.stderr, flush=True)
         coastal_cell_logistic = _fit_coastal_cell_logistic_artifacts(features, labels, metadata, train_idx)
-        coastal_valid_raw, _, _ = _predict_coastal_cell_logistic_raw(
-            coastal_cell_logistic, features.iloc[valid_idx], metadata.iloc[valid_idx].reset_index(drop=True),
+        coastal_cal_raw, _, _ = _predict_coastal_cell_logistic_raw(
+            coastal_cell_logistic, features.iloc[cal_idx], cal_metadata,
         )
-        metrics["logistic_coastal_cells_valid"] = classification_metrics(labels[valid_idx], coastal_valid_raw)
+        coastal_metric_raw, _, _ = _predict_coastal_cell_logistic_raw(
+            coastal_cell_logistic, features.iloc[val_metric_idx], val_metric_metadata,
+        )
         _, coastal_calibrator = _identity_or_calibrated(
-            coastal_valid_raw, labels[valid_idx], valid_metadata
+            coastal_cal_raw, labels[cal_idx], cal_metadata
         )
+        _record_valid_metrics("logistic_coastal_cells", coastal_metric_raw, coastal_calibrator)
         coastal_cell_logistic.calibrator = coastal_calibrator
 
     elif winner == "logistic_hierarchical":
         print("Training hierarchical logistic model...", file=sys.stderr, flush=True)
         hierarchical_logistic = _fit_hierarchical_logistic_artifacts(features, labels, metadata, train_idx)
-        hier_valid_raw, _ = _predict_hierarchical_logistic_raw(
-            hierarchical_logistic, features.iloc[valid_idx], metadata.iloc[valid_idx].reset_index(drop=True),
+        hier_cal_raw, _ = _predict_hierarchical_logistic_raw(
+            hierarchical_logistic, features.iloc[cal_idx], cal_metadata,
         )
-        metrics["logistic_hierarchical_valid"] = classification_metrics(labels[valid_idx], hier_valid_raw)
+        hier_metric_raw, _ = _predict_hierarchical_logistic_raw(
+            hierarchical_logistic, features.iloc[val_metric_idx], val_metric_metadata,
+        )
         _, hierarchical_calibrator = _identity_or_calibrated(
-            hier_valid_raw, labels[valid_idx], valid_metadata
+            hier_cal_raw, labels[cal_idx], cal_metadata
         )
+        _record_valid_metrics("logistic_hierarchical", hier_metric_raw, hierarchical_calibrator)
         hierarchical_logistic.calibrator = hierarchical_calibrator
 
     elif winner == "stacked_ensemble":
         print("Training all base classifiers for stacked ensemble...", file=sys.stderr, flush=True)
         logistic = baselines.logistic.fit(features.iloc[train_idx], labels[train_idx])
-        logistic_valid_raw = logistic.predict_proba(features.iloc[valid_idx])[:, 1]
+        logistic_cal_raw = logistic.predict_proba(features.iloc[cal_idx])[:, 1]
+        logistic_metric_raw = logistic.predict_proba(features.iloc[val_metric_idx])[:, 1]
         _, logistic_calibrator = _identity_or_calibrated(
-            logistic_valid_raw, labels[valid_idx], valid_metadata
+            logistic_cal_raw, labels[cal_idx], cal_metadata
         )
-        metrics["logistic_valid"] = classification_metrics(labels[valid_idx], logistic_valid_raw)
+        _record_valid_metrics("logistic", logistic_metric_raw, logistic_calibrator)
 
         coastal_cell_logistic = _fit_coastal_cell_logistic_artifacts(features, labels, metadata, train_idx)
-        coastal_valid_raw, _, _ = _predict_coastal_cell_logistic_raw(
-            coastal_cell_logistic, features.iloc[valid_idx], metadata.iloc[valid_idx].reset_index(drop=True),
+        coastal_cal_raw, _, _ = _predict_coastal_cell_logistic_raw(
+            coastal_cell_logistic, features.iloc[cal_idx], cal_metadata,
         )
-        metrics["logistic_coastal_cells_valid"] = classification_metrics(labels[valid_idx], coastal_valid_raw)
+        coastal_metric_raw, _, _ = _predict_coastal_cell_logistic_raw(
+            coastal_cell_logistic, features.iloc[val_metric_idx], val_metric_metadata,
+        )
         _, coastal_calibrator = _identity_or_calibrated(
-            coastal_valid_raw, labels[valid_idx], valid_metadata
+            coastal_cal_raw, labels[cal_idx], cal_metadata
         )
+        _record_valid_metrics("logistic_coastal_cells", coastal_metric_raw, coastal_calibrator)
         coastal_cell_logistic.calibrator = coastal_calibrator
 
         hierarchical_logistic = _fit_hierarchical_logistic_artifacts(features, labels, metadata, train_idx)
-        hier_valid_raw, _ = _predict_hierarchical_logistic_raw(
-            hierarchical_logistic, features.iloc[valid_idx], metadata.iloc[valid_idx].reset_index(drop=True),
+        hier_cal_raw, _ = _predict_hierarchical_logistic_raw(
+            hierarchical_logistic, features.iloc[cal_idx], cal_metadata,
         )
-        metrics["logistic_hierarchical_valid"] = classification_metrics(labels[valid_idx], hier_valid_raw)
+        hier_metric_raw, _ = _predict_hierarchical_logistic_raw(
+            hierarchical_logistic, features.iloc[val_metric_idx], val_metric_metadata,
+        )
         _, hierarchical_calibrator = _identity_or_calibrated(
-            hier_valid_raw, labels[valid_idx], valid_metadata
+            hier_cal_raw, labels[cal_idx], cal_metadata
         )
+        _record_valid_metrics("logistic_hierarchical", hier_metric_raw, hierarchical_calibrator)
         hierarchical_logistic.calibrator = hierarchical_calibrator
 
         persisted_ew = registry.get("ensemble_weights")
@@ -2336,6 +2670,7 @@ def _run_winner_only(
         spatial_backtests=spatial_backtests,
         spatial_backtest_models=["persistence", winner],
         spatial_strategy=spatial_strategy,
+        min_sample_recency_days=min_sample_recency_days,
     )
 
 
@@ -2351,6 +2686,8 @@ def train_curated_and_export(
     spatial_strategy: str = "shortlist",
     winner_only: bool = False,
     training_window_days: int = 60,
+    min_sample_recency_days: int | None = None,
+    active_only_training: bool = False,
 ) -> TrainingArtifacts:
     import sys
     if spatial_strategy not in SPATIAL_BACKTEST_STRATEGIES:
@@ -2378,7 +2715,7 @@ def train_curated_and_export(
     features = _inject_agent_features(features, dataset.metadata, full_frame, advisories, stations)
     labels = dataset.targets_exceed
     densities = dataset.targets_log_density
-    metadata = _metadata_with_groups(dataset.metadata, frame)
+    metadata = _metadata_with_groups(dataset.metadata, frame, stations=stations)
 
     if len(features) < 20:
         artifacts = TrainingArtifacts(winner="insufficient-data", metrics={"warning": {"samples": float(len(features))}})
@@ -2404,6 +2741,8 @@ def train_curated_and_export(
                 spatial_county_limit=spatial_county_limit,
                 spatial_jobs=spatial_jobs,
                 registry=registry,
+                min_sample_recency_days=min_sample_recency_days,
+                active_only_training=active_only_training,
             )
         print("production_model.json not found — running full comparison", file=sys.stderr, flush=True)
 
@@ -2622,6 +2961,7 @@ def train_curated_and_export(
         spatial_backtests=spatial_backtests,
         spatial_backtest_models=spatial_backtest_models,
         spatial_strategy=spatial_strategy,
+        min_sample_recency_days=min_sample_recency_days,
     )
 
 
@@ -2638,6 +2978,8 @@ def train_all(
     spatial_strategy: str = "shortlist",
     winner_only: bool = False,
     training_window_days: int = 60,
+    min_sample_recency_days: int | None = None,
+    active_only_training: bool = False,
 ) -> TrainingArtifacts:
     settings = get_settings()
     if curated:
@@ -2652,6 +2994,8 @@ def train_all(
             spatial_strategy=spatial_strategy,
             winner_only=winner_only,
             training_window_days=training_window_days,
+            min_sample_recency_days=min_sample_recency_days,
+            active_only_training=active_only_training,
         )
     if not sample_fixture:
         raise NotImplementedError("Training currently expects fixture-backed development data.")
@@ -2695,6 +3039,18 @@ def main() -> None:
     parser.add_argument("--training-window-days", type=int, default=60,
                         help="Days of recent beach_day rows to train on. Default 60. "
                              "Set higher (e.g. 365) once marine-micro coverage is uniform.")
+    parser.add_argument("--forecast-min-recency-days", type=int, default=None,
+                        help="Drop beaches whose most-recent sample is older than this many "
+                             "days before the forecast date. California beach monitoring funding "
+                             "has been cut multiple times since 2020 and many stations have gone "
+                             "silent; publishing a forecast for one of those stations is "
+                             "misleading. Recommended value: 20 (one missed AB411 weekly cycle "
+                             "is normal; three+ missed weeks indicates discontinued monitoring).")
+    parser.add_argument("--active-only-training", action="store_true",
+                        help="A/B ablation: filter the training set to only beaches active as "
+                             "of forecast_date (per --forecast-min-recency-days). Validation "
+                             "and test slices are NOT filtered, so this can be compared head-to-"
+                             "head against the full-training-set run on the same held-out samples.")
     args = parser.parse_args()
     forecast_date = date.fromisoformat(args.forecast_date) if args.forecast_date else None
     artifacts = train_all(
@@ -2709,6 +3065,8 @@ def main() -> None:
         spatial_strategy=args.spatial_strategy,
         winner_only=args.winner_only,
         training_window_days=args.training_window_days,
+        min_sample_recency_days=args.forecast_min_recency_days,
+        active_only_training=args.active_only_training,
     )
     print(json.dumps(asdict(artifacts), indent=2))
 

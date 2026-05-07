@@ -82,6 +82,26 @@ SPATIAL_NUMERIC_COLUMNS = [
     "watershed_area_km2",
 ]
 
+# Regulatory geomean features. California Health & Safety Code §115880 issues a
+# Bacterial Standards Violation posting when the rolling 30-day geometric mean
+# of enterococcus exceeds 35 MPN/100mL, or any single sample exceeds 104.
+# Computing the agency's own posting trigger as a feature is the most directly
+# causally-correct signal we can give the model for the chronic-advisory pool.
+# All columns are strictly lagged (closed='left') — the same-day sample is
+# never in the rolling window, so there is no leakage of the prediction target.
+REGULATORY_GEOMEAN_COLUMNS = [
+    "enterococcus_geomean_30d_lagged",
+    "enterococcus_geomean_42d_lagged",
+    "geomean_30d_exceeds_35_lagged",
+    "geomean_30d_exceeds_104_lagged",
+    "geomean_42d_exceeds_35_lagged",
+    "samples_in_geomean_30d_lagged",
+]
+_GEOMEAN_THRESHOLD_LOG10 = {
+    35: float(np.log10(35)),
+    104: float(np.log10(104)),
+}
+
 
 @dataclass
 class SlidingWindowDataset:
@@ -120,6 +140,22 @@ def _spatial_context_features(enriched: pd.DataFrame) -> pd.DataFrame:
     frame["erddap_distance_km_log1p"] = np.log1p(erddap_distance.clip(lower=0))
     frame["has_cdip_sensor"] = enriched.get("cdip_station_id").notna().astype(int)
     frame["has_erddap_sensor"] = enriched.get("erddap_source_name").notna().astype(int)
+
+    # Tijuana River plume zone (San Diego County).
+    #
+    # The CalState advisory feed includes multi-year administrative postings
+    # around the Tijuana River estuary. A simple geographic indicator helps the
+    # model learn a chronic-source prior without leaking advisories.
+    #
+    # Bounding box is intentionally coarse (south SD coast).
+    tj_zone = (
+        latitude.notna()
+        & longitude.notna()
+        & (latitude <= 32.66)
+        & (longitude >= -117.30)
+        & (longitude <= -116.90)
+    )
+    frame["is_tijuana_plume_zone"] = tj_zone.astype(int)
     return frame
 
 
@@ -179,6 +215,67 @@ def _rolling_and_spacing_features(enriched: pd.DataFrame) -> pd.DataFrame:
         feature_frames.append(pd.DataFrame(feature_map, index=group.index))
 
     return pd.concat(feature_frames).reindex(enriched.index) if feature_frames else pd.DataFrame()
+
+
+def _regulatory_geomean_features(enriched: pd.DataFrame) -> pd.DataFrame:
+    """Per-station rolling 30/42-day geometric means of enterococcus, strictly lagged.
+
+    California's Bacterial Standards Violation posting trigger is the regulator-defined
+    operational signal we want the model to mirror. Each row gets the geomean of all
+    *prior* samples (closed='left'), so the same-day sample is never in the window —
+    no leakage of the prediction target.
+
+    Sub-detection samples are clipped to 1 MPN/100mL (== log10 = 0) before averaging,
+    matching the convention used for `log_enterococcus` elsewhere in the pipeline.
+    """
+    feature_frames: list[pd.DataFrame] = []
+    threshold_35 = _GEOMEAN_THRESHOLD_LOG10[35]
+    threshold_104 = _GEOMEAN_THRESHOLD_LOG10[104]
+
+    for _, group in enriched.groupby("beach_id", sort=False):
+        group = group.sort_values("sample_date").copy()
+        sample_dates = pd.DatetimeIndex(pd.to_datetime(group["sample_date"], errors="coerce"))
+        ent_values = pd.to_numeric(group["enterococcus_value"], errors="coerce")
+        log_ent = np.log10(ent_values.clip(lower=1.0))
+        log_ent_series = pd.Series(log_ent.to_numpy(), index=sample_dates, dtype=float)
+
+        feature_map: dict[str, pd.Series] = {}
+
+        log_mean_30d = log_ent_series.rolling("30D", min_periods=2, closed="left").mean()
+        sample_count_30d = log_ent_series.rolling("30D", min_periods=1, closed="left").count()
+        log_mean_42d = log_ent_series.rolling("42D", min_periods=2, closed="left").mean()
+
+        feature_map["enterococcus_geomean_30d_lagged"] = pd.Series(
+            (10.0 ** log_mean_30d).to_numpy(), index=group.index
+        )
+        feature_map["enterococcus_geomean_42d_lagged"] = pd.Series(
+            (10.0 ** log_mean_42d).to_numpy(), index=group.index
+        )
+        feature_map["geomean_30d_exceeds_35_lagged"] = pd.Series(
+            (log_mean_30d >= threshold_35).astype(float).to_numpy(), index=group.index
+        )
+        feature_map["geomean_30d_exceeds_104_lagged"] = pd.Series(
+            (log_mean_30d >= threshold_104).astype(float).to_numpy(), index=group.index
+        )
+        feature_map["geomean_42d_exceeds_35_lagged"] = pd.Series(
+            (log_mean_42d >= threshold_35).astype(float).to_numpy(), index=group.index
+        )
+        feature_map["samples_in_geomean_30d_lagged"] = pd.Series(
+            sample_count_30d.to_numpy(), index=group.index
+        )
+
+        feature_frames.append(pd.DataFrame(feature_map, index=group.index))
+
+    if not feature_frames:
+        return pd.DataFrame(index=enriched.index, columns=REGULATORY_GEOMEAN_COLUMNS, dtype=float)
+
+    result = pd.concat(feature_frames).reindex(enriched.index)
+    # NaN means "not enough prior samples to compute a geomean". Treat that as "no
+    # historical exceedance signal" rather than a feature-imputation surprise.
+    for column in REGULATORY_GEOMEAN_COLUMNS:
+        if column not in result.columns:
+            result[column] = 0.0
+    return result
 
 
 def _distributed_lag_hydrology_features(enriched: pd.DataFrame) -> pd.DataFrame:
@@ -252,9 +349,24 @@ def add_temporal_features(frame: pd.DataFrame) -> pd.DataFrame:
         index=enriched.index,
     )
 
+    spatial_features = _spatial_context_features(enriched)
+    # Chronic-source interactions: Tijuana plume risk increases under onshore wind
+    # (positive shore-normal component), which compresses nearshore plumes.
+    shore_normal_wind = pd.to_numeric(enriched.get("shore_normal_wind_ms"), errors="coerce").fillna(0.0)
+    zone_features = pd.DataFrame(
+        {
+            "tijuana_plume_onshore_flag": (
+                (spatial_features["is_tijuana_plume_zone"] == 1) & (shore_normal_wind >= 0.5)
+            ).astype(int),
+            "tijuana_plume_wind_interaction": spatial_features["is_tijuana_plume_zone"].to_numpy(dtype=float)
+            * shore_normal_wind.to_numpy(dtype=float),
+        },
+        index=enriched.index,
+    )
     lagged_features = _exact_lag_features(enriched)
     rolling_features = _rolling_and_spacing_features(enriched)
     distributed_lag_features = _distributed_lag_hydrology_features(enriched)
+    regulatory_geomean_features = _regulatory_geomean_features(enriched)
 
     missing_indicators = pd.DataFrame(
         {f"{column}_missing": enriched[column].isna().astype(int) for column in BASE_NUMERIC_COLUMNS},
@@ -265,9 +377,12 @@ def add_temporal_features(frame: pd.DataFrame) -> pd.DataFrame:
         [
             enriched,
             seasonal_features,
+            spatial_features,
+            zone_features,
             lagged_features,
             rolling_features,
             distributed_lag_features,
+            regulatory_geomean_features,
             missing_indicators,
         ],
         axis=1,

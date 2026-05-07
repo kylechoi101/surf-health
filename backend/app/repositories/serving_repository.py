@@ -61,6 +61,12 @@ def _parse_date(value: object) -> date:
 
 def _derive_friendly_name(row: sqlite3.Row) -> str:
     b_name = str(row["beach_name"]) if "beach_name" in row.keys() and row["beach_name"] else ""
+    # If we have an explicit beach name (as opposed to a station name), keep it stable.
+    # Downstream products can separately surface the station name if needed, but the
+    # canonical beach name should not change when station metadata changes.
+    if b_name:
+        return b_name
+
     if not b_name:
         beach_id = str(row["beach_id"])
         beach_id = re.sub(r"^ca\d+-", "", beach_id)
@@ -84,6 +90,7 @@ class ServingSnapshotRepository(BeachRepository):
     def __init__(self, snapshot_path: Path, stv_threshold: float) -> None:
         self.snapshot_path = Path(snapshot_path)
         self.stv_threshold = stv_threshold
+        self._parent_name_by_member_id: dict[str, str] | None = None
 
     def _connect(self) -> sqlite3.Connection:
         uri = f"file:{self.snapshot_path}?mode=ro"
@@ -111,15 +118,33 @@ class ServingSnapshotRepository(BeachRepository):
         rows = self._fetch_all("select beach_id, model_version from forecasts")
         return {str(row["beach_id"]): str(row["model_version"]) for row in rows}
 
+    def _parent_name_lookup(self) -> dict[str, str]:
+        if self._parent_name_by_member_id is not None:
+            return self._parent_name_by_member_id
+        mapping: dict[str, str] = {}
+        rows = self._fetch_all("select parent_beach_id, name, member_beach_ids from parent_beaches")
+        for row in rows:
+            parent_name = str(row["name"] or "").strip()
+            if not parent_name:
+                continue
+            for member_id in _parse_json_list(row["member_beach_ids"]):
+                member_key = str(member_id)
+                if member_key and member_key not in mapping:
+                    mapping[member_key] = parent_name
+        self._parent_name_by_member_id = mapping
+        return mapping
+
     def _active_advisory_beach_ids(self) -> set[str]:
         rows = self._fetch_all("select distinct beach_id from advisories_recent where status = 'active'")
         return {str(row["beach_id"]) for row in rows}
 
     def _beach_from_row(self, row: sqlite3.Row, model_version: str | None = None) -> BeachSummary:
         support = str(row["support_status"]) if model_version else "unsupported"
+        beach_id = str(row["beach_id"])
+        parent_name = self._parent_name_lookup().get(beach_id)
         return BeachSummary(
-            id=str(row["beach_id"]),
-            name=_derive_friendly_name(row),
+            id=beach_id,
+            name=parent_name or _derive_friendly_name(row),
             county=str(row["county"]),
             region=str(row["region"]),
             support_status=support,
@@ -159,6 +184,9 @@ class ServingSnapshotRepository(BeachRepository):
             if member_forecasts:
                 worst_band, worst_p, worst_model_v = max(member_forecasts, key=lambda item: item[1])
 
+            has_active = any(beach_id in active_beach_ids for beach_id in member_ids)
+            if has_active:
+                worst_band = "Very High"
             parents.append(
                 ParentBeachSummary(
                     id=str(row["parent_beach_id"]),
@@ -176,7 +204,7 @@ class ServingSnapshotRepository(BeachRepository):
                     ),
                     risk_band=worst_band,
                     p_exceed=worst_p,
-                    has_active_advisory=any(beach_id in active_beach_ids for beach_id in member_ids),
+                    has_active_advisory=has_active,
                 )
             )
         return parents
@@ -223,10 +251,19 @@ class ServingSnapshotRepository(BeachRepository):
                 gen_at = gen_at.replace(tzinfo=UTC)
             age_hours = max(0, int((now_utc - gen_at).total_seconds() / 3600))
 
+        active_advisory = beach_id in self._active_advisory_beach_ids()
+        base_drivers = [str(item) for item in _parse_json_list(row.get("top_drivers"))]
+        drivers = (
+            ["Official health advisory is active for this station.", *base_drivers][:5]
+            if active_advisory
+            else base_drivers
+        )
+        band = "Very High" if active_advisory else str(row["risk_band"])
+
         return ForecastRecord(
             beach_id=beach_id,
             forecast_date=_parse_date(row.get("forecast_date")),
-            risk_band=str(row["risk_band"]),
+            risk_band=band,
             p_exceed=float(row["p_exceed"]),
             p_exceed_lower=_safe_float(row.get("p_exceed_lower")),
             p_exceed_upper=_safe_float(row.get("p_exceed_upper")),
@@ -234,10 +271,11 @@ class ServingSnapshotRepository(BeachRepository):
             lower_prediction_interval=_safe_float(row.get("lower_prediction_interval")),
             upper_prediction_interval=_safe_float(row.get("upper_prediction_interval")),
             prediction_interval_level=_safe_float(row.get("prediction_interval_level")),
-            top_drivers=[str(item) for item in _parse_json_list(row.get("top_drivers"))],
+            top_drivers=drivers,
             model_version=str(row["model_version"]),
             forecast_generated_at=gen_at or datetime.now(UTC),
             forecast_age_hours=age_hours,
+            official_advisory_active=active_advisory,
             environmental_summary=EnvironmentalSummary(
                 wave_height_m=pick("wave_height_m"),
                 dominant_period_s=pick("dominant_period_s"),
@@ -277,11 +315,14 @@ class ServingSnapshotRepository(BeachRepository):
         latest_value = float(latest["value"])
         ratio = max(latest_value / self.stv_threshold, 0.01)
         p_exceed = min(max(0.5 + 0.4 * (ratio - 1.0), 0.03), 0.97)
+        active_advisory = beach_id in self._active_advisory_beach_ids()
         drivers = [
+            "Official health advisory is active for this station." if active_advisory else None,
             "Latest official sample is above the marine threshold"
             if latest_value > self.stv_threshold
             else "Latest official sample remains below the marine threshold"
         ]
+        drivers = [d for d in drivers if d]
         for key, label in (("weather", "weather"), ("storm_drain_flow", "storm drain flow")):
             value = latest[key] if key in latest.keys() else None
             if value and str(value).lower() not in ("nan", "none", ""):
@@ -290,11 +331,12 @@ class ServingSnapshotRepository(BeachRepository):
         return ForecastRecord(
             beach_id=beach_id,
             forecast_date=forecast_date,
-            risk_band=risk_band(p_exceed),
+            risk_band=("Very High" if active_advisory else risk_band(p_exceed)),
             p_exceed=float(p_exceed),
             predicted_log_enterococcus=log10(max(latest_value, 1.0)),
             model_version="derived-persistence-v0",
             forecast_generated_at=datetime.now(UTC),
+            official_advisory_active=active_advisory,
             environmental_summary=EnvironmentalSummary(),
             top_drivers=drivers[:3],
         )
