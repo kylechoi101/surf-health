@@ -9,7 +9,7 @@ export const RISK_COPY: Record<RiskBand, { head: string; sub: string; cfu: strin
   Low:         { head: "Below standard.", sub: "Lower modeled exceedance risk today.",        cfu: "< 35 CFU",  drops: 1 },
   Moderate:    { head: "Caution.",         sub: "Elevated modeled risk today.",                 cfu: "35–104",    drops: 2 },
   High:        { head: "Warning.",         sub: "Avoid water contact and check advisories.",    cfu: "104–320",   drops: 3 },
-  "Very High": { head: "Closure level.",   sub: "Check posted county advisory before entering.", cfu: "> 320",     drops: 3 },
+  "Very High": { head: "Closure level.",   sub: "Check posted county advisory before entering or high model prediction.", cfu: "> 320",     drops: 3 },
 };
 
 export const RISK_COLORS_DEEP: Record<RiskBand, { fill: string; bg: string; ink: string }> = {

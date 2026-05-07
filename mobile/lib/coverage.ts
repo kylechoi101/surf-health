@@ -22,5 +22,12 @@ export function findModeledBeach<T extends CoverageTagged & { id: string }>(
     return firstModeledBeach(sites);
   }
 
-  return filterModeledBeaches(sites).find((site) => site.id === id) ?? null;
+  // First try to find the exact beach
+  const exactMatch = sites.find((site) => site.id === id);
+  if (exactMatch) {
+    return exactMatch;
+  }
+
+  // If no exact match, return the first available beach
+  return firstModeledBeach(sites);
 }

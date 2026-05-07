@@ -127,7 +127,8 @@ export default function HomeTab() {
         <View style={s.disk2} pointerEvents="none" />
         <View style={s.diskGlow} pointerEvents="none" />
         {/* Soft horizon line */}
-        <View style={s.horizon} pointerEvents="none" />
+        <View style={s.diskGlow} pointerEvents="none" />
+            {/* Removed white line under icon */}
 
         <SafeAreaView edges={["top"]}>
           <View style={s.brand}>
@@ -345,14 +346,7 @@ const s = StyleSheet.create({
     borderRadius: 45,
     backgroundColor: "rgba(255,255,255,0.07)",
   },
-  horizon: {
-    position: "absolute",
-    bottom: 0,
-    left: 0,
-    right: 0,
-    height: 1,
-    backgroundColor: "rgba(255,255,255,0.08)",
-  },
+  // Removed white line under icon
 
   brand: { flexDirection: "row", alignItems: "center", marginTop: 6 },
   brandLogoWrap: {

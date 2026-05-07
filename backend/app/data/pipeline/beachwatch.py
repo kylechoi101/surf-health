@@ -269,7 +269,7 @@ def derive_parent_beaches(stations: pd.DataFrame) -> pd.DataFrame:
                 "county": sub["county"].iloc[0],
                 "region": sub["region"].iloc[0],
                 "support_status": (
-                    "production" if (sub["support_status"] == "production").any() else "unsupported"
+                    "production" if (sub["support_status"] == "production").any() else "beta"
                 ),
                 "latitude": float(sub["latitude"].dropna().mean()) if sub["latitude"].notna().any() else None,
                 "longitude": float(sub["longitude"].dropna().mean()) if sub["longitude"].notna().any() else None,
