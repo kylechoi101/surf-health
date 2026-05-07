@@ -1,11 +1,11 @@
 {
-  "generated_at": "2026-05-07T03:11:27.149637+00:00",
+  "generated_at": "2026-05-07T04:11:30.095115+00:00",
   "forecast_date": "2026-05-06",
   "model_version": "hist-gbm-curated-v0",
   "risk_threshold": 0.3,
   "total_beaches": 164,
   "active_advisories": 35,
-  "agreement_rate": 0.171,
+  "agreement_rate": 0.2,
   "pool_metrics": {
     "acute": {
       "advised_beaches": 0,
@@ -14,8 +14,8 @@
     },
     "chronic": {
       "advised_beaches": 22,
-      "model_flagged": 5,
-      "agreement_rate": 0.227
+      "model_flagged": 6,
+      "agreement_rate": 0.273
     },
     "stale": {
       "advised_beaches": 13,
@@ -29,11 +29,11 @@
     }
   },
   "false_negatives": {
-    "count": 29,
+    "count": 28,
     "description": "Active advisory but model says Low/Moderate",
     "by_pool": {
       "acute": 0,
-      "chronic": 17,
+      "chronic": 16,
       "stale": 12,
       "unknown_duration": 0
     },
@@ -133,83 +133,55 @@
       {
         "beach_id": "ca432205-san-mateo-san-gregorio-state-beach-san-gregorio-state-beach",
         "risk_band": "Moderate",
-        "p_exceed": 0.205,
+        "p_exceed": 0.264,
         "pool": "chronic",
         "advisory_age_days": 70
       },
       {
         "beach_id": "ca852440-san-mateo-pillar-point-harbor-pillar-point-5",
         "risk_band": "Moderate",
-        "p_exceed": 0.213,
+        "p_exceed": 0.269,
         "pool": "chronic",
         "advisory_age_days": 125
       },
       {
         "beach_id": "ca674364-los-angeles-inner-cabrillo-beach-cb-02",
         "risk_band": "Moderate",
-        "p_exceed": 0.232,
+        "p_exceed": 0.271,
         "pool": "chronic",
         "advisory_age_days": 133
-      },
-      {
-        "beach_id": "ca852440-san-mateo-pillar-point-harbor-pillar-point-9",
-        "risk_band": "Moderate",
-        "p_exceed": 0.258,
-        "pool": "chronic",
-        "advisory_age_days": 70
       }
     ]
   },
   "false_positives": {
-    "count": 7,
+    "count": 4,
     "description": "Model says High/VeryHigh but no active advisory",
     "worst": [
       {
-        "beach_id": "ca880471-santa-cruz-capitola-city-beach-o235",
-        "risk_band": "High",
-        "p_exceed": 0.505,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
-        "beach_id": "ca905766-santa-cruz-main-beach-o450",
-        "risk_band": "High",
-        "p_exceed": 0.464,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
         "beach_id": "ca447069-san-mateo-pacifica-state-beach-linda-mar-beach-7",
         "risk_band": "High",
-        "p_exceed": 0.456,
+        "p_exceed": 0.566,
         "pool": "none",
         "advisory_age_days": null
       },
       {
         "beach_id": "ca880471-santa-cruz-capitola-city-beach-o240",
         "risk_band": "High",
-        "p_exceed": 0.445,
+        "p_exceed": 0.341,
         "pool": "none",
         "advisory_age_days": null
       },
       {
-        "beach_id": "ca905766-santa-cruz-main-beach-o460",
+        "beach_id": "ca880471-santa-cruz-capitola-city-beach-o235",
         "risk_band": "High",
-        "p_exceed": 0.405,
+        "p_exceed": 0.329,
         "pool": "none",
         "advisory_age_days": null
       },
       {
-        "beach_id": "ca883945-san-mateo-pescadero-state-beach-pescadero-state-beach",
+        "beach_id": "ca852440-san-mateo-pillar-point-harbor-pillar-point-7",
         "risk_band": "High",
-        "p_exceed": 0.363,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
-        "beach_id": "ca202251-santa-cruz-cowell-beach-o490",
-        "risk_band": "High",
-        "p_exceed": 0.35,
+        "p_exceed": 0.303,
         "pool": "none",
         "advisory_age_days": null
       }
