@@ -66,6 +66,13 @@ def main() -> None:
     forecast_path = curated_dir / "forecasts.parquet"
     forecasts = pd.read_parquet(forecast_path) if forecast_path.exists() else pd.DataFrame()
 
+    advisories_path = curated_dir / "advisories.parquet"
+    advisories = pd.read_parquet(advisories_path) if advisories_path.exists() else pd.DataFrame()
+    active_advisory_ids: set[str] = set()
+    if not advisories.empty and "status" in advisories.columns and "beach_id" in advisories.columns:
+        active = advisories[advisories["status"] == "active"][["beach_id"]].drop_duplicates()
+        active_advisory_ids = {str(v) for v in active["beach_id"].tolist()}
+
     env_path = curated_dir / "latest_env.parquet"
     latest_env = pd.read_parquet(env_path) if env_path.exists() else pd.DataFrame()
 
@@ -73,7 +80,7 @@ def main() -> None:
     if not forecasts.empty:
         for _, row in forecasts.iterrows():
             bid = str(row["beach_id"])
-            forecast_lookup[bid] = {
+            base_forecast = {
                 "risk_band": clean_text(row.get("risk_band")),
                 "p_exceed": safe_float(row.get("p_exceed")),
                 "p_exceed_lower": safe_float(row.get("p_exceed_lower")),
@@ -82,6 +89,18 @@ def main() -> None:
                 "forecast_generated_at": to_iso(row.get("forecast_generated_at")),
                 "top_drivers": to_driver_list(row.get("top_drivers")),
             }
+            if bid in active_advisory_ids:
+                base_forecast = {
+                    **base_forecast,
+                    "model_risk_band": base_forecast.get("risk_band"),
+                    "official_advisory_active": True,
+                    "risk_band": "Very High",
+                    "top_drivers": [
+                        "Official health advisory is active for this station.",
+                        *to_driver_list(row.get("top_drivers")),
+                    ][:5],
+                }
+            forecast_lookup[bid] = base_forecast
 
     env_lookup: dict[str, dict[str, object]] = {}
     if not latest_env.empty:
@@ -108,6 +127,7 @@ def main() -> None:
         support_status = clean_text(row.get("support_status"))
         if not forecast:
             support_status = "unsupported"
+        has_active_advisory = bid in active_advisory_ids
 
         b_name = clean_text(row.get("beach_name"))
         s_name = clean_text(row.get("name"))
@@ -130,6 +150,7 @@ def main() -> None:
                 "longitude": safe_float(row.get("longitude")),
                 "support_status": support_status,
                 "latest_official_sample_at": to_iso(row.get("latest_official_sample_at")),
+                "has_active_advisory": has_active_advisory,
                 "forecast": forecast,
                 "env": env,
             }

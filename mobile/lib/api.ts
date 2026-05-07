@@ -35,6 +35,7 @@ export interface ForecastRecord {
   model_version: string;
   forecast_generated_at: string;
   forecast_age_hours?: number;
+  official_advisory_active?: boolean;
   environmental_summary: {
     wave_height_m: number | null;
     dominant_period_s: number | null;

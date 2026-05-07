@@ -75,17 +75,22 @@ class HierarchicalProbabilityCalibrator:
         *,
         county_prior_strength: float = 64.0,
         site_prior_strength: float = 24.0,
+        station_prior_strength: float = 24.0,
         min_county_rows: int = 24,
         min_site_rows: int = 8,
+        min_station_rows: int = 16,
     ) -> None:
         self.county_prior_strength = county_prior_strength
         self.site_prior_strength = site_prior_strength
+        self.station_prior_strength = station_prior_strength
         self.min_county_rows = min_county_rows
         self.min_site_rows = min_site_rows
+        self.min_station_rows = min_station_rows
         self.global_intercept_ = 0.0
         self.global_slope_ = 1.0
         self.county_calibrations_: dict[str, _CountyCalibration] = {}
         self.site_calibrations_: dict[str, _SiteCalibration] = {}
+        self.station_calibrations_: dict[str, _SiteCalibration] = {}
         self.residual_variance_ = 0.05
 
     def fit(
@@ -129,6 +134,24 @@ class HierarchicalProbabilityCalibrator:
                 rows=int(len(rows)),
             )
 
+        # Optional: add a station-level intercept (partial pooling) when station_code
+        # is present. This captures lab/agency-specific baseline shifts shared across
+        # multiple beach_id aliases for the same monitoring station.
+        if "station_code" in metadata.columns:
+            station_series = metadata.get("station_code", pd.Series(index=metadata.index, dtype="object")).fillna("")
+            for station, group_index in station_series.groupby(station_series).groups.items():
+                rows = np.array(list(group_index), dtype=int)
+                if not station or len(rows) < self.min_station_rows:
+                    continue
+                observed_rate = (float(labels[rows].sum()) + 0.5) / (float(len(rows)) + 1.0)
+                predicted_rate = float(_inverse_logit(county_logits[rows]).mean())
+                raw_offset = float(_logit(np.array([observed_rate]))[0] - _logit(np.array([predicted_rate]))[0])
+                weight = len(rows) / (len(rows) + self.station_prior_strength)
+                self.station_calibrations_[str(station)] = _SiteCalibration(
+                    intercept=raw_offset * weight,
+                    rows=int(len(rows)),
+                )
+
         fitted_logits = self._linear_predictor(probabilities, metadata)
         fitted = _inverse_logit(fitted_logits)
         residuals = labels.astype(float) - fitted
@@ -157,6 +180,12 @@ class HierarchicalProbabilityCalibrator:
             mask = site_series.eq(site).to_numpy()
             if mask.any():
                 logits[mask] = logits[mask] + calibration.intercept
+        if "station_code" in metadata.columns and self.station_calibrations_:
+            station_series = metadata.get("station_code", pd.Series(index=metadata.index, dtype="object")).fillna("")
+            for station, calibration in self.station_calibrations_.items():
+                mask = station_series.eq(station).to_numpy()
+                if mask.any():
+                    logits[mask] = logits[mask] + calibration.intercept
         return logits
 
     def transform(
@@ -177,20 +206,25 @@ class HierarchicalProbabilityCalibrator:
         logits = self._linear_predictor(probabilities, metadata)
         county_counts = np.zeros(len(probabilities), dtype=float)
         site_counts = np.zeros(len(probabilities), dtype=float)
+        station_counts = np.zeros(len(probabilities), dtype=float)
 
         if metadata is not None and not metadata.empty:
             metadata = metadata.reset_index(drop=True)
             county_series = metadata.get("county", pd.Series(index=metadata.index, dtype="object")).fillna("")
             site_series = metadata.get("beach_id", pd.Series(index=metadata.index, dtype="object")).fillna("")
+            station_series = metadata.get("station_code", pd.Series(index=metadata.index, dtype="object")).fillna("")
             for i, county in enumerate(county_series.astype(str)):
                 county_counts[i] = self.county_calibrations_.get(county, _CountyCalibration(0.0, 1.0, 0)).rows
             for i, site in enumerate(site_series.astype(str)):
                 site_counts[i] = self.site_calibrations_.get(site, _SiteCalibration(0.0, 0)).rows
+            for i, station in enumerate(station_series.astype(str)):
+                station_counts[i] = self.station_calibrations_.get(station, _SiteCalibration(0.0, 0)).rows
 
         half_width = z_score * np.sqrt(
             self.residual_variance_
             + 1.0 / (county_counts + 1.0)
             + 1.0 / (site_counts + 1.0)
+            + 1.0 / (station_counts + 1.0)
         )
         lower = _inverse_logit(logits - half_width)
         upper = _inverse_logit(logits + half_width)

@@ -7,9 +7,8 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/daily-forecast.yml'
-      - 'backend/app/core/**'
-      - 'backend/app/data/**'
-      - 'backend/app/ml/**'
+      - 'backend/app/**'
+      - 'backend/scripts/**'
       - 'backend/pyproject.toml'
       - 'scripts/**'
   workflow_dispatch:
@@ -94,7 +93,7 @@ jobs:
       - name: Run ML training + forecasts
         run: |
           FORECAST_DATE=$(TZ=America/Los_Angeles date +%Y-%m-%d)
-          python -m app.ml.training --curated --forecast-date "$FORECAST_DATE" --winner-only --spatial-backtests --spatial-strategy requested --spatial-beach-limit 50 --spatial-county-limit 12 --training-window-days 365
+          python -m app.ml.training --curated --forecast-date "$FORECAST_DATE" --winner-only --spatial-backtests --spatial-strategy requested --spatial-beach-limit 50 --spatial-county-limit 12 --training-window-days 365 --forecast-min-recency-days 20
         working-directory: backend
 
       - name: Audit forecasts vs advisories

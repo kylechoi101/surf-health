@@ -5,8 +5,10 @@ import pandas as pd
 
 from app.data.pipeline.features import build_sliding_windows
 from app.ml.training import (
+    _best_valid_aucpr_model,
     _blocked_indices,
     _build_forecast_candidates,
+    _calibration_split,
     _compute_local_drivers,
     _fit_coastal_cell_logistic_artifacts,
     _fit_hierarchical_logistic_artifacts,
@@ -204,6 +206,62 @@ def test_build_forecast_candidates_uses_only_prior_observations():
     assert candidates.iloc[0]["uv_index"] == 9.0
 
 
+def test_build_forecast_candidates_drops_stations_with_stale_samples():
+    """California beach monitoring funding has been cut multiple times since 2020,
+    leaving many stations silent for months. Publishing a forecast for a station
+    whose last sample is 6 months old is misleading — the env covariates are
+    stale, the geomean features can't be computed, and downstream agreement
+    metrics get inflated by these zombie stations.
+    """
+    rows = []
+    # alpha: actively monitored — most recent sample 5 days before forecast.
+    for offset in range(0, 30, 2):  # 15 samples spaced 2 days apart, latest = forecast - 5d
+        sample_dt = pd.Timestamp("2026-04-20") - pd.Timedelta(days=offset + 5)
+        rows.append({
+            "beach_id": "alpha", "sample_date": sample_dt.strftime("%Y-%m-%d"),
+            "sample_time": sample_dt.strftime("%Y-%m-%dT08:00:00-07:00"),
+            "enterococcus_value": 50.0, "exceeds_stv": 0,
+            "wave_height_m": 1.0, "dominant_period_s": 10.0,
+            "water_temperature_c": 14.0, "salinity_psu": 33.0,
+            "uv_index": 5.0, "wind_speed_mps": 3.0,
+            "tidal_height": 1.0, "surf_height_observed": 2.0, "turbidity_observed": 5.0,
+        })
+    # bravo: discontinued monitoring — last sample 60 days before forecast.
+    for offset in range(0, 60, 5):  # samples 60-115 days before forecast
+        sample_dt = pd.Timestamp("2026-04-20") - pd.Timedelta(days=offset + 60)
+        rows.append({
+            "beach_id": "bravo", "sample_date": sample_dt.strftime("%Y-%m-%d"),
+            "sample_time": sample_dt.strftime("%Y-%m-%dT08:00:00-07:00"),
+            "enterococcus_value": 50.0, "exceeds_stv": 0,
+            "wave_height_m": 1.0, "dominant_period_s": 10.0,
+            "water_temperature_c": 14.0, "salinity_psu": 33.0,
+            "uv_index": 5.0, "wind_speed_mps": 3.0,
+            "tidal_height": 1.0, "surf_height_observed": 2.0, "turbidity_observed": 5.0,
+        })
+    frame = pd.DataFrame(rows)
+    stations = pd.DataFrame([
+        {"beach_id": "alpha", "zip_code": "92037"},
+        {"beach_id": "bravo", "zip_code": "92038"},
+    ])
+    uv_daily = pd.DataFrame()
+
+    # Without recency filter: both beaches get forecast rows.
+    _, all_candidates = _build_forecast_candidates(frame, stations, uv_daily, date(2026, 4, 21))
+    assert set(all_candidates["beach_id"]) == {"alpha", "bravo"}
+
+    # With 20-day recency cutoff: only alpha (5d old) survives; bravo (60d old) drops.
+    _, fresh_candidates = _build_forecast_candidates(
+        frame, stations, uv_daily, date(2026, 4, 21), min_sample_recency_days=20,
+    )
+    assert set(fresh_candidates["beach_id"]) == {"alpha"}
+
+    # Tight cutoff: alpha (5d old) also drops if we require <=3 days.
+    _, very_fresh = _build_forecast_candidates(
+        frame, stations, uv_daily, date(2026, 4, 21), min_sample_recency_days=3,
+    )
+    assert len(very_fresh) == 0
+
+
 def test_spatial_backtests_emit_beach_and_county_metrics():
     rows = []
     for county, beach_id, offset in (
@@ -386,13 +444,13 @@ def test_fixture_training_keeps_neural_track_out_of_production():
 
 def test_two_stage_training_plan_shortlists_production_and_research_winners():
     metrics = {
-        "logistic_valid": {"brier": 0.22},
-        "logistic_coastal_cells_valid": {"brier": 0.24},
-        "logistic_hierarchical_valid": {"brier": 0.23},
-        "hist_gbm_valid": {"brier": 0.21},
-        "tcn_valid": {"brier": 0.16},
-        "transformer_valid": {"brier": 0.14},
-        "pinn_valid": {"brier": 0.17},
+        "logistic_valid": {"brier": 0.22, "aucpr": 0.55},
+        "logistic_coastal_cells_valid": {"brier": 0.24, "aucpr": 0.50},
+        "logistic_hierarchical_valid": {"brier": 0.23, "aucpr": 0.58},
+        "hist_gbm_valid": {"brier": 0.21, "aucpr": 0.62},
+        "tcn_valid": {"brier": 0.16, "aucpr": 0.71},
+        "transformer_valid": {"brier": 0.14, "aucpr": 0.78},
+        "pinn_valid": {"brier": 0.17, "aucpr": 0.69},
     }
 
     plan = _two_stage_training_plan(metrics, ["tcn", "transformer", "pinn"])
@@ -400,6 +458,103 @@ def test_two_stage_training_plan_shortlists_production_and_research_winners():
     assert plan.production_winner == "hist_gbm"
     assert plan.research_winner == "transformer"
     assert plan.spatial_backtest_models == ["hist_gbm", "transformer"]
+
+
+def test_two_stage_training_plan_picks_by_aucpr_not_brier():
+    """The selector now prefers higher AUCPR even when Brier favors a different model.
+
+    Brier is calibration-sensitive; the calibrator runs *after* selection, so
+    selection on Brier rewards models that are well-calibrated-but-flat.
+    Selecting on AUCPR rewards genuine rank quality, which is what we actually
+    want before the calibration stage.
+    """
+    metrics = {
+        "logistic_valid": {"brier": 0.10, "aucpr": 0.40},   # lowest Brier...
+        "hist_gbm_valid": {"brier": 0.18, "aucpr": 0.65},   # ...but worst rank quality
+        "logistic_hierarchical_valid": {"brier": 0.15, "aucpr": 0.58},
+        "logistic_coastal_cells_valid": {"brier": 0.13, "aucpr": 0.50},
+    }
+    plan = _two_stage_training_plan(metrics, [])
+    assert plan.production_winner == "hist_gbm"
+
+
+def test_two_stage_training_plan_breaks_aucpr_ties_with_lower_brier():
+    metrics = {
+        "logistic_valid": {"brier": 0.22, "aucpr": 0.60},
+        "hist_gbm_valid": {"brier": 0.18, "aucpr": 0.60},   # same AUCPR, lower Brier
+        "logistic_hierarchical_valid": {"brier": 0.20, "aucpr": 0.60},
+    }
+    plan = _two_stage_training_plan(metrics, [])
+    assert plan.production_winner == "hist_gbm"
+
+
+def test_best_valid_aucpr_model_falls_back_when_no_metrics():
+    metrics = {
+        "logistic_valid": {"brier": 0.20},  # missing aucpr
+    }
+    assert _best_valid_aucpr_model(metrics, ["logistic"], fallback="hist_gbm") == "hist_gbm"
+
+
+def test_calibration_split_produces_disjoint_halves_balanced_by_county():
+    valid_idx = np.arange(40, dtype=int)
+    metadata = pd.DataFrame({
+        "county": ["alpha"] * 12 + ["beta"] * 12 + ["gamma"] * 16,
+        "sample_date": pd.date_range("2026-04-01", periods=40, freq="D"),
+    })
+    cal_idx, val_metric_idx = _calibration_split(valid_idx, metadata)
+
+    # Halves are disjoint.
+    assert len(set(cal_idx).intersection(val_metric_idx)) == 0
+    # Halves cover all valid rows.
+    assert sorted(set(cal_idx).union(val_metric_idx)) == list(valid_idx)
+
+    # Each county is represented in both halves.
+    cal_counties = set(metadata.loc[cal_idx, "county"])
+    metric_counties = set(metadata.loc[val_metric_idx, "county"])
+    assert cal_counties == {"alpha", "beta", "gamma"}
+    assert metric_counties == {"alpha", "beta", "gamma"}
+
+
+def test_calibration_split_keeps_singleton_county_in_calibrator_half():
+    """If a county has only one valid sample, the calibrator must still see it
+    (otherwise the hierarchical calibrator falls back to a global intercept for
+    that county). The metric half drops the singleton.
+    """
+    valid_idx = np.arange(11, dtype=int)
+    metadata = pd.DataFrame({
+        "county": ["alpha"] * 5 + ["beta"] * 5 + ["solo_county"],
+        "sample_date": pd.date_range("2026-04-01", periods=11, freq="D"),
+    })
+    cal_idx, val_metric_idx = _calibration_split(valid_idx, metadata)
+
+    cal_counties = list(metadata.loc[cal_idx, "county"])
+    metric_counties = list(metadata.loc[val_metric_idx, "county"])
+
+    assert "solo_county" in cal_counties
+    assert "solo_county" not in metric_counties
+
+
+def test_calibration_split_is_deterministic_for_same_seed():
+    valid_idx = np.arange(20, dtype=int)
+    metadata = pd.DataFrame({
+        "county": ["alpha"] * 10 + ["beta"] * 10,
+        "sample_date": pd.date_range("2026-04-01", periods=20, freq="D"),
+    })
+    cal_a, metric_a = _calibration_split(valid_idx, metadata, seed=17)
+    cal_b, metric_b = _calibration_split(valid_idx, metadata, seed=17)
+    np.testing.assert_array_equal(cal_a, cal_b)
+    np.testing.assert_array_equal(metric_a, metric_b)
+
+
+def test_calibration_split_falls_back_to_full_slice_when_too_small():
+    valid_idx = np.array([0, 1, 2], dtype=int)
+    metadata = pd.DataFrame({
+        "county": ["alpha", "beta", "gamma"],
+        "sample_date": pd.date_range("2026-04-01", periods=3, freq="D"),
+    })
+    cal_idx, val_metric_idx = _calibration_split(valid_idx, metadata)
+    np.testing.assert_array_equal(cal_idx, valid_idx)
+    np.testing.assert_array_equal(val_metric_idx, valid_idx)
 
 
 def test_hierarchical_logistic_falls_back_county_then_region_then_global():

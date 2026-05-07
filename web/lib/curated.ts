@@ -12,9 +12,13 @@ import { cleanDisplayText } from "@/lib/utils";
 export interface ForecastData {
   risk_band: RiskBand;
   p_exceed: number | null;
+  p_exceed_lower?: number | null;
+  p_exceed_upper?: number | null;
   model_version: string;
   forecast_generated_at: string | null;
   top_drivers: string[];
+  official_advisory_active?: boolean;
+  model_risk_band?: RiskBand;
 }
 
 export interface EnvData {
@@ -37,6 +41,7 @@ export interface Beach {
   longitude: number;
   support_status: "production" | "unsupported" | "beta";
   latest_official_sample_at: string | null;
+  has_active_advisory?: boolean;
   forecast: ForecastData | null;
   env: EnvData | null;
 }
@@ -82,12 +87,28 @@ export interface SiteStats {
   groupedForecastCoverage: number;
   latestPublishAt: string | null;
   productionModel: string | null;
+  publicReleaseEligible: boolean | null;
+  deploymentStage: string | null;
+  promotionBlocker: string | null;
+  // Gate-relevant agreement: acute (<=14d advisories) when available,
+  // else chronic (15-365d), else null. The legacy combined rate is no
+  // longer surfaced because it mixed stale postings with live advisories.
+  agreementRate: number | null;
+  agreementPool: "acute" | "chronic" | null;
 }
 
 interface SystemHealthFile {
   pipeline_freshness?: string;
   model_registry?: {
     production_model?: string;
+    public_release_eligible?: boolean;
+    deployment_stage?: string;
+    promotion_blockers?: string[];
+  };
+  forecast_audit?: {
+    agreement_rate?: number;
+    acute_agreement_rate?: number | null;
+    chronic_agreement_rate?: number | null;
   };
 }
 
@@ -155,6 +176,19 @@ export function siteStats(): SiteStats {
   const systemHealth = readSystemHealth();
   const modeledStations = beaches.filter((beach) => beach.support_status === "production").length;
   const sampleOnlyGroups = Math.max(parents.length - activeForecastGroups, 0);
+  const blockers = systemHealth.model_registry?.promotion_blockers ?? [];
+  const promotionBlocker = blockers.length ? blockers[blockers.length - 1] : null;
+
+  const audit = systemHealth.forecast_audit ?? {};
+  let agreementRate: number | null = null;
+  let agreementPool: SiteStats["agreementPool"] = null;
+  if (typeof audit.acute_agreement_rate === "number") {
+    agreementRate = audit.acute_agreement_rate;
+    agreementPool = "acute";
+  } else if (typeof audit.chronic_agreement_rate === "number") {
+    agreementRate = audit.chronic_agreement_rate;
+    agreementPool = "chronic";
+  }
 
   return {
     totalStations: beaches.length,
@@ -166,6 +200,11 @@ export function siteStats(): SiteStats {
     groupedForecastCoverage: parents.length > 0 ? activeForecastGroups / parents.length : 0,
     latestPublishAt: systemHealth.pipeline_freshness ?? null,
     productionModel: systemHealth.model_registry?.production_model ?? null,
+    publicReleaseEligible: systemHealth.model_registry?.public_release_eligible ?? null,
+    deploymentStage: systemHealth.model_registry?.deployment_stage ?? null,
+    promotionBlocker,
+    agreementRate,
+    agreementPool,
   };
 }
 

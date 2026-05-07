@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { Feather } from "@expo/vector-icons";
 import {
   getBeaches,
   getForecast,
@@ -13,6 +14,7 @@ import {
 } from "../../lib/api";
 import { filterModeledBeaches, findModeledBeach } from "../../lib/coverage";
 import { daysSince, RISK_COLORS, riskAdvice, riskHead } from "../../lib/utils";
+import { palette, bandColor } from "../../lib/theme";
 import { DropRow, SeverityBar, type RiskBand } from "../../components/RiskSystem";
 
 export default function ParentBeachScreen() {
@@ -51,18 +53,19 @@ export default function ParentBeachScreen() {
 
   if (loading) {
     return (
-      <View style={{ flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: "#0b4266" }}>
-        <ActivityIndicator color="#fff" size="large" />
+      <View style={{ flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: palette.navy }}>
+        <ActivityIndicator color={palette.bone} size="large" />
       </View>
     );
   }
 
   if (!parent) {
     return (
-      <SafeAreaView style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
-        <Text style={{ fontSize: 16, color: "#64748b" }}>Beach not found</Text>
-        <TouchableOpacity onPress={() => router.back()} style={{ marginTop: 16 }}>
-          <Text style={{ color: "#0b4266", fontWeight: "600" }}>← Go back</Text>
+      <SafeAreaView style={{ flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: palette.bone }}>
+        <Text style={{ fontSize: 16, color: palette.muted }}>Beach not found</Text>
+        <TouchableOpacity onPress={() => router.back()} style={{ marginTop: 16, flexDirection: "row", alignItems: "center", gap: 6 }}>
+          <Feather name="arrow-left" size={14} color={palette.navy} />
+          <Text style={{ color: palette.navy, fontWeight: "600" }}>Go back</Text>
         </TouchableOpacity>
       </SafeAreaView>
     );
@@ -72,13 +75,13 @@ export default function ParentBeachScreen() {
   const colors = RISK_COLORS[band] ?? RISK_COLORS.Moderate;
 
   return (
-    <View style={{ flex: 1 }}>
+    <View style={{ flex: 1, backgroundColor: palette.bone }}>
       <ScrollView contentContainerStyle={{ paddingBottom: 48 }}>
         <View style={[s.hero, { backgroundColor: colors.hero[0] }]}>
           <SafeAreaView edges={["top"]}>
             <View style={s.navRow}>
               <TouchableOpacity onPress={() => router.back()} style={s.backBtn}>
-                <Text style={s.backText}>‹</Text>
+                <Feather name="chevron-left" size={20} color={palette.white} />
               </TouchableOpacity>
             </View>
             <Text style={s.heroSub}>{parent.county} County · {parent.region}</Text>
@@ -148,26 +151,31 @@ export default function ParentBeachScreen() {
                 <TouchableOpacity
                   key={beach.id}
                   onPress={() => router.push(`/beach/${beach.id}` as any)}
-                  style={[s.stationRow, index > 0 && { borderTopWidth: 1, borderTopColor: "#f1f5f9" }]}
+                  style={[s.stationRow, index > 0 && { borderTopWidth: 1, borderTopColor: palette.lineSoft }]}
+                  activeOpacity={0.7}
                 >
-                  <View style={[s.stationDot, { backgroundColor: stationColors?.hero[0] ?? "#94a3b8" }]} />
+                  {stationBand ? (
+                    <DropRow band={stationBand} size={10} />
+                  ) : (
+                    <View style={[s.stationDot, { backgroundColor: palette.sand }]} />
+                  )}
                   <View style={{ flex: 1 }}>
                     <Text style={s.stationName}>{beach.name}</Text>
                     <Text style={s.stationSub}>
                       {forecast ? `${Math.round(forecast.p_exceed * 100)}% exceed chance` : "Forecast unavailable"}
                       {sampleAge != null
-                        ? ` · sampled ${
+                        ? `  ·  sampled ${
                             sampleAge === 0 ? "today" : sampleAge === 1 ? "yesterday" : `${sampleAge}d ago`
                           }`
                         : ""}
                     </Text>
                   </View>
                   {stationBand && (
-                    <Text style={[s.stationRisk, { color: stationColors?.hero[0] ?? "#64748b" }]}>
+                    <Text style={[s.stationRisk, { color: bandColor(stationBand) }]}>
                       {stationBand}
                     </Text>
                   )}
-                  <Text style={s.chevron}>›</Text>
+                  <Feather name="chevron-right" size={16} color={palette.sand} />
                 </TouchableOpacity>
               );
             })}
@@ -181,29 +189,31 @@ export default function ParentBeachScreen() {
 const s = StyleSheet.create({
   hero: { padding: 20, paddingBottom: 28 },
   navRow: { flexDirection: "row", alignItems: "center", marginTop: 4 },
-  backBtn: { padding: 4 },
-  backText: { color: "#fff", fontSize: 28, lineHeight: 32, fontWeight: "300" },
-  heroSub: { color: "rgba(255,255,255,0.8)", fontSize: 11, fontWeight: "600", textTransform: "uppercase", letterSpacing: 1, marginTop: 20 },
-  heroTitle: { color: "#fff", fontSize: 28, fontWeight: "700", marginTop: 4, lineHeight: 34 },
+  backBtn: {
+    width: 36, height: 36, borderRadius: 12,
+    backgroundColor: "rgba(255,255,255,0.20)",
+    alignItems: "center", justifyContent: "center",
+  },
+  heroSub: { color: "rgba(255,255,255,0.85)", fontSize: 11, fontWeight: "700", textTransform: "uppercase", letterSpacing: 1.2, marginTop: 22 },
+  heroTitle: { color: palette.white, fontSize: 30, fontWeight: "700", marginTop: 4, lineHeight: 36, letterSpacing: -0.4 },
   heroMeta: { flexDirection: "row", alignItems: "center", gap: 10, marginTop: 10 },
   heroMetaText: { color: "rgba(255,255,255,0.85)", fontSize: 12, fontWeight: "500" },
-  riskPill: { backgroundColor: "rgba(255,255,255,0.25)", paddingHorizontal: 10, paddingVertical: 4, borderRadius: 20 },
-  riskPillText: { color: "#fff", fontSize: 11, fontWeight: "700" },
-  heroAdvice: { color: "rgba(255,255,255,0.85)", fontSize: 13, lineHeight: 20, marginTop: 10 },
+  riskPill: { backgroundColor: "rgba(255,255,255,0.22)", paddingHorizontal: 10, paddingVertical: 4, borderRadius: 999 },
+  riskPillText: { color: palette.white, fontSize: 11, fontWeight: "700", letterSpacing: 0.3 },
+  heroAdvice: { color: "rgba(255,255,255,0.86)", fontSize: 13, lineHeight: 20, marginTop: 10, maxWidth: 320 },
   advisoryCard: { backgroundColor: "#fee2e2", padding: 16, borderRadius: 18, borderWidth: 1, borderColor: "#fca5a5" },
   advisoryTitle: { color: "#991b1b", fontWeight: "700", fontSize: 13, textTransform: "uppercase", letterSpacing: 0.5 },
   advisoryBody: { color: "#991b1b", marginTop: 4, fontSize: 15, lineHeight: 22 },
-  sectionLabel: { fontSize: 11, fontWeight: "700", color: "#64748b", textTransform: "uppercase", letterSpacing: 1, marginBottom: 10 },
+  sectionLabel: { fontSize: 11, fontWeight: "700", color: palette.muted, textTransform: "uppercase", letterSpacing: 1.2, marginBottom: 10 },
   riskBanner: { borderRadius: 18, padding: 16, flexDirection: "row", alignItems: "center", gap: 12 },
-  riskBandText: { fontSize: 18, fontWeight: "700" },
+  riskBandText: { fontSize: 18, fontWeight: "700", letterSpacing: -0.2 },
   riskAdviceText: { fontSize: 12, marginTop: 3, lineHeight: 17 },
-  pctBig: { fontSize: 26, fontWeight: "700", lineHeight: 30 },
+  pctBig: { fontSize: 26, fontWeight: "700", lineHeight: 30, letterSpacing: -0.3 },
   pctSub: { fontSize: 9, fontWeight: "600", opacity: 0.75 },
-  stationCard: { backgroundColor: "#fff", borderRadius: 18, borderWidth: 1, borderColor: "#e5e7eb", overflow: "hidden" },
+  stationCard: { backgroundColor: palette.white, borderRadius: 18, borderWidth: 1, borderColor: palette.lineSoft, overflow: "hidden" },
   stationRow: { flexDirection: "row", alignItems: "center", gap: 12, padding: 16 },
   stationDot: { width: 10, height: 10, borderRadius: 5, flexShrink: 0 },
-  stationName: { fontSize: 14, fontWeight: "600", color: "#0f172a" },
-  stationSub: { fontSize: 11, color: "#64748b", marginTop: 2 },
+  stationName: { fontSize: 14, fontWeight: "600", color: palette.ink },
+  stationSub: { fontSize: 11, color: palette.muted, marginTop: 2 },
   stationRisk: { fontSize: 11, fontWeight: "700", letterSpacing: 0.3 },
-  chevron: { fontSize: 20, color: "#cbd5e1", fontWeight: "300" },
 });

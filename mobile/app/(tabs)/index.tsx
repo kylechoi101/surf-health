@@ -1,12 +1,39 @@
 import { useEffect, useState } from "react";
-import { View, Text, TextInput, TouchableOpacity, ScrollView, StyleSheet, ActivityIndicator, Image } from "react-native";
+import {
+  View,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  ScrollView,
+  StyleSheet,
+  ActivityIndicator,
+  Image,
+} from "react-native";
 import { useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import * as Location from "expo-location";
-import { getParentBeaches, getSystemHealth, type ParentBeachSummary, type SystemHealthResponse } from "../../lib/api";
+import { Feather } from "@expo/vector-icons";
+import {
+  getParentBeaches,
+  getSystemHealth,
+  type ParentBeachSummary,
+  type SystemHealthResponse,
+} from "../../lib/api";
 import { filterModeledBeaches } from "../../lib/coverage";
-import { RISK_COLORS } from "../../lib/utils";
-import { DropRow, SeverityBar, RISK_COPY, type RiskBand } from "../../components/RiskSystem";
+import {
+  palette,
+  radius,
+  shadows,
+  space,
+  typography,
+  bandColor,
+} from "../../lib/theme";
+import {
+  DropRow,
+  SeverityBar,
+  RISK_COPY,
+  type RiskBand,
+} from "../../components/RiskSystem";
 
 function distanceKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const R = 6371;
@@ -14,7 +41,9 @@ function distanceKm(lat1: number, lon1: number, lat2: number, lon2: number): num
   const dLon = (lon2 - lon1) * (Math.PI / 180);
   const a =
     Math.sin(dLat / 2) ** 2 +
-    Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) * Math.sin(dLon / 2) ** 2;
+    Math.cos(lat1 * (Math.PI / 180)) *
+      Math.cos(lat2 * (Math.PI / 180)) *
+      Math.sin(dLon / 2) ** 2;
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
@@ -25,25 +54,26 @@ function fmtDist(km: number): string {
 
 export default function HomeTab() {
   const [beaches, setBeaches] = useState<ParentBeachSummary[]>([]);
-  const [health, setHealth] = useState<SystemHealthResponse | null>(null);
+  const [, setHealth] = useState<SystemHealthResponse | null>(null);
   const [q, setQ] = useState("");
   const [loading, setLoading] = useState(true);
   const [userCoords, setUserCoords] = useState<{ lat: number; lon: number } | null>(null);
   const router = useRouter();
 
   useEffect(() => {
-    Promise.all([
-      getParentBeaches(),
-      getSystemHealth().catch(() => null),
-    ]).then(([bs, h]) => {
-      setBeaches(filterModeledBeaches(bs));
-      setHealth(h);
-    }).finally(() => setLoading(false));
+    Promise.all([getParentBeaches(), getSystemHealth().catch(() => null)])
+      .then(([bs, h]) => {
+        setBeaches(filterModeledBeaches(bs));
+        setHealth(h);
+      })
+      .finally(() => setLoading(false));
 
     Location.requestForegroundPermissionsAsync().then(({ status }) => {
       if (status === "granted") {
         Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced })
-          .then((loc) => setUserCoords({ lat: loc.coords.latitude, lon: loc.coords.longitude }))
+          .then((loc) =>
+            setUserCoords({ lat: loc.coords.latitude, lon: loc.coords.longitude })
+          )
           .catch(() => {});
       }
     });
@@ -52,22 +82,33 @@ export default function HomeTab() {
   const sorted = userCoords
     ? [...beaches].sort(
         (a, b) =>
-          distanceKm(userCoords.lat, userCoords.lon, a.geometry.latitude, a.geometry.longitude) -
-          distanceKm(userCoords.lat, userCoords.lon, b.geometry.latitude, b.geometry.longitude)
+          distanceKm(
+            userCoords.lat,
+            userCoords.lon,
+            a.geometry.latitude,
+            a.geometry.longitude
+          ) -
+          distanceKm(
+            userCoords.lat,
+            userCoords.lon,
+            b.geometry.latitude,
+            b.geometry.longitude
+          )
       )
     : beaches;
 
   const results = q
-    ? sorted.filter(
-        (b) =>
-          b.name.toLowerCase().includes(q.toLowerCase()) ||
-          b.county.toLowerCase().includes(q.toLowerCase())
-      ).slice(0, 20)
+    ? sorted
+        .filter(
+          (b) =>
+            b.name.toLowerCase().includes(q.toLowerCase()) ||
+            b.county.toLowerCase().includes(q.toLowerCase())
+        )
+        .slice(0, 20)
     : sorted.slice(0, 10);
 
   const nearest = !q && sorted.length > 0 ? sorted[0] : null;
   const nearestBand = nearest?.risk_band as RiskBand | undefined;
-  const nearestColors = nearestBand ? RISK_COLORS[nearestBand] : null;
 
   function pick(b: ParentBeachSummary) {
     if (b.station_count > 1) {
@@ -79,52 +120,85 @@ export default function HomeTab() {
 
   return (
     <View style={s.root}>
-      {/* Hero header */}
+      {/* Hero */}
       <View style={s.hero}>
-        <SafeAreaView edges={["top"]}>
-          {/* Sun + wave decorative SVG-equivalent using Views */}
-          <View style={s.sunDecor} />
-          <View style={s.waveDecor} />
+        {/* Decorative layered translucent disks (sun) */}
+        <View style={s.disk1} pointerEvents="none" />
+        <View style={s.disk2} pointerEvents="none" />
+        <View style={s.diskGlow} pointerEvents="none" />
+        {/* Soft horizon line */}
+        <View style={s.horizon} pointerEvents="none" />
 
+        <SafeAreaView edges={["top"]}>
           <View style={s.brand}>
-            <Image source={require('../../assets/lockup.png')} style={{height: 27, aspectRatio: 1.85, marginRight: 8, borderRadius: 6}} resizeMode="contain" />
+            <View style={s.brandLogoWrap}>
+              <Image
+                source={require("../../assets/lockup.png")}
+                style={s.brandLogo}
+                resizeMode="cover"
+              />
+            </View>
             <Text style={s.brandMark}>SHORELIFE</Text>
           </View>
 
-          {!loading && nearest && nearestColors && nearestBand ? (
-            /* Nearest beach hero card */
-            <TouchableOpacity onPress={() => pick(nearest)} style={s.nearestCard} activeOpacity={0.85}>
-              <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start" }}>
+          {!loading && nearest && nearestBand ? (
+            <TouchableOpacity
+              onPress={() => pick(nearest)}
+              style={s.nearestCard}
+              activeOpacity={0.88}
+            >
+              <View style={s.nearestTopRow}>
                 <View style={{ flex: 1 }}>
                   <Text style={s.nearestEyebrow}>Can I swim today?</Text>
-                  <Text style={s.nearestVerdict}>{RISK_COPY[nearestBand].head}</Text>
+                  <Text style={s.nearestVerdict}>
+                    {RISK_COPY[nearestBand].head}
+                  </Text>
                   <Text style={s.nearestSub}>{RISK_COPY[nearestBand].sub}</Text>
                 </View>
                 <DropRow band={nearestBand} size={15} />
               </View>
-              <View style={{ marginTop: 12 }}>
+              <View style={{ marginTop: space.md }}>
                 <SeverityBar band={nearestBand} height={5} />
               </View>
-              <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: 10 }}>
-                <Text style={s.nearestBeachName}>{nearest.name}</Text>
-                {userCoords && (
-                  <Text style={s.nearestDist}>
-                    {fmtDist(distanceKm(userCoords.lat, userCoords.lon, nearest.geometry.latitude, nearest.geometry.longitude))}
-                  </Text>
-                )}
+              <View style={s.nearestFooter}>
+                <Text style={s.nearestBeachName} numberOfLines={1}>
+                  {nearest.name}
+                </Text>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                  {userCoords && (
+                    <Text style={s.nearestDist}>
+                      {fmtDist(
+                        distanceKm(
+                          userCoords.lat,
+                          userCoords.lon,
+                          nearest.geometry.latitude,
+                          nearest.geometry.longitude
+                        )
+                      )}
+                    </Text>
+                  )}
+                  <Feather
+                    name="chevron-right"
+                    size={14}
+                    color="rgba(255,255,255,0.7)"
+                  />
+                </View>
               </View>
             </TouchableOpacity>
           ) : !loading ? (
             <View style={{ marginTop: 24 }}>
               <Text style={s.headline}>Know before{"\n"}you paddle out.</Text>
-              <Text style={s.sub}>Daily bacteria + surf forecast for California beaches.</Text>
+              <Text style={s.sub}>
+                Daily bacteria + surf forecast for California beaches.
+              </Text>
             </View>
           ) : null}
 
           {nearest && nearest.has_active_advisory && (
             <View style={s.advisoryBanner}>
+              <Feather name="alert-triangle" size={11} color="#fca5a5" />
               <Text style={s.advisoryText}>
-                ⚠ ACTIVE ADVISORY AT NEAREST BEACH
+                ACTIVE ADVISORY AT NEAREST BEACH
               </Text>
             </View>
           )}
@@ -134,61 +208,100 @@ export default function HomeTab() {
       {/* Sheet */}
       <View style={s.sheet}>
         <View style={s.searchBox}>
-          <Text style={s.searchIcon}>🔍</Text>
+          <Feather name="search" size={16} color={palette.muted} />
           <TextInput
             style={s.searchInput}
             value={q}
             onChangeText={setQ}
             placeholder="Search beaches, cities, counties"
-            placeholderTextColor="#94a3b8"
+            placeholderTextColor={palette.muted}
             clearButtonMode="while-editing"
           />
         </View>
 
         {loading ? (
-          <ActivityIndicator style={{ marginTop: 24 }} color="#0b4266" />
+          <ActivityIndicator
+            style={{ marginTop: 24 }}
+            color={palette.navy}
+          />
         ) : (
-          <ScrollView style={{ marginTop: 14 }} keyboardShouldPersistTaps="handled">
+          <ScrollView
+            style={{ marginTop: space.md }}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
             <Text style={s.sectionLabel}>
               {q ? "Results" : userCoords ? "Nearby beaches" : "California beaches"}
             </Text>
-            {results.map((b, idx) => {
+            {results.map((b) => {
               const band = b.risk_band as RiskBand | null;
-              const dist = userCoords && !q
-                ? distanceKm(userCoords.lat, userCoords.lon, b.geometry.latitude, b.geometry.longitude)
-                : null;
-              const colors = band ? RISK_COLORS[band] : null;
-              const dotColor = colors?.hero[0] ?? "#94a3b8";
+              const dist =
+                userCoords && !q
+                  ? distanceKm(
+                      userCoords.lat,
+                      userCoords.lon,
+                      b.geometry.latitude,
+                      b.geometry.longitude
+                    )
+                  : null;
               return (
-                <TouchableOpacity key={b.id} onPress={() => pick(b)} style={s.beachRow} activeOpacity={0.7}>
+                <TouchableOpacity
+                  key={b.id}
+                  onPress={() => pick(b)}
+                  style={s.beachRow}
+                  activeOpacity={0.65}
+                >
                   {band ? (
                     <DropRow band={band} size={11} />
                   ) : (
-                    <View style={[s.dot, { backgroundColor: "#94a3b8" }]} />
+                    <View style={s.dotInactive} />
                   )}
                   <View style={{ flex: 1 }}>
-                    <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                      <Text style={s.beachName}>{b.name}</Text>
-                      {b.has_active_advisory && <Text style={s.advisoryDot}>⚠</Text>}
+                    <View style={s.beachNameRow}>
+                      <Text style={s.beachName} numberOfLines={1}>
+                        {b.name}
+                      </Text>
+                      {b.has_active_advisory && (
+                        <Feather
+                          name="alert-triangle"
+                          size={11}
+                          color="#b91c1c"
+                          style={{ marginLeft: 6 }}
+                        />
+                      )}
                       {b.station_count > 1 && (
-                        <Text style={s.stationBadge}>{b.station_count} stations</Text>
+                        <Text style={s.stationBadge}>
+                          {b.station_count} stations
+                        </Text>
                       )}
                     </View>
                     <Text style={s.beachSub}>
-                      {b.county} County{dist != null ? ` · ${fmtDist(dist)}` : ` · ${b.region}`}
+                      {b.county} County
+                      {dist != null ? `  ·  ${fmtDist(dist)}` : `  ·  ${b.region}`}
                     </Text>
                   </View>
                   {band && (
-                    <Text style={[s.riskLabel, { color: dotColor }]}>{band}</Text>
+                    <Text
+                      style={[s.riskLabel, { color: bandColor(band) }]}
+                    >
+                      {band}
+                    </Text>
                   )}
-                  <Text style={s.chevron}>›</Text>
+                  <Feather
+                    name="chevron-right"
+                    size={16}
+                    color={palette.sand}
+                  />
                 </TouchableOpacity>
               );
             })}
             {q && results.length === 0 && (
-              <Text style={s.noResults}>No matches — try another search.</Text>
+              <View style={s.noResultsWrap}>
+                <Text style={s.noResultsTitle}>No matches</Text>
+                <Text style={s.noResultsSub}>Try another search.</Text>
+              </View>
             )}
-            <View style={{ height: 40 }} />
+            <View style={{ height: 60 }} />
           </ScrollView>
         )}
       </View>
@@ -197,66 +310,221 @@ export default function HomeTab() {
 }
 
 const s = StyleSheet.create({
-  root: { flex: 1, backgroundColor: "#0b4266" },
-  hero: { padding: 22, paddingBottom: 28, position: "relative", overflow: "hidden" },
-  sunDecor: {
-    position: "absolute", top: 0, right: 20, width: 80, height: 80,
-    borderRadius: 40, backgroundColor: "rgba(255,255,255,0.1)",
+  root: { flex: 1, backgroundColor: palette.navy },
+
+  hero: {
+    paddingHorizontal: space.xl,
+    paddingTop: space.sm,
+    paddingBottom: space.xxl,
+    position: "relative",
+    overflow: "hidden",
   },
-  waveDecor: {
-    position: "absolute", bottom: 0, left: 0, right: 0, height: 20,
-    backgroundColor: "rgba(255,255,255,0.07)", borderTopLeftRadius: 60, borderTopRightRadius: 60,
+  // Layered decorative disks (warm sun-glow effect)
+  disk1: {
+    position: "absolute",
+    top: -90,
+    right: -80,
+    width: 280,
+    height: 280,
+    borderRadius: 140,
+    backgroundColor: "rgba(232,179,65,0.10)",
   },
-  brand: { flexDirection: "row", alignItems: "center", marginTop: 8 },
-  brandMark: { color: "rgba(255,255,255,0.9)", fontSize: 12, fontWeight: "800", letterSpacing: 3 },
+  disk2: {
+    position: "absolute",
+    top: -40,
+    right: -30,
+    width: 180,
+    height: 180,
+    borderRadius: 90,
+    backgroundColor: "rgba(232,179,65,0.13)",
+  },
+  diskGlow: {
+    position: "absolute",
+    top: 10,
+    right: 30,
+    width: 90,
+    height: 90,
+    borderRadius: 45,
+    backgroundColor: "rgba(255,255,255,0.07)",
+  },
+  horizon: {
+    position: "absolute",
+    bottom: 0,
+    left: 0,
+    right: 0,
+    height: 1,
+    backgroundColor: "rgba(255,255,255,0.08)",
+  },
+
+  brand: { flexDirection: "row", alignItems: "center", marginTop: 6 },
+  brandLogoWrap: {
+    height: 26,
+    aspectRatio: 1.85,
+    marginRight: 10,
+    borderRadius: 6,
+    overflow: "hidden",
+    backgroundColor: "transparent",
+  },
+  brandLogo: {
+    width: "100%",
+    height: "100%",
+  },
+  brandMark: {
+    color: "rgba(255,255,255,0.92)",
+    fontSize: 12,
+    fontWeight: "800",
+    letterSpacing: 3.2,
+  },
+
   nearestCard: {
-    marginTop: 18, backgroundColor: "rgba(255,255,255,0.18)",
-    borderRadius: 20, padding: 18, borderWidth: 1, borderColor: "rgba(255,255,255,0.12)",
-    shadowColor: "#000", shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.1, shadowRadius: 20,
+    marginTop: 22,
+    backgroundColor: "rgba(255,255,255,0.14)",
+    borderRadius: radius.xl,
+    padding: 18,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.18)",
+    ...shadows.hero,
+    shadowOpacity: 0.18,
+  },
+  nearestTopRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
   },
   nearestEyebrow: {
-    fontSize: 9, fontWeight: "700", color: "rgba(255,255,255,0.7)",
-    textTransform: "uppercase", letterSpacing: 1.2,
+    fontSize: 9,
+    fontWeight: "700",
+    color: "rgba(255,255,255,0.68)",
+    textTransform: "uppercase",
+    letterSpacing: 1.4,
   },
-  nearestVerdict: { fontSize: 44, fontWeight: "400", color: "#fff", lineHeight: 48, marginTop: 4 },
-  nearestSub: { fontSize: 14, color: "rgba(255,255,255,0.9)", marginTop: 6, lineHeight: 19 },
-  nearestBeachName: { fontSize: 13, fontWeight: "600", color: "rgba(255,255,255,0.85)" },
-  nearestDist: { fontSize: 12, color: "rgba(255,255,255,0.6)", fontFamily: "System" },
-  headline: { color: "#fff", fontSize: 34, fontWeight: "700", lineHeight: 40, marginTop: 24 },
-  sub: { color: "rgba(255,255,255,0.8)", fontSize: 14, marginTop: 10, lineHeight: 20 },
+  nearestVerdict: {
+    fontSize: 42,
+    fontWeight: "700",
+    color: palette.white,
+    lineHeight: 46,
+    letterSpacing: -0.4,
+    marginTop: 4,
+  },
+  nearestSub: {
+    fontSize: 14,
+    color: "rgba(255,255,255,0.86)",
+    marginTop: 6,
+    lineHeight: 20,
+    maxWidth: 280,
+  },
+  nearestFooter: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginTop: 12,
+  },
+  nearestBeachName: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: "600",
+    color: "rgba(255,255,255,0.92)",
+    marginRight: 12,
+  },
+  nearestDist: {
+    fontSize: 12,
+    color: "rgba(255,255,255,0.62)",
+    fontWeight: "500",
+  },
+
+  headline: {
+    color: palette.white,
+    fontSize: 34,
+    fontWeight: "700",
+    lineHeight: 40,
+    letterSpacing: -0.4,
+    marginTop: 28,
+  },
+  sub: {
+    color: "rgba(255,255,255,0.78)",
+    fontSize: 14,
+    marginTop: 10,
+    lineHeight: 20,
+  },
+
   advisoryBanner: {
-    marginTop: 14, backgroundColor: "rgba(239,68,68,0.25)",
-    paddingVertical: 7, paddingHorizontal: 12, borderRadius: 8, alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginTop: 14,
+    backgroundColor: "rgba(239,68,68,0.22)",
+    paddingVertical: 7,
+    paddingHorizontal: 11,
+    borderRadius: radius.sm,
+    alignSelf: "flex-start",
   },
-  advisoryText: { color: "#fca5a5", fontWeight: "700", fontSize: 11, letterSpacing: 0.5 },
+  advisoryText: {
+    color: "#fca5a5",
+    fontWeight: "700",
+    fontSize: 11,
+    letterSpacing: 0.6,
+  },
+
   sheet: {
-    flex: 1, backgroundColor: "#faf6ee", // bone
-    borderTopLeftRadius: 28, borderTopRightRadius: 28,
-    padding: 20,
-    shadowColor: "#000", shadowOffset: { width: 0, height: -12 },
-    shadowOpacity: 0.1, shadowRadius: 24,
+    flex: 1,
+    backgroundColor: palette.bone,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    paddingHorizontal: space.xl,
+    paddingTop: space.xl,
+    ...shadows.sheet,
   },
   searchBox: {
-    flexDirection: "row", alignItems: "center", gap: 10,
-    backgroundColor: "#e8dfcc", // sand
-    borderRadius: 14, paddingHorizontal: 14, paddingVertical: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    backgroundColor: palette.ecruDeep,
+    borderRadius: radius.md,
+    paddingHorizontal: space.md,
+    paddingVertical: 11,
   },
-  searchIcon: { fontSize: 15 },
-  searchInput: { flex: 1, fontSize: 15, color: "#1a2730" },
+  searchInput: { flex: 1, fontSize: 15, color: palette.ink },
+
   sectionLabel: {
-    fontSize: 10, fontWeight: "700", color: "#5e6b73",
-    textTransform: "uppercase", letterSpacing: 1.2, marginBottom: 10, marginTop: 2,
+    ...typography.eyebrow,
+    color: palette.muted,
+    marginBottom: 10,
+    marginTop: 2,
   },
+
   beachRow: {
-    flexDirection: "row", alignItems: "center", gap: 12,
-    paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: "#d6cbb1",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.md,
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: palette.lineSoft,
   },
-  dot: { width: 8, height: 8, borderRadius: 4 },
-  beachName: { fontSize: 15, fontWeight: "600", color: "#1a2730" },
-  advisoryDot: { fontSize: 10 },
-  stationBadge: { fontSize: 9, color: "#5e6b73", fontWeight: "600", letterSpacing: 0.3 },
-  beachSub: { fontSize: 12, color: "#5e6b73", marginTop: 2 },
-  riskLabel: { fontSize: 10, fontWeight: "700", letterSpacing: 0.3, textTransform: "uppercase" },
-  chevron: { fontSize: 20, color: "#d6cbb1", fontWeight: "300" },
-  noResults: { fontSize: 13, color: "#5e6b73", padding: 12 },
+  dotInactive: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: palette.sand,
+  },
+  beachNameRow: { flexDirection: "row", alignItems: "center", flexWrap: "wrap" },
+  beachName: { fontSize: 15, fontWeight: "600", color: palette.ink },
+  stationBadge: {
+    fontSize: 9,
+    color: palette.muted,
+    fontWeight: "700",
+    letterSpacing: 0.5,
+    marginLeft: 8,
+    textTransform: "uppercase",
+  },
+  beachSub: { fontSize: 12, color: palette.muted, marginTop: 2 },
+  riskLabel: {
+    fontSize: 10,
+    fontWeight: "700",
+    letterSpacing: 0.4,
+    textTransform: "uppercase",
+  },
+
+  noResultsWrap: { padding: 32, alignItems: "center" },
+  noResultsTitle: { fontSize: 15, fontWeight: "600", color: palette.ink },
+  noResultsSub: { fontSize: 13, color: palette.muted, marginTop: 4 },
 });

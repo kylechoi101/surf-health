@@ -18,6 +18,7 @@ export function HeroSection() {
   const answerCopy = forecast ? RISK_COPY[forecast.risk_band] : null;
   const answerToken = forecast ? RISK_TOKEN[forecast.risk_band] : null;
   const featuredBeach = featuredSite.latest_modeled_beach;
+  const showResearchBanner = stats.publicReleaseEligible === false;
 
   return (
     <section className="site-shell overflow-hidden border-b border-[var(--sl-line)]">
@@ -26,6 +27,26 @@ export function HeroSection() {
             <div className="sl-eyebrow text-[var(--sl-sun-deep)]">
               Daily forecast · {formatPacificTimestamp(stats.latestPublishAt)}
             </div>
+
+            {showResearchBanner && (
+              <div className="mt-5 rounded-[1.25rem] border border-[var(--sl-line)] bg-[var(--sl-ecru-deep)] px-5 py-4 text-sm text-[var(--sl-ink)]">
+                <div className="sl-label text-[var(--sl-muted)]">Research prototype</div>
+                <div className="mt-2 leading-6">
+                  This model is <span className="font-semibold text-[var(--sl-navy)]">not eligible for public release</span>{" "}
+                  under its own gates. Always defer to active health advisories.
+                  {stats.agreementRate != null && stats.agreementPool && (
+                    <>
+                      {" "}
+                      {stats.agreementPool === "acute" ? "Acute" : "Chronic"}-pool advisory agreement:{" "}
+                      <span className="font-semibold">{Math.round(stats.agreementRate * 100)}%</span>.
+                    </>
+                  )}
+                </div>
+                {stats.promotionBlocker && (
+                  <div className="mt-2 text-xs text-[var(--sl-muted)]">{stats.promotionBlocker}</div>
+                )}
+              </div>
+            )}
 
             <h1 className="sl-display mt-5 max-w-[12ch] text-[clamp(3.3rem,7vw,6.4rem)] text-[var(--sl-navy-ink)]">
               Know before you paddle out.

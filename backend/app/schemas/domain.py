@@ -67,6 +67,7 @@ class ForecastRecord(BaseModel):
     model_version: str
     forecast_generated_at: datetime
     forecast_age_hours: int | None = None
+    official_advisory_active: bool = False
     environmental_summary: EnvironmentalSummary = Field(default_factory=EnvironmentalSummary)
 
 

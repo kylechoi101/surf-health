@@ -1,11 +1,22 @@
 import { useEffect, useState } from "react";
-import { View, Text, TextInput, TouchableOpacity, SectionList, StyleSheet, ActivityIndicator } from "react-native";
+import {
+  View,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  SectionList,
+  StyleSheet,
+  ActivityIndicator,
+} from "react-native";
 import { useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { Feather } from "@expo/vector-icons";
 import { getParentBeaches, type ParentBeachSummary } from "../../lib/api";
 import { filterModeledBeaches } from "../../lib/coverage";
+import { palette, radius, shadows, space, typography, bandColor } from "../../lib/theme";
+import { DropRow, type RiskBand } from "../../components/RiskSystem";
 
-const REGIONS = ["All", "SoCal", "Central", "NorCal"];
+const REGIONS = ["All", "SoCal", "Central", "NorCal"] as const;
 const REGION_LABELS: Record<string, string> = {
   SoCal: "Southern California",
   Central: "Central California",
@@ -15,12 +26,14 @@ const REGION_LABELS: Record<string, string> = {
 export default function SearchTab() {
   const [beaches, setBeaches] = useState<ParentBeachSummary[]>([]);
   const [q, setQ] = useState("");
-  const [region, setRegion] = useState("All");
+  const [region, setRegion] = useState<(typeof REGIONS)[number]>("All");
   const [loading, setLoading] = useState(true);
   const router = useRouter();
 
   useEffect(() => {
-    getParentBeaches().then((items) => setBeaches(filterModeledBeaches(items))).finally(() => setLoading(false));
+    getParentBeaches()
+      .then((items) => setBeaches(filterModeledBeaches(items)))
+      .finally(() => setLoading(false));
   }, []);
 
   function pick(b: ParentBeachSummary) {
@@ -33,14 +46,17 @@ export default function SearchTab() {
 
   const filtered = beaches
     .filter((b) => region === "All" || b.region === REGION_LABELS[region] || b.region === region)
-    .filter((b) =>
-      !q ||
-      b.name.toLowerCase().includes(q.toLowerCase()) ||
-      b.county.toLowerCase().includes(q.toLowerCase())
+    .filter(
+      (b) =>
+        !q ||
+        b.name.toLowerCase().includes(q.toLowerCase()) ||
+        b.county.toLowerCase().includes(q.toLowerCase())
     );
 
   const grouped: Record<string, ParentBeachSummary[]> = {};
-  filtered.forEach((b) => { (grouped[b.region] = grouped[b.region] ?? []).push(b); });
+  filtered.forEach((b) => {
+    (grouped[b.region] = grouped[b.region] ?? []).push(b);
+  });
   const sections = Object.entries(grouped).map(([r, data]) => ({
     title: REGION_LABELS[r] ?? r,
     count: data.length,
@@ -49,60 +65,99 @@ export default function SearchTab() {
 
   return (
     <SafeAreaView style={s.root} edges={["top"]}>
-      {/* Header */}
       <View style={s.header}>
-        <Text style={s.title}>Browse beaches</Text>
+        <Text style={s.eyebrow}>Browse</Text>
+        <Text style={s.title}>California beaches</Text>
+
         <View style={s.searchBox}>
-          <Text>🔍</Text>
+          <Feather name="search" size={16} color={palette.muted} />
           <TextInput
             style={s.searchInput}
             value={q}
             onChangeText={setQ}
-            placeholder={`Search ${beaches.length}+ beaches`}
-            placeholderTextColor="#94a3b8"
+            placeholder={`Search ${beaches.length} beaches`}
+            placeholderTextColor={palette.muted}
             clearButtonMode="while-editing"
           />
         </View>
-        {/* Region pills */}
+
         <View style={s.pills}>
-          {REGIONS.map((r) => (
-            <TouchableOpacity key={r} onPress={() => setRegion(r)}
-              style={[s.pill, region === r && s.pillActive]}>
-              <Text style={[s.pillText, region === r && s.pillTextActive]}>{r}</Text>
-            </TouchableOpacity>
-          ))}
+          {REGIONS.map((r) => {
+            const active = region === r;
+            return (
+              <TouchableOpacity
+                key={r}
+                onPress={() => setRegion(r)}
+                style={[s.pill, active && s.pillActive]}
+                activeOpacity={0.7}
+              >
+                <Text style={[s.pillText, active && s.pillTextActive]}>{r}</Text>
+              </TouchableOpacity>
+            );
+          })}
         </View>
       </View>
 
       {loading ? (
-        <ActivityIndicator style={{ marginTop: 32 }} color="#0b4266" />
+        <View style={s.loaderWrap}>
+          <ActivityIndicator color={palette.navy} />
+        </View>
       ) : (
         <SectionList
           sections={sections}
           keyExtractor={(b) => b.id}
-          contentContainerStyle={{ paddingBottom: 100 }}
+          contentContainerStyle={{ paddingBottom: 120, paddingTop: space.sm }}
           renderSectionHeader={({ section }) => (
             <View style={s.sectionHeader}>
               <Text style={s.sectionLabel}>{section.title}</Text>
               <Text style={s.sectionCount}>{section.count}</Text>
             </View>
           )}
-          renderItem={({ item: b }) => (
-            <TouchableOpacity
-              onPress={() => pick(b)}
-              style={s.row}>
-              <View style={s.dot} />
-              <View style={{ flex: 1 }}>
-                <Text style={s.name}>{b.name}</Text>
-                <Text style={s.sub}>{b.county} County</Text>
-              </View>
-              <Text style={s.chevron}>›</Text>
-            </TouchableOpacity>
-          )}
+          renderItem={({ item: b }) => {
+            const band = b.risk_band as RiskBand | null;
+            return (
+              <TouchableOpacity
+                onPress={() => pick(b)}
+                style={s.row}
+                activeOpacity={0.65}
+              >
+                {band ? (
+                  <DropRow band={band} size={11} />
+                ) : (
+                  <View style={s.dotInactive} />
+                )}
+                <View style={{ flex: 1 }}>
+                  <View style={s.nameRow}>
+                    <Text style={s.name} numberOfLines={1}>
+                      {b.name}
+                    </Text>
+                    {b.has_active_advisory && (
+                      <Feather
+                        name="alert-triangle"
+                        size={12}
+                        color="#b91c1c"
+                        style={{ marginLeft: 6 }}
+                      />
+                    )}
+                  </View>
+                  <Text style={s.sub}>
+                    {b.county} County
+                    {b.station_count > 1 ? `  ·  ${b.station_count} stations` : ""}
+                  </Text>
+                </View>
+                {band && (
+                  <Text style={[s.bandLabel, { color: bandColor(band) }]}>
+                    {band}
+                  </Text>
+                )}
+                <Feather name="chevron-right" size={18} color={palette.sand} />
+              </TouchableOpacity>
+            );
+          }}
           ListEmptyComponent={
-            <View style={{ padding: 40, alignItems: "center" }}>
-              <Text style={{ fontSize: 15, fontWeight: "600", color: "#64748b" }}>No beaches match</Text>
-              <Text style={{ fontSize: 13, color: "#94a3b8", marginTop: 4 }}>Try a different search.</Text>
+            <View style={s.emptyWrap}>
+              <Text style={s.emptyTitle}>No beaches match.</Text>
+              <Text style={s.emptySub}>Try a different search or region.</Text>
             </View>
           }
           stickySectionHeadersEnabled={false}
@@ -113,29 +168,87 @@ export default function SearchTab() {
 }
 
 const s = StyleSheet.create({
-  root: { flex: 1, backgroundColor: "#f2f4f7" },
-  header: { backgroundColor: "#fff", padding: 20, paddingBottom: 0, borderBottomWidth: 1, borderBottomColor: "#e5e7eb" },
-  title: { fontSize: 24, fontWeight: "700", color: "#0f172a", marginBottom: 12 },
+  root: { flex: 1, backgroundColor: palette.bone },
+
+  header: {
+    backgroundColor: palette.bone,
+    paddingHorizontal: space.xl,
+    paddingTop: space.sm,
+    paddingBottom: space.lg,
+    borderBottomWidth: 1,
+    borderBottomColor: palette.lineSoft,
+  },
+  eyebrow: { ...typography.eyebrow, color: palette.muted },
+  title: { ...typography.title, color: palette.navyInk, marginTop: 4 },
+
   searchBox: {
-    flexDirection: "row", alignItems: "center", gap: 10,
-    backgroundColor: "#f1f5f9", borderRadius: 14, paddingHorizontal: 14, paddingVertical: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    backgroundColor: palette.ecruDeep,
+    borderRadius: radius.md,
+    paddingHorizontal: space.md,
+    paddingVertical: 11,
+    marginTop: space.lg,
   },
-  searchInput: { flex: 1, fontSize: 15, color: "#0f172a" },
-  pills: { flexDirection: "row", gap: 6, paddingVertical: 12 },
-  pill: { paddingHorizontal: 14, paddingVertical: 6, borderRadius: 999, borderWidth: 1, borderColor: "#e5e7eb", backgroundColor: "#fff" },
-  pillActive: { backgroundColor: "#0b4266", borderColor: "#0b4266" },
-  pillText: { fontSize: 12, fontWeight: "600", color: "#0f172a" },
-  pillTextActive: { color: "#fff" },
-  sectionHeader: { flexDirection: "row", justifyContent: "space-between", paddingHorizontal: 20, paddingTop: 20, paddingBottom: 8 },
-  sectionLabel: { fontSize: 11, fontWeight: "700", color: "#64748b", textTransform: "uppercase", letterSpacing: 1 },
-  sectionCount: { fontSize: 11, color: "#94a3b8" },
+  searchInput: { flex: 1, fontSize: 15, color: palette.ink },
+
+  pills: { flexDirection: "row", gap: 6, paddingTop: space.md, flexWrap: "wrap" },
+  pill: {
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: palette.line,
+    backgroundColor: palette.bone,
+  },
+  pillActive: { backgroundColor: palette.navy, borderColor: palette.navy },
+  pillText: { fontSize: 12, fontWeight: "600", color: palette.ink },
+  pillTextActive: { color: palette.bone },
+
+  loaderWrap: { padding: 32, alignItems: "center" },
+
+  sectionHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    paddingHorizontal: space.xl,
+    paddingTop: space.lg,
+    paddingBottom: space.sm,
+  },
+  sectionLabel: { ...typography.eyebrow, color: palette.muted },
+  sectionCount: { fontSize: 11, color: palette.muted, fontWeight: "600" },
+
   row: {
-    flexDirection: "row", alignItems: "center", gap: 12,
-    marginHorizontal: 20, marginBottom: 8, padding: 12,
-    backgroundColor: "#fff", borderWidth: 1, borderColor: "#e5e7eb", borderRadius: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.md,
+    marginHorizontal: space.xl,
+    marginBottom: 8,
+    padding: space.md,
+    backgroundColor: palette.white,
+    borderWidth: 1,
+    borderColor: palette.lineSoft,
+    borderRadius: radius.md,
+    ...shadows.card,
+    shadowOpacity: 0.04,
   },
-  dot: { width: 8, height: 8, borderRadius: 4, backgroundColor: "#94a3b8" },
-  name: { fontSize: 14, fontWeight: "600", color: "#0f172a" },
-  sub: { fontSize: 11, color: "#64748b", marginTop: 2 },
-  chevron: { fontSize: 20, color: "#cbd5e1" },
+  dotInactive: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: palette.sand,
+  },
+  nameRow: { flexDirection: "row", alignItems: "center" },
+  name: { fontSize: 14, fontWeight: "600", color: palette.ink, flexShrink: 1 },
+  sub: { fontSize: 12, color: palette.muted, marginTop: 2 },
+  bandLabel: {
+    fontSize: 10,
+    fontWeight: "700",
+    letterSpacing: 0.4,
+    textTransform: "uppercase",
+  },
+
+  emptyWrap: { padding: 40, alignItems: "center" },
+  emptyTitle: { fontSize: 15, fontWeight: "600", color: palette.ink },
+  emptySub: { fontSize: 13, color: palette.muted, marginTop: 4 },
 });

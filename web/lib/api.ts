@@ -103,14 +103,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     }
     return response.json() as Promise<T>;
   } catch (err) {
-    console.warn(`Fetch failed for ${path}, returning mock data`);
-    // Return empty mock structures based on path to bypass build errors
-    if (path.includes("/forecast/explain")) return { beach_id: "mock", summary: "", used_model: "" } as any;
-    if (path.includes("/forecast")) return { risk_band: "Moderate", p_exceed: 0, top_drivers: [], environmental_summary: {} } as any;
-    if (path.includes("/observations")) return { observations: [], advisories: [], recent_environment: [] } as any;
-    if (path.includes("/health")) return { app_env: "mock", model_registry: { production_model: "mock" } } as any;
-    // Default is an array (for beaches list)
-    return [{ id: "mock-beach", name: "Mock Beach", county: "Mock", region: "Mock", support_status: "production", geometry: { latitude: 0, longitude: 0 } }] as any;
+    console.warn(`Fetch failed for ${path}`, err);
+    throw err;
   }
 }
 
