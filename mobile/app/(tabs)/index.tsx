@@ -131,13 +131,11 @@ export default function HomeTab() {
 
         <SafeAreaView edges={["top"]}>
           <View style={s.brand}>
-            <View style={s.brandLogoWrap}>
-              <Image
-                source={require("../../assets/lockup.png")}
-                style={s.brandLogo}
-                resizeMode="cover"
-              />
-            </View>
+            <Image
+              source={require("../../assets/lockup.png")}
+              style={{ height: 26, aspectRatio: 2, marginRight: 10 }}
+              resizeMode="contain"
+            />
             <Text style={s.brandMark}>SHORELIFE</Text>
           </View>
 

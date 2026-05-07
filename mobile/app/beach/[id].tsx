@@ -108,6 +108,7 @@ export default function BeachHome() {
               <StatTile iconName="droplet" label="Bacteria" value={forecast ? `${Math.round(forecast.p_exceed * 100)}%` : "—"} sub="exceed chance" />
               <StatTile iconName="trending-up" label="Surf" value={mToFt(env?.wave_height_m)} sub={fmtPeriod(env?.dominant_period_s) || "—"} />
               <StatTile iconName="thermometer" label="Water" value={cToF(env?.water_temperature_c)} sub={env?.uv_index != null ? `UV ${fmtUv(env.uv_index)}` : "—"} />
+              <StatTile iconName="wind" label="Wind" value={mpsToMph(env?.wind_speed_mps)} sub="surface" />
             </View>
 
             {/* Detail CTA */}
