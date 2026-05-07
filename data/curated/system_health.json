@@ -1,9 +1,9 @@
 {
-  "pipeline_freshness": "2026-05-07T04:11:27.910613+00:00",
+  "pipeline_freshness": "2026-05-07T16:56:18.063495+00:00",
   "source_freshness": {
-    "beaches": "2026-05-07T03:56:11+00:00",
-    "observations": "2026-05-07T03:56:11+00:00",
-    "advisories": "2026-05-07T03:56:11+00:00"
+    "beaches": "2026-05-07T16:40:47+00:00",
+    "observations": "2026-05-07T16:40:47+00:00",
+    "advisories": "2026-05-07T16:40:47+00:00"
   },
   "model_registry": {
     "production_model": "hist-gbm-curated-v0",
@@ -22,25 +22,25 @@
     ],
     "spatial_backtest_strategy": "requested",
     "production_metrics": {
-      "aucpr": 0.357488208508723,
-      "brier": 0.08755997656029577,
-      "log_loss": 0.29853171567848696,
-      "calibration_slope": 0.7885583882302021,
-      "precision_at_80_recall": 0.17370892018779344
+      "aucpr": 0.38705014316776193,
+      "brier": 0.08363236137407094,
+      "log_loss": 0.28408395739235476,
+      "calibration_slope": 0.8376999197017607,
+      "precision_at_80_recall": 0.22964509394572025
     },
     "validation_metrics": {
-      "aucpr": 0.8462824384322841,
-      "brier": 0.12492556326716808,
-      "log_loss": 0.3987986830229428,
-      "calibration_slope": 0.9007156699018589,
-      "precision_at_80_recall": 0.6666666666666666
+      "aucpr": 0.8440069078831145,
+      "brier": 0.11873119323892317,
+      "log_loss": 0.38295249963517736,
+      "calibration_slope": 0.8815045496916704,
+      "precision_at_80_recall": 0.6449136276391555
     },
     "temporal_validation_metrics": {
-      "aucpr": 0.8462824384322841,
-      "brier": 0.12492556326716808,
-      "log_loss": 0.3987986830229428,
-      "calibration_slope": 0.9007156699018589,
-      "precision_at_80_recall": 0.6666666666666666
+      "aucpr": 0.8440069078831145,
+      "brier": 0.11873119323892317,
+      "log_loss": 0.38295249963517736,
+      "calibration_slope": 0.8815045496916704,
+      "precision_at_80_recall": 0.6449136276391555
     },
     "spatial_metrics": {
       "spatial_beach_persistence": {
@@ -55,10 +55,10 @@
         "positive_rate": 0.4675518572330475
       },
       "spatial_county_persistence": {
-        "aucpr": 0.5754469927944681,
-        "brier": 0.13779453345900095,
-        "log_loss": 1.9037026940364974,
-        "calibration_slope": 0.11623183897002579,
+        "aucpr": 0.5756804667315353,
+        "brier": 0.13770028275212065,
+        "log_loss": 1.902400572494749,
+        "calibration_slope": 0.11629483283390477,
         "precision_at_80_recall": 0.23887841658812442,
         "folds": 12.0,
         "eligible_groups": 12.0,
@@ -66,22 +66,22 @@
         "positive_rate": 0.23887841403484344
       },
       "spatial_beach_hist_gbm": {
-        "aucpr": 0.9086689152624696,
-        "brier": 0.10651565177916748,
-        "log_loss": 0.3528960184091989,
-        "calibration_slope": 0.8892904590179995,
-        "precision_at_80_recall": 0.8824771287825475,
+        "aucpr": 0.9062769707037511,
+        "brier": 0.10577561899358201,
+        "log_loss": 0.3541343161032926,
+        "calibration_slope": 0.8816399304756977,
+        "precision_at_80_recall": 0.8856336039534063,
         "folds": 50.0,
         "eligible_groups": 50.0,
         "heldout_rows": 6703.0,
         "positive_rate": 0.4675518572330475
       },
       "spatial_county_hist_gbm": {
-        "aucpr": 0.5877078996455095,
-        "brier": 0.14533630060851013,
-        "log_loss": 0.4380101749620061,
-        "calibration_slope": 1.13598818162011,
-        "precision_at_80_recall": 0.5140684410646388,
+        "aucpr": 0.5154941875572503,
+        "brier": 0.15442002063239155,
+        "log_loss": 0.46250558606031306,
+        "calibration_slope": 0.9931755291016072,
+        "precision_at_80_recall": 0.4646048109965636,
         "folds": 12.0,
         "eligible_groups": 12.0,
         "heldout_rows": 21220.0,
@@ -91,6 +91,7 @@
     "deployment_stage": "research_prototype",
     "public_release_eligible": false,
     "promotion_blockers": [
+      "Held-out county AUCPR does not beat persistence.",
       "Held-out county Brier score does not beat persistence."
     ],
     "promotion_policy": {
@@ -113,37 +114,37 @@
     },
     "metrics": {
       "hist_gbm_valid": {
-        "aucpr": 0.8462824384322841,
-        "brier": 0.12492556326716808,
-        "log_loss": 0.3987986830229428,
-        "calibration_slope": 0.9007156699018589,
-        "precision_at_80_recall": 0.6666666666666666
+        "aucpr": 0.8440069078831145,
+        "brier": 0.11873119323892317,
+        "log_loss": 0.38295249963517736,
+        "calibration_slope": 0.8815045496916704,
+        "precision_at_80_recall": 0.6449136276391555
       },
       "hist_gbm_valid_calibrated": {
-        "aucpr": 0.8501530713110872,
-        "brier": 0.09964461230980268,
-        "log_loss": 0.3362343607884581,
-        "calibration_slope": 1.0228359681729136,
-        "precision_at_80_recall": 0.66600790513834
+        "aucpr": 0.8456408403507663,
+        "brier": 0.10069876638310238,
+        "log_loss": 0.3386960087027979,
+        "calibration_slope": 1.0088882447563468,
+        "precision_at_80_recall": 0.658203125
       },
       "hist_gbm": {
-        "aucpr": 0.357488208508723,
-        "brier": 0.08755997656029577,
-        "log_loss": 0.29853171567848696,
-        "calibration_slope": 0.7885583882302021,
-        "precision_at_80_recall": 0.17370892018779344
+        "aucpr": 0.38705014316776193,
+        "brier": 0.08363236137407094,
+        "log_loss": 0.28408395739235476,
+        "calibration_slope": 0.8376999197017607,
+        "precision_at_80_recall": 0.22964509394572025
       },
       "hist_gbm_test_active_only": {
-        "aucpr": 0.2933567063084487,
-        "brier": 0.09940462391009831,
-        "log_loss": 0.3317514754133939,
-        "calibration_slope": 0.7295703133275132,
-        "precision_at_80_recall": 0.18625277161862527,
-        "n_samples": 924.0,
+        "aucpr": 0.3798327227949332,
+        "brier": 0.08535500696258314,
+        "log_loss": 0.2884874222251439,
+        "calibration_slope": 0.8254685516244348,
+        "precision_at_80_recall": 0.2276595744680851,
+        "n_samples": 1311.0,
         "n_total_test": 1368.0
       },
       "hist_gbm_regressor_valid": {
-        "rmse": 0.7249410505975824
+        "rmse": 0.7318735564191848
       },
       "spatial_beach_persistence": {
         "aucpr": 0.7191489236293591,
@@ -157,10 +158,10 @@
         "positive_rate": 0.4675518572330475
       },
       "spatial_county_persistence": {
-        "aucpr": 0.5754469927944681,
-        "brier": 0.13779453345900095,
-        "log_loss": 1.9037026940364974,
-        "calibration_slope": 0.11623183897002579,
+        "aucpr": 0.5756804667315353,
+        "brier": 0.13770028275212065,
+        "log_loss": 1.902400572494749,
+        "calibration_slope": 0.11629483283390477,
         "precision_at_80_recall": 0.23887841658812442,
         "folds": 12.0,
         "eligible_groups": 12.0,
@@ -168,22 +169,22 @@
         "positive_rate": 0.23887841403484344
       },
       "spatial_beach_hist_gbm": {
-        "aucpr": 0.9086689152624696,
-        "brier": 0.10651565177916748,
-        "log_loss": 0.3528960184091989,
-        "calibration_slope": 0.8892904590179995,
-        "precision_at_80_recall": 0.8824771287825475,
+        "aucpr": 0.9062769707037511,
+        "brier": 0.10577561899358201,
+        "log_loss": 0.3541343161032926,
+        "calibration_slope": 0.8816399304756977,
+        "precision_at_80_recall": 0.8856336039534063,
         "folds": 50.0,
         "eligible_groups": 50.0,
         "heldout_rows": 6703.0,
         "positive_rate": 0.4675518572330475
       },
       "spatial_county_hist_gbm": {
-        "aucpr": 0.5877078996455095,
-        "brier": 0.14533630060851013,
-        "log_loss": 0.4380101749620061,
-        "calibration_slope": 1.13598818162011,
-        "precision_at_80_recall": 0.5140684410646388,
+        "aucpr": 0.5154941875572503,
+        "brier": 0.15442002063239155,
+        "log_loss": 0.46250558606031306,
+        "calibration_slope": 0.9931755291016072,
+        "precision_at_80_recall": 0.4646048109965636,
         "folds": 12.0,
         "eligible_groups": 12.0,
         "heldout_rows": 21220.0,
@@ -192,21 +193,21 @@
     }
   },
   "forecast_audit": {
-    "generated_at": "2026-05-07T04:11:30.095115+00:00",
-    "agreement_rate": 0.2,
+    "generated_at": "2026-05-07T16:56:20.256507+00:00",
+    "agreement_rate": 0.151,
     "acute_agreement_rate": null,
     "acute_advised_beaches": 0,
-    "chronic_agreement_rate": 0.273,
-    "stale_agreement_rate": 0.077,
-    "false_negatives": 28,
+    "chronic_agreement_rate": 0.226,
+    "stale_agreement_rate": 0.045,
+    "false_negatives": 45,
     "false_negatives_by_pool": {
       "acute": 0,
-      "chronic": 16,
-      "stale": 12,
+      "chronic": 24,
+      "stale": 21,
       "unknown_duration": 0
     },
-    "false_positives": 4,
-    "active_advisories": 35,
+    "false_positives": 12,
+    "active_advisories": 53,
     "risk_threshold": 0.3
   }
 }
