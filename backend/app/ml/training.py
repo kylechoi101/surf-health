@@ -2323,16 +2323,30 @@ def _export_forecasts(
     # load the full 446 MB beach_day.parquet at runtime (Render free-tier OOM fix).
     _ENV_COLS = ["wave_height_m", "dominant_period_s", "water_temperature_c",
                  "salinity_psu", "uv_index", "wind_speed_mps", "wind_direction_deg"]
-    
-    # Use inference_candidates as it contains the dynamically joined uv_index and the latest state
-    _env_present = [c for c in _ENV_COLS if c in inference_candidates.columns]
-    _latest_env = inference_candidates[["beach_id"] + _env_present].copy()
-    
-    if "wind_speed_mps" not in _latest_env.columns and "wind_speed_24h_max" in inference_candidates.columns:
-        _latest_env["wind_speed_mps"] = inference_candidates["wind_speed_24h_max"]
-    if "uv_index" not in _latest_env.columns and "uv_index_24h_max" in inference_candidates.columns:
-        _latest_env["uv_index"] = inference_candidates["uv_index_24h_max"]
-        
+
+    # Prefer forecast_candidates: one synthetic row per beach with the dynamically
+    # joined uv_index and env-persistence fallbacks already applied. Fall back to
+    # the latest row per beach in full_frame when no candidates were generated.
+    if not forecast_candidates.empty:
+        _latest_env_source = forecast_candidates.drop_duplicates(
+            subset=["beach_id"], keep="last"
+        )
+        _env_present = [c for c in _ENV_COLS if c in _latest_env_source.columns]
+        _latest_env = _latest_env_source[["beach_id"] + _env_present].copy()
+        if "wind_speed_mps" not in _latest_env.columns and "wind_speed_24h_max" in _latest_env_source.columns:
+            _latest_env["wind_speed_mps"] = _latest_env_source["wind_speed_24h_max"].to_numpy()
+        if "uv_index" not in _latest_env.columns and "uv_index_24h_max" in _latest_env_source.columns:
+            _latest_env["uv_index"] = _latest_env_source["uv_index_24h_max"].to_numpy()
+    else:
+        _env_present = [c for c in _ENV_COLS if c in full_frame.columns]
+        _latest_env = (
+            full_frame[["beach_id", "sample_date"] + _env_present]
+            .sort_values("sample_date")
+            .groupby("beach_id", as_index=False)
+            .last()
+            .drop(columns=["sample_date"])
+        )
+
     for _col in _ENV_COLS:
         if _col not in _latest_env.columns:
             _latest_env[_col] = float("nan")
