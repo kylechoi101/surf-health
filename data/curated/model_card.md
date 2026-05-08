@@ -1,31 +1,31 @@
 # Model Card: Shorelife `hist-gbm-curated-v0`
 
 ## Deployment Status
-- **Generated at**: 2026-05-07T16:56:18.063495+00:00
-- **Deployment stage**: research_prototype
-- **Public release eligible**: false
-- **Promotion blocker (latest)**: Held-out county Brier score does not beat persistence.
+- **Generated at**: 2026-05-08T15:09:44.590403+00:00
+- **Deployment stage**: candidate_ready
+- **Public release eligible**: true
+- **Promotion blocker (latest)**: None
 
 ## Headline Metrics (from `system_health.json`)
 
 ### Temporal (held-out time slice)
-- **AUCPR**: 0.387
+- **AUCPR**: 0.344
 - **Brier**: 0.084
-- **Log loss**: 0.284
-- **Calibration slope**: 0.838
+- **Log loss**: 0.289
+- **Calibration slope**: 0.854
 
 ### Deployment (active stations only; recency-filtered roster)
-- **AUCPR**: 0.380
-- **Brier**: 0.085
-- **n_samples**: 1311
+- **AUCPR**: 0.351
+- **Brier**: 0.089
+- **n_samples**: 1358
 
 ### Validation (calibration/training-time slice; not a public headline)
-- **AUCPR**: 0.844
-- **Brier**: 0.119
+- **AUCPR**: 0.842
+- **Brier**: 0.124
 
 ### Spatial (holdouts)
-- **Spatial county AUCPR**: 0.515
-- **Spatial county persistence AUCPR**: 0.576
+- **Spatial county AUCPR**: 0.641
+- **Spatial county persistence AUCPR**: 0.574
 
 ## Operational Agreement Check
 - **Active-advisory agreement rate** (model flags High band on advised beaches): —

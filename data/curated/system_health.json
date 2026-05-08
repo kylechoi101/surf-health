@@ -1,9 +1,9 @@
 {
-  "pipeline_freshness": "2026-05-07T16:56:18.063495+00:00",
+  "pipeline_freshness": "2026-05-08T15:09:44.590403+00:00",
   "source_freshness": {
-    "beaches": "2026-05-07T16:40:47+00:00",
-    "observations": "2026-05-07T16:40:47+00:00",
-    "advisories": "2026-05-07T16:40:47+00:00"
+    "beaches": "2026-05-08T14:55:30+00:00",
+    "observations": "2026-05-08T14:55:30+00:00",
+    "advisories": "2026-05-08T14:55:30+00:00"
   },
   "model_registry": {
     "production_model": "hist-gbm-curated-v0",
@@ -22,78 +22,75 @@
     ],
     "spatial_backtest_strategy": "requested",
     "production_metrics": {
-      "aucpr": 0.38705014316776193,
-      "brier": 0.08363236137407094,
-      "log_loss": 0.28408395739235476,
-      "calibration_slope": 0.8376999197017607,
-      "precision_at_80_recall": 0.22964509394572025
+      "aucpr": 0.34446469496048476,
+      "brier": 0.08351217993308811,
+      "log_loss": 0.28903549961972175,
+      "calibration_slope": 0.8539606023845919,
+      "precision_at_80_recall": 0.21100917431192662
     },
     "validation_metrics": {
-      "aucpr": 0.8440069078831145,
-      "brier": 0.11873119323892317,
-      "log_loss": 0.38295249963517736,
-      "calibration_slope": 0.8815045496916704,
-      "precision_at_80_recall": 0.6449136276391555
+      "aucpr": 0.8415825926890822,
+      "brier": 0.12399572645436609,
+      "log_loss": 0.3941905270924665,
+      "calibration_slope": 0.9751661989232693,
+      "precision_at_80_recall": 0.6475095785440613
     },
     "temporal_validation_metrics": {
-      "aucpr": 0.8440069078831145,
-      "brier": 0.11873119323892317,
-      "log_loss": 0.38295249963517736,
-      "calibration_slope": 0.8815045496916704,
-      "precision_at_80_recall": 0.6449136276391555
+      "aucpr": 0.8415825926890822,
+      "brier": 0.12399572645436609,
+      "log_loss": 0.3941905270924665,
+      "calibration_slope": 0.9751661989232693,
+      "precision_at_80_recall": 0.6475095785440613
     },
     "spatial_metrics": {
       "spatial_beach_persistence": {
-        "aucpr": 0.7191489236293591,
-        "brier": 0.19901536625391616,
-        "log_loss": 2.7494996946602783,
-        "calibration_slope": 0.10054925458796728,
-        "precision_at_80_recall": 0.46755184245860065,
+        "aucpr": 0.7208515201539473,
+        "brier": 0.20147014701470148,
+        "log_loss": 2.7834137417235842,
+        "calibration_slope": 0.09952202964945163,
+        "precision_at_80_recall": 0.4738973897389739,
         "folds": 50.0,
         "eligible_groups": 50.0,
-        "heldout_rows": 6703.0,
-        "positive_rate": 0.4675518572330475
+        "heldout_rows": 6666.0,
+        "positive_rate": 0.47389739751815796
       },
       "spatial_county_persistence": {
-        "aucpr": 0.5756804667315353,
-        "brier": 0.13770028275212065,
-        "log_loss": 1.902400572494749,
-        "calibration_slope": 0.11629483283390477,
-        "precision_at_80_recall": 0.23887841658812442,
+        "aucpr": 0.573616441446306,
+        "brier": 0.13879916397491926,
+        "log_loss": 1.9175821765313714,
+        "calibration_slope": 0.11564461540721689,
+        "precision_at_80_recall": 0.23921717651529545,
         "folds": 12.0,
         "eligible_groups": 12.0,
-        "heldout_rows": 21220.0,
-        "positive_rate": 0.23887841403484344
+        "heldout_rows": 21052.0,
+        "positive_rate": 0.23921717703342438
       },
       "spatial_beach_hist_gbm": {
-        "aucpr": 0.9062769707037511,
-        "brier": 0.10577561899358201,
-        "log_loss": 0.3541343161032926,
-        "calibration_slope": 0.8816399304756977,
-        "precision_at_80_recall": 0.8856336039534063,
+        "aucpr": 0.9047366430309474,
+        "brier": 0.1066111501943366,
+        "log_loss": 0.35482155938427584,
+        "calibration_slope": 0.8874787523635745,
+        "precision_at_80_recall": 0.8860848229933403,
         "folds": 50.0,
         "eligible_groups": 50.0,
-        "heldout_rows": 6703.0,
-        "positive_rate": 0.4675518572330475
+        "heldout_rows": 6666.0,
+        "positive_rate": 0.47389739751815796
       },
       "spatial_county_hist_gbm": {
-        "aucpr": 0.5154941875572503,
-        "brier": 0.15442002063239155,
-        "log_loss": 0.46250558606031306,
-        "calibration_slope": 0.9931755291016072,
-        "precision_at_80_recall": 0.4646048109965636,
+        "aucpr": 0.6405192782077302,
+        "brier": 0.13319210092958048,
+        "log_loss": 0.4046433839033759,
+        "calibration_slope": 1.1893114183701745,
+        "precision_at_80_recall": 0.5662498243641984,
         "folds": 12.0,
         "eligible_groups": 12.0,
-        "heldout_rows": 21220.0,
-        "positive_rate": 0.23887841403484344
+        "heldout_rows": 21052.0,
+        "positive_rate": 0.23921717703342438
       }
     },
-    "deployment_stage": "research_prototype",
-    "public_release_eligible": false,
-    "promotion_blockers": [
-      "Held-out county AUCPR does not beat persistence.",
-      "Held-out county Brier score does not beat persistence."
-    ],
+    "deployment_stage": "candidate_ready",
+    "public_release_eligible": true,
+    "promotion_blockers": [],
     "promotion_policy": {
       "production_models": [
         "logistic",
@@ -114,99 +111,99 @@
     },
     "metrics": {
       "hist_gbm_valid": {
-        "aucpr": 0.8440069078831145,
-        "brier": 0.11873119323892317,
-        "log_loss": 0.38295249963517736,
-        "calibration_slope": 0.8815045496916704,
-        "precision_at_80_recall": 0.6449136276391555
+        "aucpr": 0.8415825926890822,
+        "brier": 0.12399572645436609,
+        "log_loss": 0.3941905270924665,
+        "calibration_slope": 0.9751661989232693,
+        "precision_at_80_recall": 0.6475095785440613
       },
       "hist_gbm_valid_calibrated": {
-        "aucpr": 0.8456408403507663,
-        "brier": 0.10069876638310238,
-        "log_loss": 0.3386960087027979,
-        "calibration_slope": 1.0088882447563468,
-        "precision_at_80_recall": 0.658203125
+        "aucpr": 0.8423039070651481,
+        "brier": 0.10284783276572852,
+        "log_loss": 0.34278987367366853,
+        "calibration_slope": 0.9999468146143992,
+        "precision_at_80_recall": 0.6401515151515151
       },
       "hist_gbm": {
-        "aucpr": 0.38705014316776193,
-        "brier": 0.08363236137407094,
-        "log_loss": 0.28408395739235476,
-        "calibration_slope": 0.8376999197017607,
-        "precision_at_80_recall": 0.22964509394572025
+        "aucpr": 0.34446469496048476,
+        "brier": 0.08351217993308811,
+        "log_loss": 0.28903549961972175,
+        "calibration_slope": 0.8539606023845919,
+        "precision_at_80_recall": 0.21100917431192662
       },
       "hist_gbm_test_active_only": {
-        "aucpr": 0.3798327227949332,
-        "brier": 0.08535500696258314,
-        "log_loss": 0.2884874222251439,
-        "calibration_slope": 0.8254685516244348,
-        "precision_at_80_recall": 0.2276595744680851,
-        "n_samples": 1311.0,
-        "n_total_test": 1368.0
+        "aucpr": 0.35109815415382883,
+        "brier": 0.08942878734775961,
+        "log_loss": 0.30370565680500505,
+        "calibration_slope": 0.8276378384043412,
+        "precision_at_80_recall": 0.2384937238493724,
+        "n_samples": 1358.0,
+        "n_total_test": 1491.0
       },
       "hist_gbm_regressor_valid": {
-        "rmse": 0.7318735564191848
+        "rmse": 0.7385829620480601
       },
       "spatial_beach_persistence": {
-        "aucpr": 0.7191489236293591,
-        "brier": 0.19901536625391616,
-        "log_loss": 2.7494996946602783,
-        "calibration_slope": 0.10054925458796728,
-        "precision_at_80_recall": 0.46755184245860065,
+        "aucpr": 0.7208515201539473,
+        "brier": 0.20147014701470148,
+        "log_loss": 2.7834137417235842,
+        "calibration_slope": 0.09952202964945163,
+        "precision_at_80_recall": 0.4738973897389739,
         "folds": 50.0,
         "eligible_groups": 50.0,
-        "heldout_rows": 6703.0,
-        "positive_rate": 0.4675518572330475
+        "heldout_rows": 6666.0,
+        "positive_rate": 0.47389739751815796
       },
       "spatial_county_persistence": {
-        "aucpr": 0.5756804667315353,
-        "brier": 0.13770028275212065,
-        "log_loss": 1.902400572494749,
-        "calibration_slope": 0.11629483283390477,
-        "precision_at_80_recall": 0.23887841658812442,
+        "aucpr": 0.573616441446306,
+        "brier": 0.13879916397491926,
+        "log_loss": 1.9175821765313714,
+        "calibration_slope": 0.11564461540721689,
+        "precision_at_80_recall": 0.23921717651529545,
         "folds": 12.0,
         "eligible_groups": 12.0,
-        "heldout_rows": 21220.0,
-        "positive_rate": 0.23887841403484344
+        "heldout_rows": 21052.0,
+        "positive_rate": 0.23921717703342438
       },
       "spatial_beach_hist_gbm": {
-        "aucpr": 0.9062769707037511,
-        "brier": 0.10577561899358201,
-        "log_loss": 0.3541343161032926,
-        "calibration_slope": 0.8816399304756977,
-        "precision_at_80_recall": 0.8856336039534063,
+        "aucpr": 0.9047366430309474,
+        "brier": 0.1066111501943366,
+        "log_loss": 0.35482155938427584,
+        "calibration_slope": 0.8874787523635745,
+        "precision_at_80_recall": 0.8860848229933403,
         "folds": 50.0,
         "eligible_groups": 50.0,
-        "heldout_rows": 6703.0,
-        "positive_rate": 0.4675518572330475
+        "heldout_rows": 6666.0,
+        "positive_rate": 0.47389739751815796
       },
       "spatial_county_hist_gbm": {
-        "aucpr": 0.5154941875572503,
-        "brier": 0.15442002063239155,
-        "log_loss": 0.46250558606031306,
-        "calibration_slope": 0.9931755291016072,
-        "precision_at_80_recall": 0.4646048109965636,
+        "aucpr": 0.6405192782077302,
+        "brier": 0.13319210092958048,
+        "log_loss": 0.4046433839033759,
+        "calibration_slope": 1.1893114183701745,
+        "precision_at_80_recall": 0.5662498243641984,
         "folds": 12.0,
         "eligible_groups": 12.0,
-        "heldout_rows": 21220.0,
-        "positive_rate": 0.23887841403484344
+        "heldout_rows": 21052.0,
+        "positive_rate": 0.23921717703342438
       }
     }
   },
   "forecast_audit": {
-    "generated_at": "2026-05-07T16:56:20.256507+00:00",
-    "agreement_rate": 0.151,
+    "generated_at": "2026-05-08T15:09:46.805002+00:00",
+    "agreement_rate": 0.245,
     "acute_agreement_rate": null,
     "acute_advised_beaches": 0,
-    "chronic_agreement_rate": 0.226,
-    "stale_agreement_rate": 0.045,
-    "false_negatives": 45,
+    "chronic_agreement_rate": 0.433,
+    "stale_agreement_rate": 0.0,
+    "false_negatives": 40,
     "false_negatives_by_pool": {
       "acute": 0,
-      "chronic": 24,
-      "stale": 21,
+      "chronic": 17,
+      "stale": 23,
       "unknown_duration": 0
     },
-    "false_positives": 12,
+    "false_positives": 18,
     "active_advisories": 53,
     "risk_threshold": 0.3
   }
