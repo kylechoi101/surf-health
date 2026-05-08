@@ -226,6 +226,18 @@ def test_build_forecast_candidates_drops_stations_with_stale_samples():
             "uv_index": 5.0, "wind_speed_mps": 3.0,
             "tidal_height": 1.0, "surf_height_observed": 2.0, "turbidity_observed": 5.0,
         })
+    # charlie: sparse monitoring — last sample 40 days before forecast.
+    for offset in range(0, 20, 5):
+        sample_dt = pd.Timestamp("2026-04-20") - pd.Timedelta(days=offset + 40)
+        rows.append({
+            "beach_id": "charlie", "sample_date": sample_dt.strftime("%Y-%m-%d"),
+            "sample_time": sample_dt.strftime("%Y-%m-%dT08:00:00-07:00"),
+            "enterococcus_value": 50.0, "exceeds_stv": 0,
+            "wave_height_m": 1.0, "dominant_period_s": 10.0,
+            "water_temperature_c": 14.0, "salinity_psu": 33.0,
+            "uv_index": 5.0, "wind_speed_mps": 3.0,
+            "tidal_height": 1.0, "surf_height_observed": 2.0, "turbidity_observed": 5.0,
+        })
     # bravo: discontinued monitoring — last sample 60 days before forecast.
     for offset in range(0, 60, 5):  # samples 60-115 days before forecast
         sample_dt = pd.Timestamp("2026-04-20") - pd.Timedelta(days=offset + 60)
@@ -241,25 +253,26 @@ def test_build_forecast_candidates_drops_stations_with_stale_samples():
     frame = pd.DataFrame(rows)
     stations = pd.DataFrame([
         {"beach_id": "alpha", "zip_code": "92037"},
+        {"beach_id": "charlie", "zip_code": "92037"},
         {"beach_id": "bravo", "zip_code": "92038"},
     ])
     uv_daily = pd.DataFrame()
 
-    # Without recency filter: both beaches get forecast rows.
+    # Without recency filter: all beaches get forecast rows.
     _, all_candidates = _build_forecast_candidates(frame, stations, uv_daily, date(2026, 4, 21))
-    assert set(all_candidates["beach_id"]) == {"alpha", "bravo"}
+    assert set(all_candidates["beach_id"]) == {"alpha", "charlie", "bravo"}
 
-    # With 20-day recency cutoff: only alpha (5d old) survives; bravo (60d old) drops.
-    _, fresh_candidates = _build_forecast_candidates(
+    # With 20-day recency cutoff: only alpha (5d old) survives.
+    _, tight_candidates = _build_forecast_candidates(
         frame, stations, uv_daily, date(2026, 4, 21), min_sample_recency_days=20,
     )
-    assert set(fresh_candidates["beach_id"]) == {"alpha"}
+    assert set(tight_candidates["beach_id"]) == {"alpha"}
 
-    # Tight cutoff: alpha (5d old) also drops if we require <=3 days.
-    _, very_fresh = _build_forecast_candidates(
-        frame, stations, uv_daily, date(2026, 4, 21), min_sample_recency_days=3,
+    # With 50-day recency cutoff: alpha (5d) and charlie (40d) survive; bravo (60d) drops.
+    _, relaxed_candidates = _build_forecast_candidates(
+        frame, stations, uv_daily, date(2026, 4, 21), min_sample_recency_days=50,
     )
-    assert len(very_fresh) == 0
+    assert set(relaxed_candidates["beach_id"]) == {"alpha", "charlie"}
 
 
 def test_spatial_backtests_emit_beach_and_county_metrics():

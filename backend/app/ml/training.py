@@ -1827,9 +1827,10 @@ def _build_forecast_candidates(
     stations have gone silent. Publishing a forecast for a station that has
     not been sampled in months is misleading — the environmental covariates
     are stale, the model has no recent label signal, and downstream agreement
-    metrics are inflated by these zombie stations. Use ``min_sample_recency_days=20``
-    to mirror California's typical AB411 weekly monitoring cadence (one missed
-    week is normal; three+ missed weeks is "the funding stopped").
+    monitoring is missing). Use ``min_sample_recency_days=50`` to mirror California's
+    typical AB411 monitoring cadence while allowing for missed weeks or sparse
+    winter schedules (three missed weeks is common; seven+ missed weeks is
+    "the funding stopped").
     """
     history = frame.copy()
     history["sample_date"] = pd.to_datetime(history["sample_date"], errors="coerce")
@@ -3057,13 +3058,13 @@ def main() -> None:
     parser.add_argument("--training-window-days", type=int, default=60,
                         help="Days of recent beach_day rows to train on. Default 60. "
                              "Set higher (e.g. 365) once marine-micro coverage is uniform.")
-    parser.add_argument("--forecast-min-recency-days", type=int, default=None,
+    parser.add_argument("--forecast-min-recency-days", type=int, default=50,
                         help="Drop beaches whose most-recent sample is older than this many "
                              "days before the forecast date. California beach monitoring funding "
                              "has been cut multiple times since 2020 and many stations have gone "
                              "silent; publishing a forecast for one of those stations is "
-                             "misleading. Recommended value: 20 (one missed AB411 weekly cycle "
-                             "is normal; three+ missed weeks indicates discontinued monitoring).")
+                             "misleading. Recommended value: 50 (mirrors AB411 cadence while "
+                             "allowing for sparse winter schedules).")
     parser.add_argument("--active-only-training", action="store_true",
                         help="A/B ablation: filter the training set to only beaches active as "
                              "of forecast_date (per --forecast-min-recency-days). Validation "
