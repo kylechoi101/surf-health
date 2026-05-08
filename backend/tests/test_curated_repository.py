@@ -1,6 +1,7 @@
 import json
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
@@ -126,6 +127,94 @@ def test_curated_repository_derives_forecast_and_observations(tmp_path):
     assert len(observations.advisories) == 1
 
 
+def test_curated_repository_overrides_forecast_when_official_advisory_active(tmp_path):
+    curated_dir = tmp_path / "curated"
+    curated_dir.mkdir()
+    beach_id = "ca123-orange-main-beach-main-beach-pier"
+    pd.DataFrame(
+        [
+            {
+                "beach_id": beach_id,
+                "forecast_date": "2026-04-20",
+                "risk_band": "Low",
+                "p_exceed": 0.08,
+                "predicted_log_enterococcus": 1.2,
+                "lower_prediction_interval": 0.9,
+                "upper_prediction_interval": 1.7,
+                "prediction_interval_level": 0.9,
+                "top_drivers": ["model signal"],
+                "model_version": "hist-gbm-v1",
+                "forecast_generated_at": "2026-04-20T13:00:00+00:00",
+            }
+        ]
+    ).to_parquet(curated_dir / "forecasts.parquet", index=False)
+    pd.DataFrame(
+        [
+            {
+                "beach_id": beach_id,
+                "advisory_type": "Posting",
+                "started_at": "2026-04-20T10:30:00",
+                "ended_at": None,
+                "status": "active",
+            }
+        ]
+    ).to_parquet(curated_dir / "advisories.parquet", index=False)
+
+    repository = CuratedBeachRepository(curated_dir, stv_threshold=104.0)
+    forecast = repository.get_forecast(beach_id, date(2026, 4, 20))
+
+    assert forecast.official_advisory_active is True
+    assert forecast.risk_band == "Very High"
+    assert forecast.model_risk_band == "Low"
+    assert forecast.top_drivers == [
+        "Official health advisory is active for this station.",
+        "model signal",
+    ]
+    assert forecast.p_exceed == 0.08
+
+
+def test_curated_repository_overrides_derived_forecast_when_official_advisory_active(tmp_path):
+    curated_dir = tmp_path / "curated"
+    curated_dir.mkdir()
+    beach_id = "ca123-orange-main-beach-main-beach-pier"
+    pd.DataFrame(
+        [
+            {
+                "beach_id": beach_id,
+                "sample_time": "2026-04-18T08:00:00",
+                "sample_date": "2026-04-18",
+                "analyte": "enterococcus",
+                "method": "Culture",
+                "units": "CFU/100ml",
+                "value": 120.0,
+                "exceeds_stv": True,
+                "weather": "Sunny",
+                "storm_drain_flow": "No",
+            }
+        ]
+    ).to_parquet(curated_dir / "observations.parquet", index=False)
+    pd.DataFrame(
+        [
+            {
+                "beach_id": beach_id,
+                "advisory_type": "Posting",
+                "started_at": "2026-04-18T10:30:00",
+                "ended_at": None,
+                "status": "active",
+            }
+        ]
+    ).to_parquet(curated_dir / "advisories.parquet", index=False)
+
+    repository = CuratedBeachRepository(curated_dir, stv_threshold=104.0)
+    forecast = repository.get_forecast(beach_id, date(2026, 4, 20))
+
+    assert forecast.official_advisory_active is True
+    assert forecast.risk_band == "Very High"
+    assert forecast.model_risk_band == "High"
+    assert forecast.top_drivers[0] == "Official health advisory is active for this station."
+    assert "above the marine threshold" in forecast.top_drivers[1]
+
+
 def test_curated_repository_limits_parquet_columns_for_per_beach_reads(monkeypatch, tmp_path):
     curated_dir = tmp_path / "curated"
     curated_dir.mkdir()
@@ -174,6 +263,9 @@ def test_curated_repository_limits_parquet_columns_for_per_beach_reads(monkeypat
     monkeypatch.setattr("app.repositories.curated_repository.pq.read_table", fake_read_table)
 
     repository = CuratedBeachRepository(curated_dir, stv_threshold=104.0)
+    repository.__dict__["advisories_frame"] = pd.DataFrame(
+        columns=["beach_id", "advisory_type", "started_at", "ended_at", "status"]
+    )
     repository.get_forecast("ca123-orange-main-beach-main-beach-pier", pd.Timestamp("2026-04-20").date())
     repository._beach_day_for_beach("ca123-orange-main-beach-main-beach-pier")
 
