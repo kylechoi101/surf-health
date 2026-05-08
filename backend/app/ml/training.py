@@ -26,7 +26,6 @@ from app.data.pipeline.features import (
     STORMWATER_EXPERT_NUMERIC_COLUMNS,
     SlidingWindowDataset,
     build_inference_features,
-    build_inference_windows,
     build_sliding_windows,
 )
 from app.ml.calibration import (
@@ -52,7 +51,11 @@ COASTAL_CELL_MIN_BEACHES_PER_CLUSTER = 24
 COASTAL_CELL_MAX_CLUSTERS = 8
 PRODUCTION_MODEL_NAMES = ("logistic", "logistic_coastal_cells", "logistic_hierarchical", "hist_gbm", "stacked_ensemble")
 SEQUENCE_MODEL_NAMES = ("tcn", "cnn", "lstm", "transformer", "pinn")
+SPATIAL_DIAGNOSTIC_MODEL_NAMES = ("hist_gbm_persistence_blend",)
+SPATIAL_BACKTEST_MODEL_NAMES = (*PRODUCTION_MODEL_NAMES, *SPATIAL_DIAGNOSTIC_MODEL_NAMES)
 SPATIAL_BACKTEST_STRATEGIES = ("shortlist", "requested", "quick")
+PERSISTENCE_BLEND_ALPHAS = tuple(float(alpha) for alpha in np.linspace(0.0, 1.0, 11))
+PERSISTENCE_BLEND_MAX_MODEL_ALPHA = 0.6
 COASTAL_CELL_FEATURE_COLUMNS = [
     "coastal_x_km",
     "coastal_y_km",
@@ -407,6 +410,41 @@ def _persistence_probabilities(features: pd.DataFrame, stv_threshold: float) -> 
     if last_obs is None:
         return np.zeros(len(features), dtype=float)
     return last_obs.fillna(0.0).gt(stv_threshold).astype(float).to_numpy()
+
+
+def _blend_probabilities(
+    model_probabilities: np.ndarray,
+    persistence_probabilities: np.ndarray,
+    alpha: float,
+) -> np.ndarray:
+    return alpha * np.asarray(model_probabilities, dtype=float) + (1.0 - alpha) * np.asarray(
+        persistence_probabilities, dtype=float
+    )
+
+
+def _select_persistence_blend_alpha(
+    labels: np.ndarray,
+    model_probabilities: np.ndarray,
+    persistence_probabilities: np.ndarray,
+    *,
+    alphas: list[float] | tuple[float, ...] = PERSISTENCE_BLEND_ALPHAS,
+    max_alpha: float | None = None,
+) -> float:
+    labels = np.asarray(labels, dtype=float)
+    candidate_alphas = [
+        float(alpha)
+        for alpha in alphas
+        if max_alpha is None or float(alpha) <= max_alpha
+    ]
+    if not candidate_alphas:
+        candidate_alphas = [float(max_alpha or 0.0)]
+
+    def score(alpha: float) -> tuple[float, float]:
+        blended = _blend_probabilities(model_probabilities, persistence_probabilities, alpha)
+        brier = float(np.mean((blended - labels) ** 2))
+        return brier, alpha
+
+    return min(candidate_alphas, key=score)
 
 
 def _metadata_with_groups(
@@ -974,14 +1012,45 @@ def _spatial_holdout_fold_result(
         from sklearn.metrics import average_precision_score
         aucs = []
         for v in [log_val, cc_val, h_val, gbm_val]:
-            try: aucs.append(average_precision_score(labels[inner_valid_rows], v))
-            except: aucs.append(0.0)
+            try:
+                aucs.append(average_precision_score(labels[inner_valid_rows], v))
+            except ValueError:
+                aucs.append(0.0)
         _aucs = np.array(aucs)
         _s = _aucs.sum()
         w = _aucs / _s if _s > 0 else np.full(4, 0.25)
 
         test_probabilities = log_test * w[0] + cc_test * w[1] + h_test * w[2] + gbm_test * w[3]
         return labels[test_rows], test_probabilities
+
+    if model_name == "hist_gbm_persistence_blend":
+        classifier = _fit_classifier_for_name(features, "hist_gbm")
+        classifier.fit(features.iloc[inner_train_rows], labels[inner_train_rows])
+        valid_raw = classifier.predict_proba(features.iloc[inner_valid_rows])[:, 1]
+        _, calibrator = _identity_or_calibrated(
+            valid_raw,
+            labels[inner_valid_rows],
+            metadata.iloc[inner_valid_rows].reset_index(drop=True),
+        )
+        valid_probabilities = _apply_calibrator(
+            calibrator,
+            valid_raw,
+            metadata.iloc[inner_valid_rows].reset_index(drop=True),
+        )
+        test_probabilities = classifier.predict_proba(features.iloc[test_rows])[:, 1]
+        test_probabilities = _apply_calibrator(
+            calibrator,
+            test_probabilities,
+            metadata.iloc[test_rows].reset_index(drop=True),
+        )
+        persistence = _persistence_probabilities(features, stv_threshold)
+        alpha = _select_persistence_blend_alpha(
+            labels[inner_valid_rows],
+            valid_probabilities,
+            persistence[inner_valid_rows],
+            max_alpha=PERSISTENCE_BLEND_MAX_MODEL_ALPHA,
+        )
+        return labels[test_rows], _blend_probabilities(test_probabilities, persistence[test_rows], alpha)
 
     classifier = _fit_classifier_for_name(features, model_name)
     classifier.fit(features.iloc[inner_train_rows], labels[inner_train_rows])
@@ -1101,7 +1170,7 @@ def _spatial_backtest_metrics(
     metrics: dict[str, dict[str, float]] = {}
     selected_model_names = model_names_to_run
     if selected_model_names is None:
-        selected_model_names = [*PRODUCTION_MODEL_NAMES]
+        selected_model_names = [*SPATIAL_BACKTEST_MODEL_NAMES]
         if model_types_to_run:
             selected_model_names.extend(
                 model_name for model_name in model_types_to_run if model_name in SEQUENCE_MODEL_NAMES
@@ -1109,7 +1178,10 @@ def _spatial_backtest_metrics(
 
     normalized_model_names: list[str] = []
     for model_name in ["persistence", *selected_model_names]:
-        if model_name != "persistence" and model_name not in PRODUCTION_MODEL_NAMES and model_name not in SEQUENCE_MODEL_NAMES:
+        is_supported_spatial_model = (
+            model_name in SPATIAL_BACKTEST_MODEL_NAMES or model_name in SEQUENCE_MODEL_NAMES
+        )
+        if model_name != "persistence" and not is_supported_spatial_model:
             continue
         if model_name not in normalized_model_names:
             normalized_model_names.append(model_name)
@@ -1579,6 +1651,8 @@ def _two_stage_training_plan(
     for model_name in (production_winner, research_winner):
         if model_name not in spatial_backtest_models:
             spatial_backtest_models.append(model_name)
+    if "hist_gbm_persistence_blend" not in spatial_backtest_models:
+        spatial_backtest_models.append("hist_gbm_persistence_blend")
     return StageTwoTrainingPlan(
         production_winner=production_winner,
         research_winner=research_winner,
@@ -2251,7 +2325,6 @@ def _export_forecasts(
     else:
         driver_baseline_probs = probabilities
     computed_drivers = _compute_local_drivers(tree_classifier, baseline_forecast_features, driver_baseline_probs)
-    settings = get_settings()
     forecasts = []
     forecast_lookup = (
         forecast_candidates.drop_duplicates(subset=["beach_id"], keep="last").set_index("beach_id")
@@ -2467,7 +2540,6 @@ def _run_winner_only(
             flush=True,
         )
 
-    valid_metadata = metadata.iloc[valid_idx].reset_index(drop=True)
     cal_metadata = metadata.iloc[cal_idx].reset_index(drop=True)
     val_metric_metadata = metadata.iloc[val_metric_idx].reset_index(drop=True)
     eval_metadata = metadata.iloc[eval_idx].reset_index(drop=True)
@@ -2897,7 +2969,7 @@ def train_curated_and_export(
         metrics[mt] = artifacts.test_metrics
 
     plan = _two_stage_training_plan(metrics, model_types_to_run)
-    spatial_backtest_models = [*PRODUCTION_MODEL_NAMES, *model_types_to_run]
+    spatial_backtest_models = [*SPATIAL_BACKTEST_MODEL_NAMES, *model_types_to_run]
     effective_beach_limit = spatial_beach_limit
     effective_county_limit = spatial_county_limit
 

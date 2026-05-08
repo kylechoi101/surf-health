@@ -16,6 +16,7 @@ from app.ml.training import (
     _predict_coastal_cell_logistic_raw,
     _predict_hierarchical_logistic_raw,
     _promotion_assessment,
+    _select_persistence_blend_alpha,
     _spatial_holdout_metrics,
     _spatial_backtest_metrics,
     _identity_or_calibrated,
@@ -53,6 +54,33 @@ def test_blocked_indices_keep_same_dates_in_same_split():
     assert train_dates.isdisjoint(test_dates)
     assert valid_dates.isdisjoint(test_dates)
     assert train_dates | valid_dates | test_dates == set(sample_dates)
+
+
+def test_select_persistence_blend_alpha_minimizes_validation_brier_conservatively():
+    labels = np.array([1, 1, 0, 0], dtype=float)
+    model_probs = np.array([0.9, 0.8, 0.7, 0.2], dtype=float)
+    persistence_probs = np.array([0.6, 0.6, 0.4, 0.4], dtype=float)
+
+    alpha = _select_persistence_blend_alpha(
+        labels,
+        model_probs,
+        persistence_probs,
+        alphas=[0.0, 0.5, 1.0],
+    )
+
+    assert alpha == 0.5
+
+
+def test_select_persistence_blend_alpha_respects_model_weight_cap():
+    alpha = _select_persistence_blend_alpha(
+        np.array([1, 0], dtype=float),
+        np.array([1, 0], dtype=float),
+        np.array([0, 1], dtype=float),
+        alphas=[0.0, 0.6, 1.0],
+        max_alpha=0.6,
+    )
+
+    assert alpha == 0.6
 
 
 def test_blocked_indices_handles_timestamp_metadata_from_feature_builder():
@@ -307,8 +335,10 @@ def test_spatial_backtests_emit_beach_and_county_metrics():
     )
 
     assert "spatial_beach_hist_gbm" in metrics
+    assert "spatial_beach_hist_gbm_persistence_blend" in metrics
     assert "spatial_beach_logistic_coastal_cells" in metrics
     assert "spatial_county_hist_gbm" in metrics
+    assert "spatial_county_hist_gbm_persistence_blend" in metrics
     assert "spatial_county_logistic_coastal_cells" in metrics
     assert metrics["spatial_beach_hist_gbm"]["folds"] >= 1.0
     assert metrics["spatial_county_hist_gbm"]["folds"] >= 1.0
@@ -457,7 +487,7 @@ def test_two_stage_training_plan_shortlists_production_and_research_winners():
 
     assert plan.production_winner == "hist_gbm"
     assert plan.research_winner == "transformer"
-    assert plan.spatial_backtest_models == ["hist_gbm", "transformer"]
+    assert plan.spatial_backtest_models == ["hist_gbm", "transformer", "hist_gbm_persistence_blend"]
 
 
 def test_two_stage_training_plan_picks_by_aucpr_not_brier():
