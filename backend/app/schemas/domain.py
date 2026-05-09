@@ -56,6 +56,7 @@ class ForecastRecord(BaseModel):
     beach_id: str
     forecast_date: date
     risk_band: RiskBand
+    model_risk_band: RiskBand | None = None
     p_exceed: float = Field(ge=0.0, le=1.0)
     p_exceed_lower: float | None = Field(default=None, ge=0.0, le=1.0)
     p_exceed_upper: float | None = Field(default=None, ge=0.0, le=1.0)
