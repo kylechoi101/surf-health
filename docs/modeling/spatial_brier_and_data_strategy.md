@@ -207,23 +207,23 @@ as 30, 45, 60, or 90 days, direct bacteria-history inputs are hidden and
 `days_since_enterococcus_value_obs` is forced to at least the cutoff. This creates
 a stress set that asks how routes behave when recent biology is unavailable.
 
-The first full stress run used:
+The current full stress run used:
 
 ```text
 model = hist_gbm_persistence_blend
 cutoffs = 30, 45, 60, 90 days
 groups = 12 counties and 50 beaches
-output = /tmp/surf-health-stale-blend-365
+output = /tmp/surf-health-stale-blend-365-current
 ```
 
 Headline results:
 
 ```text
 variant       group     model_brier  persistence_brier  prior_brier  failed local groups
-observed      county    0.101833     0.137795           0.219162     0 / 12 vs persistence
-observed      beach     0.124907     0.199015           0.191161     6 / 50 vs persistence
-censored_30d  county    0.215534     0.238878           0.219162     1 / 12 vs persistence
-censored_30d  beach     0.198717     0.467552           0.191161     1 / 50 vs persistence
+observed      county    0.106241     0.138799           0.219190     1 / 12 vs persistence
+observed      beach     0.126562     0.201470           0.186936     6 / 50 vs persistence
+censored_30d  county    0.218217     0.239217           0.219190     1 / 12 vs persistence
+censored_30d  beach     0.205555     0.473897           0.186936     1 / 50 vs persistence
 ```
 
 The censored 45/60/90-day runs currently match the 30-day run because the
@@ -238,8 +238,18 @@ Interpretation:
   baseline, but that baseline is weak because direct last-observation bacteria is
   hidden.
 - Against the smoothed prior, the censored blend is nearly tied at county level
-  and worse at beach level. That is not enough to promote a stale-sample route.
+  and worse at beach level. The censored beach route fails 21 of 50 local groups
+  against the prior, so that is not enough to promote a stale-sample route.
 - Local router tables are now required; aggregate success is not sufficient.
+- Natural labeled stale rows were empty for 30/45/60/90-day cutoffs in the
+  one-year holdout matrix because the maximum sample recency among labeled rows
+  was 22 days. That means the current stale-sample problem is mostly a serving
+  candidate-set and fallback-routing problem, not a labeled Brier subset in this
+  snapshot.
+- The serving stale-sample candidate builder found 277 beaches with at least 100
+  historical samples, at least 10 positives, and a latest official sample at
+  least 50 days stale as of 2026-05-09. None currently had a forecast row, which
+  is exactly where a fail-closed prior/persistence route is needed.
 
 ## Next Implementation Slice
 
