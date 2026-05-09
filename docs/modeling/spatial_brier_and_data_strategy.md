@@ -163,10 +163,49 @@ Do not jump straight to image embeddings. First create structured gridded contex
 
 Then render those fields into a weather-status heat map with a fixed legend only after the structured version is working. The image/embedding version should be treated as an experimental model candidate and must beat the structured-grid baseline on held-out county and held-out beach Brier before it influences serving.
 
+## Stale-Sample Weather-Delta Diagnostic
+
+The no-bacteria weather-delta route was implemented as a diagnostic candidate:
+
+```text
+model = hist_gbm_no_bacteria_weather_delta
+excluded = enterococcus lags, last observation, geomean, and geomean flags
+formula = smoothed prior + capped weather/ocean/hydrology/stormwater delta
+```
+
+The first 365-day / 12-county / 50-beach diagnostic is not sufficient to promote
+the route:
+
+```text
+county persistence Brier                    = 0.137795
+county hist_gbm_no_bacteria_weather_delta   = 0.220000
+county delta vs persistence                 = +0.082206
+
+beach persistence Brier                     = 0.199015
+beach hist_gbm_no_bacteria_weather_delta    = 0.145808
+beach delta vs persistence                  = -0.053207
+```
+
+The county failure is large enough to veto serving. San Diego is the worst
+county failure:
+
+```text
+county      n     actual_rate  model_brier  persistence_brier  brier_delta  model_bias
+San Diego   5765  0.5913       0.4908       0.1502             +0.3406      -0.5055
+```
+
+The staleness slice also shows a data limitation: in this held-out snapshot,
+rows are mostly `fresh` with a small `recent` slice and no `stale`/`very_stale`
+rows under the current bucket definitions. This means the diagnostic does not
+yet answer the intended stale-latest-sample use case. Treat the current result
+as a failed or inconclusive stale-route experiment, not as a product improvement.
+
 ## Next Implementation Slice
 
-1. Add beach-level diagnostics for `hist_gbm_persistence_blend`.
-2. Add eligibility tables for beach-specific models: sample count, positive count, recency, validation Brier.
-3. Add router evaluation that fails closed to persistence when a beach/county route does not beat persistence.
-4. Tune or learn alpha with nested spatial validation instead of relying on a fixed cap.
-5. Keep public framing as beta decision support until the routed system passes aggregate and local validation checks.
+1. Add explicit stale-row evaluation sets so the weather-delta route is tested on
+   the use case it is meant to solve.
+2. Add beach-level diagnostics for `hist_gbm_persistence_blend`.
+3. Add eligibility tables for beach-specific models: sample count, positive count, recency, validation Brier.
+4. Add router evaluation that fails closed to persistence when a beach/county route does not beat persistence.
+5. Tune or learn alpha with nested spatial validation instead of relying on a fixed cap.
+6. Keep public framing as beta decision support until the routed system passes aggregate and local validation checks.

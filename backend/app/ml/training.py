@@ -44,6 +44,12 @@ from app.ml.models import (
     BeachPINN_MultiTask, 
     make_baselines
 )
+from app.ml.weather_delta import (
+    clip_weather_delta,
+    fit_smoothed_rate_prior,
+    select_delta_cap,
+    select_no_bacteria_features,
+)
 
 MIN_PLAUSIBLE_SAMPLE_TIME = pd.Timestamp("2000-01-01")
 MAX_FUTURE_SAMPLE_LEEWAY_DAYS = 2
@@ -51,11 +57,13 @@ COASTAL_CELL_MIN_BEACHES_PER_CLUSTER = 24
 COASTAL_CELL_MAX_CLUSTERS = 8
 PRODUCTION_MODEL_NAMES = ("logistic", "logistic_coastal_cells", "logistic_hierarchical", "hist_gbm", "stacked_ensemble")
 SEQUENCE_MODEL_NAMES = ("tcn", "cnn", "lstm", "transformer", "pinn")
-SPATIAL_DIAGNOSTIC_MODEL_NAMES = ("hist_gbm_persistence_blend",)
+SPATIAL_DIAGNOSTIC_MODEL_NAMES = ("hist_gbm_persistence_blend", "hist_gbm_no_bacteria_weather_delta")
 SPATIAL_BACKTEST_MODEL_NAMES = (*PRODUCTION_MODEL_NAMES, *SPATIAL_DIAGNOSTIC_MODEL_NAMES)
 SPATIAL_BACKTEST_STRATEGIES = ("shortlist", "requested", "quick")
 PERSISTENCE_BLEND_ALPHAS = tuple(float(alpha) for alpha in np.linspace(0.0, 1.0, 11))
 PERSISTENCE_BLEND_MAX_MODEL_ALPHA = 0.6
+WEATHER_DELTA_CAPS = tuple(float(cap) for cap in np.linspace(0.0, 0.3, 7))
+WEATHER_DELTA_MAX_BLEND_ALPHA = 0.7
 COASTAL_CELL_FEATURE_COLUMNS = [
     "coastal_x_km",
     "coastal_y_km",
@@ -1052,6 +1060,48 @@ def _spatial_holdout_fold_result(
         )
         return labels[test_rows], _blend_probabilities(test_probabilities, persistence[test_rows], alpha)
 
+    if model_name == "hist_gbm_no_bacteria_weather_delta":
+        no_bacteria_features = select_no_bacteria_features(features)
+        if no_bacteria_features.empty or no_bacteria_features.shape[1] == 0:
+            return None
+        classifier = _fit_classifier_for_name(no_bacteria_features, "hist_gbm")
+        classifier.fit(no_bacteria_features.iloc[inner_train_rows], labels[inner_train_rows])
+        valid_raw = classifier.predict_proba(no_bacteria_features.iloc[inner_valid_rows])[:, 1]
+        _, calibrator = _identity_or_calibrated(
+            valid_raw,
+            labels[inner_valid_rows],
+            metadata.iloc[inner_valid_rows].reset_index(drop=True),
+        )
+        valid_weather = _apply_calibrator(
+            calibrator,
+            valid_raw,
+            metadata.iloc[inner_valid_rows].reset_index(drop=True),
+        )
+        test_weather = classifier.predict_proba(no_bacteria_features.iloc[test_rows])[:, 1]
+        test_weather = _apply_calibrator(
+            calibrator,
+            test_weather,
+            metadata.iloc[test_rows].reset_index(drop=True),
+        )
+        prior = fit_smoothed_rate_prior(labels, metadata, inner_train_rows)
+        valid_prior = prior.predict(metadata.iloc[inner_valid_rows].reset_index(drop=True))
+        test_prior = prior.predict(metadata.iloc[test_rows].reset_index(drop=True))
+        max_delta = select_delta_cap(
+            labels[inner_valid_rows],
+            valid_weather,
+            valid_prior,
+            caps=WEATHER_DELTA_CAPS,
+        )
+        valid_gap_fill = clip_weather_delta(valid_weather, valid_prior, max_delta=max_delta)
+        alpha = _select_persistence_blend_alpha(
+            labels[inner_valid_rows],
+            valid_gap_fill,
+            valid_prior,
+            max_alpha=WEATHER_DELTA_MAX_BLEND_ALPHA,
+        )
+        test_gap_fill = clip_weather_delta(test_weather, test_prior, max_delta=max_delta)
+        return labels[test_rows], _blend_probabilities(test_gap_fill, test_prior, alpha)
+
     classifier = _fit_classifier_for_name(features, model_name)
     classifier.fit(features.iloc[inner_train_rows], labels[inner_train_rows])
     valid_raw = classifier.predict_proba(features.iloc[inner_valid_rows])[:, 1]
@@ -1653,6 +1703,8 @@ def _two_stage_training_plan(
             spatial_backtest_models.append(model_name)
     if "hist_gbm_persistence_blend" not in spatial_backtest_models:
         spatial_backtest_models.append("hist_gbm_persistence_blend")
+    if "hist_gbm_no_bacteria_weather_delta" not in spatial_backtest_models:
+        spatial_backtest_models.append("hist_gbm_no_bacteria_weather_delta")
     return StageTwoTrainingPlan(
         production_winner=production_winner,
         research_winner=research_winner,
