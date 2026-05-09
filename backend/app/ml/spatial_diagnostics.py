@@ -254,6 +254,30 @@ def fallback_audit(
     }
 
 
+def local_route_diagnostics(
+    frame: pd.DataFrame,
+    *,
+    group_column: str,
+    label_column: str = LABEL_COLUMN,
+    model_probability_column: str = MODEL_PROBABILITY_COLUMN,
+    baseline_probability_column: str = PERSISTENCE_PROBABILITY_COLUMN,
+) -> pd.DataFrame:
+    table = group_brier_diagnostics(
+        frame,
+        group_column=group_column,
+        label_column=label_column,
+        model_probability_column=model_probability_column,
+        persistence_probability_column=baseline_probability_column,
+    )
+    if table.empty:
+        table["route_eligible"] = pd.Series(dtype=object)
+        table["failed_closed"] = pd.Series(dtype=object)
+        return table
+    table["route_eligible"] = (table["model_brier"] < table["persistence_brier"]).astype(object)
+    table["failed_closed"] = (~table["route_eligible"].astype(bool)).astype(object)
+    return table
+
+
 def calibration_bins(
     frame: pd.DataFrame,
     *,
