@@ -279,3 +279,9 @@ Run:
 rtk git add backend/app/ml/weather_delta.py backend/app/ml/training.py backend/app/ml/spatial_diagnostics.py backend/scripts/diagnose_spatial_brier.py backend/tests/test_weather_delta.py backend/tests/test_training.py backend/tests/test_spatial_diagnostics.py
 rtk git commit -m "Add stale-sample weather-delta diagnostic candidate"
 ```
+
+### Skepticism Output Summary
+
+- **County Level**: Model Brier: 0.2200, Persistence Brier: 0.1378. The weather-delta candidate is **worse** than persistence by +0.0822 globally. This is primarily driven by massive underprediction in San Diego (model mean 0.085 vs actual rate 0.591), which results in a +0.3406 Brier delta.
+- **Beach Level**: Model Brier: 0.1458, Persistence Brier: 0.1990. The weather-delta candidate is **better** than persistence by -0.0532 globally.
+- **Conclusion**: The weather-delta approach improves predictions at the fine-grained beach level, but fails catastrophically when generalized at the county level for San Diego due to extreme bias. The diagnostic skepticism loop validates that this approach has mixed results and cannot be blindly applied everywhere.
