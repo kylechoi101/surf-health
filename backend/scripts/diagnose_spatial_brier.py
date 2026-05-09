@@ -16,6 +16,7 @@ from app.ml.spatial_diagnostics import (
     calibration_bins,
     fallback_audit,
     group_brier_diagnostics,
+    local_route_diagnostics,
     markdown_table,
     slice_brier_diagnostics,
 )
@@ -27,6 +28,11 @@ from app.ml.training import (
     _spatial_holdout_fold_result,
 )
 from app.ml.weather_delta import fit_smoothed_rate_prior
+from app.ml.stale_evaluation import (
+    build_stale_censoring_variants,
+    filter_stale_rows,
+    stale_row_label,
+)
 
 
 DEFAULT_CONTEXT_COLUMNS = [
@@ -64,6 +70,10 @@ def _repo_root() -> Path:
 
 def _parse_alphas(value: str) -> list[float]:
     return [float(item.strip()) for item in value.split(",") if item.strip()]
+
+
+def _parse_ints(value: str) -> list[int]:
+    return [int(item.strip()) for item in value.split(",") if item.strip()]
 
 
 def _prepare_inputs(
@@ -213,6 +223,7 @@ def _write_outputs(
     output_dir.mkdir(parents=True, exist_ok=True)
     enriched = add_default_context_buckets(predictions)
     group_table = group_brier_diagnostics(enriched, group_column=group_column)
+    local_router_table = local_route_diagnostics(enriched, group_column=group_column)
     model_bins = calibration_bins(enriched, probability_column="model_probability", bins=bins)
     persistence_bins = calibration_bins(enriched, probability_column="persistence_probability", bins=bins)
     blend_table = blend_alpha_sweep(enriched, alphas=alphas)
@@ -225,6 +236,15 @@ def _write_outputs(
         if "prior_probability" in enriched.columns
         else pd.DataFrame()
     )
+    prior_local_router_table = (
+        local_route_diagnostics(
+            enriched,
+            group_column=group_column,
+            baseline_probability_column="prior_probability",
+        )
+        if "prior_probability" in enriched.columns
+        else pd.DataFrame()
+    )
     prior_audit = (
         fallback_audit(enriched, baseline_probability_column="prior_probability")
         if "prior_probability" in enriched.columns
@@ -233,8 +253,10 @@ def _write_outputs(
 
     enriched.to_csv(output_dir / f"{group_column}_holdout_predictions.csv", index=False)
     group_table.to_csv(output_dir / f"{group_column}_brier_deltas.csv", index=False)
+    local_router_table.to_csv(output_dir / f"{group_column}_local_router.csv", index=False)
     if not prior_group_table.empty:
         prior_group_table.to_csv(output_dir / f"{group_column}_prior_brier_deltas.csv", index=False)
+        prior_local_router_table.to_csv(output_dir / f"{group_column}_prior_local_router.csv", index=False)
         (output_dir / f"{group_column}_prior_fallback_audit.json").write_text(
             json.dumps(prior_audit, indent=2) + "\n"
         )
@@ -272,11 +294,15 @@ def _write_outputs(
         "outputs": {
             "predictions": str(output_dir / f"{group_column}_holdout_predictions.csv"),
             "group_brier_deltas": str(output_dir / f"{group_column}_brier_deltas.csv"),
+            "local_router": str(output_dir / f"{group_column}_local_router.csv"),
             "prior_brier_deltas": str(output_dir / f"{group_column}_prior_brier_deltas.csv")
             if not prior_group_table.empty
             else None,
             "prior_fallback_audit": str(output_dir / f"{group_column}_prior_fallback_audit.json")
             if prior_audit
+            else None,
+            "prior_local_router": str(output_dir / f"{group_column}_prior_local_router.csv")
+            if not prior_local_router_table.empty
             else None,
             "model_calibration_bins": str(output_dir / f"{group_column}_model_calibration_bins.csv"),
             "persistence_calibration_bins": str(
@@ -300,6 +326,8 @@ def main() -> None:
     parser.add_argument("--max-beach-groups", type=int, default=50)
     parser.add_argument("--bins", type=int, default=10)
     parser.add_argument("--alphas", default="0.0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0")
+    parser.add_argument("--stale-row-cutoffs", default="")
+    parser.add_argument("--stale-censor-cutoffs", default="")
     args = parser.parse_args()
 
     output_dir = args.output_dir or (
@@ -311,48 +339,100 @@ def main() -> None:
     )
     stv_threshold = get_settings().epa_marine_enterococcus_stv
     alphas = _parse_alphas(args.alphas)
+    stale_cutoffs = _parse_ints(args.stale_censor_cutoffs) if args.stale_censor_cutoffs else []
+    stale_row_cutoffs = (
+        _parse_ints(args.stale_row_cutoffs) if args.stale_row_cutoffs else stale_cutoffs
+    )
 
     manifest: dict[str, object] = {
         "generated_at": datetime.now(UTC).isoformat(),
         "model": args.model,
         "training_window_days": args.training_window_days,
         "groups": [],
+        "stale_rows": [],
+        "stale_censoring": [],
     }
-    for group_column in args.group_columns:
-        if group_column == "county":
-            min_rows = 32
-            max_groups = args.max_county_groups
-        elif group_column == "beach_id":
-            min_rows = 8
-            max_groups = args.max_beach_groups
-        else:
-            min_rows = 8
-            max_groups = None
+    feature_variants = {"observed": features}
+    feature_variants.update(build_stale_censoring_variants(features, cutoffs=stale_cutoffs))
+    stale_row_manifests: list[dict[str, object]] = []
 
-        predictions = _collect_holdout_predictions(
-            features,
-            labels,
-            metadata,
-            group_column=group_column,
-            model_name=args.model,
-            stv_threshold=stv_threshold,
-            min_rows=min_rows,
-            max_groups=max_groups,
-        )
-        if predictions.empty:
-            manifest["groups"].append(
-                {"group_column": group_column, "rows": 0, "groups": 0, "outputs": {}}
+    for variant_label, variant_features in feature_variants.items():
+        variant_group_manifests: list[dict[str, object]] = []
+        variant_output_dir = output_dir if variant_label == "observed" else output_dir / variant_label
+        for group_column in args.group_columns:
+            if group_column == "county":
+                min_rows = 32
+                max_groups = args.max_county_groups
+            elif group_column == "beach_id":
+                min_rows = 8
+                max_groups = args.max_beach_groups
+            else:
+                min_rows = 8
+                max_groups = None
+
+            predictions = _collect_holdout_predictions(
+                variant_features,
+                labels,
+                metadata,
+                group_column=group_column,
+                model_name=args.model,
+                stv_threshold=stv_threshold,
+                min_rows=min_rows,
+                max_groups=max_groups,
             )
+            if predictions.empty:
+                variant_group_manifests.append(
+                    {"group_column": group_column, "rows": 0, "groups": 0, "outputs": {}}
+                )
+                continue
+            group_manifest = _write_outputs(
+                variant_output_dir,
+                group_column=group_column,
+                model_name=args.model,
+                predictions=predictions,
+                bins=args.bins,
+                alphas=alphas,
+            )
+            group_manifest["variant"] = variant_label
+            variant_group_manifests.append(group_manifest)
+
+            if variant_label != "observed":
+                continue
+            for cutoff in stale_row_cutoffs:
+                row_label = stale_row_label(cutoff)
+                stale_predictions = filter_stale_rows(predictions, cutoff_days=cutoff)
+                if stale_predictions.empty:
+                    stale_row_manifests.append(
+                        {
+                            "variant": row_label,
+                            "group_column": group_column,
+                            "rows": 0,
+                            "groups": 0,
+                            "outputs": {},
+                        }
+                    )
+                    continue
+                stale_manifest = _write_outputs(
+                    output_dir / "stale_rows" / row_label,
+                    group_column=group_column,
+                    model_name=args.model,
+                    predictions=stale_predictions,
+                    bins=args.bins,
+                    alphas=alphas,
+                )
+                stale_manifest["variant"] = row_label
+                stale_row_manifests.append(stale_manifest)
+
+        if variant_label == "observed":
+            manifest["groups"] = variant_group_manifests
+            manifest["stale_rows"] = stale_row_manifests
             continue
-        group_manifest = _write_outputs(
-            output_dir,
-            group_column=group_column,
-            model_name=args.model,
-            predictions=predictions,
-            bins=args.bins,
-            alphas=alphas,
+        manifest["stale_censoring"].append(
+            {
+                "variant": variant_label,
+                "groups": variant_group_manifests,
+            }
         )
-        manifest["groups"].append(group_manifest)
 
     output_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = output_dir / "manifest.json"

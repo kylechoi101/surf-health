@@ -7,6 +7,7 @@ from app.ml.spatial_diagnostics import (
     calibration_bins,
     fallback_audit,
     group_brier_diagnostics,
+    local_route_diagnostics,
     markdown_table,
     slice_brier_diagnostics,
 )
@@ -121,6 +122,25 @@ def test_fallback_audit_marks_routes_that_fail_to_beat_baseline():
     assert result["route_beats_baseline"] is False
     assert result["failed_closed"] is True
     assert result["model_brier"] > result["baseline_brier"]
+
+
+def test_local_route_diagnostics_marks_group_level_eligibility():
+    frame = pd.DataFrame(
+        {
+            "county": ["A", "A", "B", "B"],
+            "label": [1, 0, 1, 0],
+            "model_probability": [0.8, 0.2, 0.2, 0.8],
+            "persistence_probability": [0.6, 0.4, 0.7, 0.3],
+        }
+    )
+
+    result = local_route_diagnostics(frame, group_column="county")
+
+    assert list(result["county"]) == ["B", "A"]
+    assert result.loc[result["county"] == "A", "route_eligible"].iloc[0] is True
+    assert result.loc[result["county"] == "A", "failed_closed"].iloc[0] is False
+    assert result.loc[result["county"] == "B", "route_eligible"].iloc[0] is False
+    assert result.loc[result["county"] == "B", "failed_closed"].iloc[0] is True
 
 
 def test_markdown_table_does_not_require_optional_tabulate_dependency():

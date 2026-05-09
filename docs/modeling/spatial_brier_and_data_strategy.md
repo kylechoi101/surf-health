@@ -200,12 +200,53 @@ rows under the current bucket definitions. This means the diagnostic does not
 yet answer the intended stale-latest-sample use case. Treat the current result
 as a failed or inconclusive stale-route experiment, not as a product improvement.
 
+## Stale Censoring Stress Test
+
+The diagnostics now support artificial stale-sample censoring. For a cutoff such
+as 30, 45, 60, or 90 days, direct bacteria-history inputs are hidden and
+`days_since_enterococcus_value_obs` is forced to at least the cutoff. This creates
+a stress set that asks how routes behave when recent biology is unavailable.
+
+The first full stress run used:
+
+```text
+model = hist_gbm_persistence_blend
+cutoffs = 30, 45, 60, 90 days
+groups = 12 counties and 50 beaches
+output = /tmp/surf-health-stale-blend-365
+```
+
+Headline results:
+
+```text
+variant       group     model_brier  persistence_brier  prior_brier  failed local groups
+observed      county    0.101833     0.137795           0.219162     0 / 12 vs persistence
+observed      beach     0.124907     0.199015           0.191161     6 / 50 vs persistence
+censored_30d  county    0.215534     0.238878           0.219162     1 / 12 vs persistence
+censored_30d  beach     0.198717     0.467552           0.191161     1 / 50 vs persistence
+```
+
+The censored 45/60/90-day runs currently match the 30-day run because the
+censoring removes direct bacteria-history values and only varies the recency
+counter. This reveals a modeling limitation: the current blend is not yet using
+recency enough for different stale horizons to matter.
+
+Interpretation:
+
+- The observed calibrated blend remains the strongest current diagnostic path.
+- Under censoring, the blend still beats the degenerate stale-persistence
+  baseline, but that baseline is weak because direct last-observation bacteria is
+  hidden.
+- Against the smoothed prior, the censored blend is nearly tied at county level
+  and worse at beach level. That is not enough to promote a stale-sample route.
+- Local router tables are now required; aggregate success is not sufficient.
+
 ## Next Implementation Slice
 
-1. Add explicit stale-row evaluation sets so the weather-delta route is tested on
-   the use case it is meant to solve.
-2. Add beach-level diagnostics for `hist_gbm_persistence_blend`.
+1. Add prior-based fail-closed router evaluation as the main stale-sample gate.
+2. Make stale horizon matter by decaying or recomputing bacteria-history features
+   instead of only zeroing them.
 3. Add eligibility tables for beach-specific models: sample count, positive count, recency, validation Brier.
-4. Add router evaluation that fails closed to persistence when a beach/county route does not beat persistence.
+4. Add router evaluation that fails closed to persistence/prior when a beach/county route does not beat its local baseline.
 5. Tune or learn alpha with nested spatial validation instead of relying on a fixed cap.
 6. Keep public framing as beta decision support until the routed system passes aggregate and local validation checks.
