@@ -251,9 +251,42 @@ Interpretation:
   least 50 days stale as of 2026-05-09. None currently had a forecast row, which
   is exactly where a fail-closed prior/persistence route is needed.
 
+## Serving Stale Prior Router
+
+The serving stale-sample builder now emits a second file with fail-closed prior
+routes:
+
+```text
+output = /tmp/surf-health-serving-stale-router
+candidates = 277
+forecast_available = 0
+route_counts = beach_prior: 277
+```
+
+Because the stale candidate set is already filtered to beaches with at least 100
+samples and 10 positives, every current candidate can use a smoothed beach prior.
+This is intentionally not a model forecast. It is a historical baseline route
+for beaches whose latest official sample is stale and whose current forecast row
+is missing.
+
+Prior-band distribution:
+
+```text
+Low        214
+Moderate    32
+High        26
+Very High    5
+```
+
+Self-skeptical read: these prior bands identify historically risky stale beaches,
+not current water quality. The route can support product honesty and triage, but
+it should be presented as "historical baseline; latest sample stale" until the
+system has fresh labels or a validated stale-sample model that beats the prior.
+
 ## Next Implementation Slice
 
-1. Add prior-based fail-closed router evaluation as the main stale-sample gate.
+1. Wire the serving stale prior route into the API/UI as a non-forecast status,
+   not as a modeled forecast.
 2. Make stale horizon matter by decaying or recomputing bacteria-history features
    instead of only zeroing them.
 3. Add eligibility tables for beach-specific models: sample count, positive count, recency, validation Brier.

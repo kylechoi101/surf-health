@@ -6,6 +6,7 @@ from datetime import date
 import numpy as np
 import pandas as pd
 
+from app.ml.calibration import risk_band
 from app.ml.weather_delta import is_bacteria_history_feature
 
 
@@ -170,3 +171,91 @@ def build_serving_stale_sample_set(
         ["days_since_latest_sample", "sample_count"],
         ascending=[False, False],
     ).reset_index(drop=True)
+
+
+def build_stale_prior_router(
+    candidates: pd.DataFrame,
+    observations: pd.DataFrame,
+    *,
+    min_beach_samples: int = 100,
+    min_beach_positives: int = 10,
+    min_county_samples: int = 50,
+    min_county_positives: int = 5,
+    county_strength: float = 8.0,
+    beach_strength: float = 4.0,
+) -> pd.DataFrame:
+    required_candidate_columns = {"beach_id", "county", "sample_count", "positive_count"}
+    missing_candidate_columns = required_candidate_columns.difference(candidates.columns)
+    if missing_candidate_columns:
+        raise ValueError(f"Missing candidate columns: {sorted(missing_candidate_columns)}")
+    required_observation_columns = {"beach_id", "county", "exceeds_stv"}
+    missing_observation_columns = required_observation_columns.difference(observations.columns)
+    if missing_observation_columns:
+        raise ValueError(f"Missing observation columns: {sorted(missing_observation_columns)}")
+
+    result = candidates.copy()
+    history = observations.dropna(subset=["beach_id"]).copy()
+    history["exceeds_stv"] = pd.to_numeric(history["exceeds_stv"], errors="coerce").fillna(0.0)
+    labels = history["exceeds_stv"].clip(0.0, 1.0)
+    global_rate = float(np.clip(labels.mean(), 1e-6, 1.0 - 1e-6)) if len(labels) else 0.5
+
+    county_stats = (
+        history.dropna(subset=["county"])
+        .groupby("county", as_index=False)
+        .agg(count=("exceeds_stv", "size"), positives=("exceeds_stv", "sum"))
+    )
+    county_rates: dict[str, float] = {}
+    county_eligible: dict[str, bool] = {}
+    for _, row in county_stats.iterrows():
+        county = str(row["county"])
+        count = float(row["count"])
+        positives = float(row["positives"])
+        rate = (positives + county_strength * global_rate) / (count + county_strength)
+        county_rates[county] = float(np.clip(rate, 1e-6, 1.0 - 1e-6))
+        county_eligible[county] = count >= min_county_samples and positives >= min_county_positives
+
+    beach_stats = (
+        history.groupby("beach_id", as_index=False)
+        .agg(count=("exceeds_stv", "size"), positives=("exceeds_stv", "sum"), county=("county", "last"))
+    )
+    beach_rates: dict[str, float] = {}
+    for _, row in beach_stats.iterrows():
+        beach_id = str(row["beach_id"])
+        county = str(row["county"]) if pd.notna(row["county"]) else None
+        parent_rate = county_rates.get(county, global_rate)
+        count = float(row["count"])
+        positives = float(row["positives"])
+        rate = (positives + beach_strength * parent_rate) / (count + beach_strength)
+        beach_rates[beach_id] = float(np.clip(rate, 1e-6, 1.0 - 1e-6))
+
+    routes: list[str] = []
+    probabilities: list[float] = []
+    bases: list[str] = []
+    for _, row in result.iterrows():
+        beach_id = str(row["beach_id"])
+        county = str(row["county"]) if pd.notna(row["county"]) else None
+        sample_count = int(row["sample_count"])
+        positive_count = int(row["positive_count"])
+        if (
+            sample_count >= min_beach_samples
+            and positive_count >= min_beach_positives
+            and beach_id in beach_rates
+        ):
+            routes.append("beach_prior")
+            probabilities.append(beach_rates[beach_id])
+            bases.append("historical beach rate shrunk toward county/global priors")
+        elif county is not None and county_eligible.get(county, False):
+            routes.append("county_prior")
+            probabilities.append(county_rates[county])
+            bases.append("historical county rate shrunk toward global prior")
+        else:
+            routes.append("global_prior")
+            probabilities.append(global_rate)
+            bases.append("global historical exceedance rate")
+
+    result["stale_route"] = routes
+    result["stale_probability"] = probabilities
+    result["stale_risk_band"] = [risk_band(probability) for probability in probabilities]
+    result["stale_route_basis"] = bases
+    result["failed_closed"] = True
+    return result

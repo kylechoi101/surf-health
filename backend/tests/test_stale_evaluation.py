@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 
 from app.ml.stale_evaluation import (
+    build_stale_prior_router,
     build_serving_stale_sample_set,
     build_stale_censoring_variants,
     censor_bacteria_history_for_cutoff,
@@ -115,6 +116,75 @@ def test_build_serving_stale_sample_set_filters_history_and_sample_age():
     assert result["positive_count"].iloc[0] == 15
     assert bool(result["forecast_available"].iloc[0]) is True
     assert result["risk_band"].iloc[0] == "Moderate"
+
+
+def test_build_stale_prior_router_fails_closed_to_smoothed_beach_prior():
+    candidates = pd.DataFrame(
+        {
+            "beach_id": ["eligible"],
+            "name": ["Eligible Beach"],
+            "county": ["A"],
+            "sample_count": [120],
+            "positive_count": [15],
+        }
+    )
+    observations = pd.DataFrame(
+        {
+            "beach_id": ["eligible"] * 120 + ["county-peer"] * 80,
+            "county": ["A"] * 200,
+            "sample_date": pd.date_range("2025-01-01", periods=200),
+            "exceeds_stv": [1] * 15 + [0] * 105 + [1] * 5 + [0] * 75,
+        }
+    )
+
+    result = build_stale_prior_router(
+        candidates,
+        observations,
+        min_beach_samples=100,
+        min_beach_positives=10,
+    )
+
+    assert result["stale_route"].tolist() == ["beach_prior"]
+    assert bool(result["failed_closed"].iloc[0]) is True
+    assert result["stale_probability"].iloc[0] > 0.0
+    assert result["stale_probability"].iloc[0] < 0.2
+    assert result["stale_risk_band"].iloc[0] == "Low"
+    assert "historical" in result["stale_route_basis"].iloc[0]
+
+
+def test_build_stale_prior_router_falls_back_to_county_then_global_prior():
+    candidates = pd.DataFrame(
+        {
+            "beach_id": ["sparse", "unknown-county"],
+            "name": ["Sparse Beach", "Unknown County Beach"],
+            "county": ["A", "Missing"],
+            "sample_count": [12, 0],
+            "positive_count": [1, 0],
+        }
+    )
+    observations = pd.DataFrame(
+        {
+            "beach_id": ["county-peer"] * 80 + ["other"] * 20,
+            "county": ["A"] * 80 + ["B"] * 20,
+            "sample_date": pd.date_range("2025-01-01", periods=100),
+            "exceeds_stv": [1] * 20 + [0] * 60 + [1] * 2 + [0] * 18,
+        }
+    )
+
+    result = build_stale_prior_router(
+        candidates,
+        observations,
+        min_beach_samples=100,
+        min_beach_positives=10,
+        min_county_samples=50,
+        min_county_positives=5,
+    )
+
+    assert result["stale_route"].tolist() == ["county_prior", "global_prior"]
+    assert result.loc[result["beach_id"] == "sparse", "stale_probability"].iloc[0] > result.loc[
+        result["beach_id"] == "unknown-county", "stale_probability"
+    ].iloc[0]
+    assert bool(result["failed_closed"].all()) is True
 
 
 def test_stale_cutoff_label_rejects_nonpositive_cutoff():
