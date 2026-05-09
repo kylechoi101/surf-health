@@ -16,8 +16,10 @@ from app.ml.training import (
     _predict_coastal_cell_logistic_raw,
     _predict_hierarchical_logistic_raw,
     _promotion_assessment,
+    _select_persistence_blend_alpha,
     _spatial_holdout_metrics,
     _spatial_backtest_metrics,
+    _spatial_holdout_fold_result,
     _identity_or_calibrated,
     _split_conformal_half_width,
     _two_stage_training_plan,
@@ -53,6 +55,33 @@ def test_blocked_indices_keep_same_dates_in_same_split():
     assert train_dates.isdisjoint(test_dates)
     assert valid_dates.isdisjoint(test_dates)
     assert train_dates | valid_dates | test_dates == set(sample_dates)
+
+
+def test_select_persistence_blend_alpha_minimizes_validation_brier_conservatively():
+    labels = np.array([1, 1, 0, 0], dtype=float)
+    model_probs = np.array([0.9, 0.8, 0.7, 0.2], dtype=float)
+    persistence_probs = np.array([0.6, 0.6, 0.4, 0.4], dtype=float)
+
+    alpha = _select_persistence_blend_alpha(
+        labels,
+        model_probs,
+        persistence_probs,
+        alphas=[0.0, 0.5, 1.0],
+    )
+
+    assert alpha == 0.5
+
+
+def test_select_persistence_blend_alpha_respects_model_weight_cap():
+    alpha = _select_persistence_blend_alpha(
+        np.array([1, 0], dtype=float),
+        np.array([1, 0], dtype=float),
+        np.array([0, 1], dtype=float),
+        alphas=[0.0, 0.6, 1.0],
+        max_alpha=0.6,
+    )
+
+    assert alpha == 0.6
 
 
 def test_blocked_indices_handles_timestamp_metadata_from_feature_builder():
@@ -307,13 +336,82 @@ def test_spatial_backtests_emit_beach_and_county_metrics():
     )
 
     assert "spatial_beach_hist_gbm" in metrics
+    assert "spatial_beach_hist_gbm_persistence_blend" in metrics
+    assert "spatial_beach_hist_gbm_no_bacteria_weather_delta" in metrics
     assert "spatial_beach_logistic_coastal_cells" in metrics
     assert "spatial_county_hist_gbm" in metrics
+    assert "spatial_county_hist_gbm_persistence_blend" in metrics
+    assert "spatial_county_hist_gbm_no_bacteria_weather_delta" in metrics
     assert "spatial_county_logistic_coastal_cells" in metrics
     assert metrics["spatial_beach_hist_gbm"]["folds"] >= 1.0
     assert metrics["spatial_county_hist_gbm"]["folds"] >= 1.0
     assert 0.0 <= metrics["spatial_beach_hist_gbm"]["aucpr"] <= 1.0
     assert not np.isnan(metrics["spatial_county_logistic"]["brier"])
+
+
+def test_no_bacteria_weather_delta_fold_excludes_bacteria_history(monkeypatch):
+    rows = []
+    for county, beach_id, offset in (
+        ("San Diego", "alpha", 0),
+        ("San Diego", "beta", 1),
+        ("Orange", "gamma", 2),
+        ("Orange", "delta", 3),
+    ):
+        for day in range(1, 13):
+            rows.append(
+                {
+                    "county": county,
+                    "beach_id": beach_id,
+                    "sample_date": pd.Timestamp(f"2026-04-{day:02d}"),
+                    "enterococcus_value_last_obs": float(40 + day + offset),
+                    "enterococcus_geomean_42d_lagged": float(30 + day + offset),
+                    "precip_mm_24h": float(day % 4),
+                    "wave_height_m_last_obs": float(0.5 + offset * 0.1),
+                }
+            )
+    metadata = pd.DataFrame(rows)
+    features = metadata[
+        [
+            "enterococcus_value_last_obs",
+            "enterococcus_geomean_42d_lagged",
+            "precip_mm_24h",
+            "wave_height_m_last_obs",
+        ]
+    ]
+    labels = np.array([(idx % 5) == 0 for idx in range(len(features))], dtype=float)
+    seen_columns: list[list[str]] = []
+
+    class RecordingClassifier:
+        def fit(self, frame, labels):
+            seen_columns.append(list(frame.columns))
+            return self
+
+        def predict_proba(self, frame):
+            seen_columns.append(list(frame.columns))
+            probabilities = np.clip(0.2 + frame["precip_mm_24h"].to_numpy(dtype=float) * 0.05, 0.05, 0.95)
+            return np.column_stack([1.0 - probabilities, probabilities])
+
+    monkeypatch.setattr(
+        "app.ml.training._fit_classifier_for_name",
+        lambda frame, model_name: RecordingClassifier(),
+    )
+
+    result = _spatial_holdout_fold_result(
+        features,
+        labels,
+        metadata,
+        model_name="hist_gbm_no_bacteria_weather_delta",
+        group_column="beach_id",
+        group_value="alpha",
+        stv_threshold=104.0,
+        min_rows=3,
+    )
+
+    assert result is not None
+    assert seen_columns
+    for columns in seen_columns:
+        assert "enterococcus_value_last_obs" not in columns
+        assert "enterococcus_geomean_42d_lagged" not in columns
 
 
 def test_spatial_backtests_can_limit_stage_two_models():
@@ -457,7 +555,12 @@ def test_two_stage_training_plan_shortlists_production_and_research_winners():
 
     assert plan.production_winner == "hist_gbm"
     assert plan.research_winner == "transformer"
-    assert plan.spatial_backtest_models == ["hist_gbm", "transformer"]
+    assert plan.spatial_backtest_models == [
+        "hist_gbm",
+        "transformer",
+        "hist_gbm_persistence_blend",
+        "hist_gbm_no_bacteria_weather_delta",
+    ]
 
 
 def test_two_stage_training_plan_picks_by_aucpr_not_brier():
