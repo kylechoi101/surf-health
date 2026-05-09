@@ -14,6 +14,7 @@ from app.ml.spatial_diagnostics import (
     add_default_context_buckets,
     blend_alpha_sweep,
     calibration_bins,
+    fallback_audit,
     group_brier_diagnostics,
     markdown_table,
     slice_brier_diagnostics,
@@ -25,6 +26,7 @@ from app.ml.training import (
     _metadata_with_groups,
     _spatial_holdout_fold_result,
 )
+from app.ml.weather_delta import fit_smoothed_rate_prior
 
 
 DEFAULT_CONTEXT_COLUMNS = [
@@ -32,6 +34,7 @@ DEFAULT_CONTEXT_COLUMNS = [
     "rain_72h_bucket",
     "wave_height_bucket",
     "wave_recency_bucket",
+    "sample_recency_bucket",
     "rain_72h_general_advisory_flag",
     "rain_72h_monitoring_pause_flag",
 ]
@@ -48,6 +51,8 @@ FEATURE_CONTEXT_COLUMNS = [
     "days_since_wave_height_m_obs",
     "dominant_period_s_last_obs",
     "days_since_dominant_period_s_obs",
+    "enterococcus_value_last_obs",
+    "days_since_enterococcus_value_obs",
     "streamflow_cfs_mean_24h",
     "streamflow_rising_flag",
 ]
@@ -133,6 +138,8 @@ def _collect_holdout_predictions(
         test_rows = np.flatnonzero(metadata[group_column].eq(group_value).to_numpy())
         if len(test_rows) != len(fold_labels):
             raise ValueError(f"Row mismatch while diagnosing {group_column}={group_value!r}")
+        train_rows = np.flatnonzero(~metadata[group_column].eq(group_value).to_numpy())
+        prior = fit_smoothed_rate_prior(labels, metadata, train_rows)
 
         fold_metadata = metadata.iloc[test_rows].reset_index(drop=True).copy()
         feature_context = features.iloc[test_rows].reset_index(drop=True)
@@ -144,6 +151,7 @@ def _collect_holdout_predictions(
         fold_metadata["label"] = fold_labels.astype(float)
         fold_metadata["model_probability"] = model_probabilities.astype(float)
         fold_metadata["persistence_probability"] = persistence_probabilities.astype(float)
+        fold_metadata["prior_probability"] = prior.predict(fold_metadata)
         rows.append(fold_metadata)
 
     if not rows:
@@ -208,9 +216,28 @@ def _write_outputs(
     model_bins = calibration_bins(enriched, probability_column="model_probability", bins=bins)
     persistence_bins = calibration_bins(enriched, probability_column="persistence_probability", bins=bins)
     blend_table = blend_alpha_sweep(enriched, alphas=alphas)
+    prior_group_table = (
+        group_brier_diagnostics(
+            enriched,
+            group_column=group_column,
+            persistence_probability_column="prior_probability",
+        )
+        if "prior_probability" in enriched.columns
+        else pd.DataFrame()
+    )
+    prior_audit = (
+        fallback_audit(enriched, baseline_probability_column="prior_probability")
+        if "prior_probability" in enriched.columns
+        else {}
+    )
 
     enriched.to_csv(output_dir / f"{group_column}_holdout_predictions.csv", index=False)
     group_table.to_csv(output_dir / f"{group_column}_brier_deltas.csv", index=False)
+    if not prior_group_table.empty:
+        prior_group_table.to_csv(output_dir / f"{group_column}_prior_brier_deltas.csv", index=False)
+        (output_dir / f"{group_column}_prior_fallback_audit.json").write_text(
+            json.dumps(prior_audit, indent=2) + "\n"
+        )
     model_bins.to_csv(output_dir / f"{group_column}_model_calibration_bins.csv", index=False)
     persistence_bins.to_csv(
         output_dir / f"{group_column}_persistence_calibration_bins.csv",
@@ -245,6 +272,12 @@ def _write_outputs(
         "outputs": {
             "predictions": str(output_dir / f"{group_column}_holdout_predictions.csv"),
             "group_brier_deltas": str(output_dir / f"{group_column}_brier_deltas.csv"),
+            "prior_brier_deltas": str(output_dir / f"{group_column}_prior_brier_deltas.csv")
+            if not prior_group_table.empty
+            else None,
+            "prior_fallback_audit": str(output_dir / f"{group_column}_prior_fallback_audit.json")
+            if prior_audit
+            else None,
             "model_calibration_bins": str(output_dir / f"{group_column}_model_calibration_bins.csv"),
             "persistence_calibration_bins": str(
                 output_dir / f"{group_column}_persistence_calibration_bins.csv"

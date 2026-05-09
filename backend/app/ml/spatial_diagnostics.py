@@ -95,6 +95,12 @@ def add_default_context_buckets(frame: pd.DataFrame) -> pd.DataFrame:
             labels=["fresh", "recent", "stale"],
             edges=[0.0, 3.0, 7.0, float("inf")],
         )
+    if "days_since_enterococcus_value_obs" in enriched.columns:
+        enriched["sample_recency_bucket"] = _bucket_numeric(
+            enriched["days_since_enterococcus_value_obs"],
+            labels=["fresh", "recent", "stale", "very_stale"],
+            edges=[0.0, 14.0, 30.0, 50.0, float("inf")],
+        )
     return enriched
 
 
@@ -211,6 +217,41 @@ def slice_brier_diagnostics(
         model_probability_column=model_probability_column,
         persistence_probability_column=persistence_probability_column,
     )
+
+
+def fallback_audit(
+    frame: pd.DataFrame,
+    *,
+    label_column: str = LABEL_COLUMN,
+    model_probability_column: str = MODEL_PROBABILITY_COLUMN,
+    baseline_probability_column: str = PERSISTENCE_PROBABILITY_COLUMN,
+) -> dict[str, object]:
+    labels = _as_numeric_series(frame, label_column)
+    model = _as_numeric_series(frame, model_probability_column).clip(0.0, 1.0)
+    baseline = _as_numeric_series(frame, baseline_probability_column).clip(0.0, 1.0)
+    valid = pd.DataFrame({"label": labels, "model": model, "baseline": baseline}).dropna()
+    if valid.empty:
+        return {
+            "eligible": False,
+            "n": 0,
+            "model_brier": float("nan"),
+            "baseline_brier": float("nan"),
+            "brier_delta": float("nan"),
+            "route_beats_baseline": False,
+            "failed_closed": True,
+        }
+    model_brier = _brier(valid["label"], valid["model"])
+    baseline_brier = _brier(valid["label"], valid["baseline"])
+    route_beats_baseline = bool(model_brier < baseline_brier)
+    return {
+        "eligible": True,
+        "n": int(len(valid)),
+        "model_brier": model_brier,
+        "baseline_brier": baseline_brier,
+        "brier_delta": model_brier - baseline_brier,
+        "route_beats_baseline": route_beats_baseline,
+        "failed_closed": not route_beats_baseline,
+    }
 
 
 def calibration_bins(

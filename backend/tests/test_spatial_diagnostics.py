@@ -5,6 +5,7 @@ from app.ml.spatial_diagnostics import (
     add_default_context_buckets,
     blend_alpha_sweep,
     calibration_bins,
+    fallback_audit,
     group_brier_diagnostics,
     markdown_table,
     slice_brier_diagnostics,
@@ -92,6 +93,7 @@ def test_add_default_context_buckets_marks_weather_and_missingness():
             "rain_72h_inches": [0.0, 0.2, np.nan],
             "wave_height_m_last_obs": [0.3, 1.8, np.nan],
             "days_since_wave_height_m_obs": [1.0, 10.0, np.nan],
+            "days_since_enterococcus_value_obs": [5.0, 55.0, np.nan],
         }
     )
 
@@ -101,6 +103,24 @@ def test_add_default_context_buckets_marks_weather_and_missingness():
     assert list(result["rain_72h_bucket"]) == ["dry", "wet", "unknown"]
     assert list(result["wave_height_bucket"]) == ["calm", "high", "unknown"]
     assert list(result["wave_recency_bucket"]) == ["fresh", "stale", "unknown"]
+    assert list(result["sample_recency_bucket"]) == ["fresh", "very_stale", "unknown"]
+
+
+def test_fallback_audit_marks_routes_that_fail_to_beat_baseline():
+    frame = pd.DataFrame(
+        {
+            "label": [1, 0],
+            "model_probability": [0.2, 0.8],
+            "prior_probability": [0.6, 0.4],
+        }
+    )
+
+    result = fallback_audit(frame, baseline_probability_column="prior_probability")
+
+    assert result["eligible"] is True
+    assert result["route_beats_baseline"] is False
+    assert result["failed_closed"] is True
+    assert result["model_brier"] > result["baseline_brier"]
 
 
 def test_markdown_table_does_not_require_optional_tabulate_dependency():
