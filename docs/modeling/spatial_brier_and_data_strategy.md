@@ -73,6 +73,41 @@ remaining San Diego underprediction confirms that public readiness needs nested
 spatial validation, local routing, and fallback rules before this candidate can
 serve user-facing probabilities.
 
+## Positive Persistence Guard Candidate
+
+The next diagnostic candidate keeps the calibrated GBM's upside only where it is
+allowed to improve on persistence. If the latest prior official sample exceeded
+the STV threshold, the candidate preserves persistence at `1.0` instead of
+letting the GBM dilute that recent warning. Otherwise it uses the existing capped
+blend weight:
+
+```text
+if persistence == 1:
+    p_final = 1.0
+else:
+    p_final = 0.60 * p_hist_gbm
+```
+
+This is intentionally conservative. It encodes the physics/math assumption that
+recent confirmed exceedance is serially informative and should not be averaged
+away by a global model, while still letting weather/context lift risk after a
+non-exceeding prior sample.
+
+The 365-day / 12-county / 50-beach diagnostic produced:
+
+```text
+model = hist_gbm_positive_persistence_guard
+
+group     model_brier  persistence_brier  delta_vs_persistence  local result
+county    0.126892     0.138799           -0.011907             12 wins / 0 ties / 0 worse
+beach     0.159621     0.201470           -0.041849             46 wins / 4 ties / 0 worse
+```
+
+The four beach ties are all perfect-persistence groups with persistence Brier
+equal to `0.0`, so strict improvement is mathematically impossible there. The
+candidate is therefore the first current route that is no worse than persistence
+for every tested county and beach group, while still improving aggregate Brier.
+
 ## Immediate Model Direction
 
 Build a calibrated model router, not a more impressive single model.

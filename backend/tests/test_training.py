@@ -15,6 +15,7 @@ from app.ml.training import (
     _metadata_with_groups,
     _predict_coastal_cell_logistic_raw,
     _predict_hierarchical_logistic_raw,
+    _positive_persistence_guarded_blend_probabilities,
     _promotion_assessment,
     _select_persistence_blend_alpha,
     _spatial_holdout_metrics,
@@ -82,6 +83,19 @@ def test_select_persistence_blend_alpha_respects_model_weight_cap():
     )
 
     assert alpha == 0.6
+
+
+def test_positive_persistence_guarded_blend_keeps_prior_exceedances_at_one():
+    model_probs = np.array([0.2, 0.8, 0.4, 0.9], dtype=float)
+    persistence_probs = np.array([1.0, 0.0, 1.0, 0.0], dtype=float)
+
+    guarded = _positive_persistence_guarded_blend_probabilities(
+        model_probs,
+        persistence_probs,
+        alpha=0.5,
+    )
+
+    assert guarded.tolist() == [1.0, 0.4, 1.0, 0.45]
 
 
 def test_blocked_indices_handles_timestamp_metadata_from_feature_builder():
@@ -337,10 +351,12 @@ def test_spatial_backtests_emit_beach_and_county_metrics():
 
     assert "spatial_beach_hist_gbm" in metrics
     assert "spatial_beach_hist_gbm_persistence_blend" in metrics
+    assert "spatial_beach_hist_gbm_positive_persistence_guard" in metrics
     assert "spatial_beach_hist_gbm_no_bacteria_weather_delta" in metrics
     assert "spatial_beach_logistic_coastal_cells" in metrics
     assert "spatial_county_hist_gbm" in metrics
     assert "spatial_county_hist_gbm_persistence_blend" in metrics
+    assert "spatial_county_hist_gbm_positive_persistence_guard" in metrics
     assert "spatial_county_hist_gbm_no_bacteria_weather_delta" in metrics
     assert "spatial_county_logistic_coastal_cells" in metrics
     assert metrics["spatial_beach_hist_gbm"]["folds"] >= 1.0

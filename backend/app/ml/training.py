@@ -57,7 +57,11 @@ COASTAL_CELL_MIN_BEACHES_PER_CLUSTER = 24
 COASTAL_CELL_MAX_CLUSTERS = 8
 PRODUCTION_MODEL_NAMES = ("logistic", "logistic_coastal_cells", "logistic_hierarchical", "hist_gbm", "stacked_ensemble")
 SEQUENCE_MODEL_NAMES = ("tcn", "cnn", "lstm", "transformer", "pinn")
-SPATIAL_DIAGNOSTIC_MODEL_NAMES = ("hist_gbm_persistence_blend", "hist_gbm_no_bacteria_weather_delta")
+SPATIAL_DIAGNOSTIC_MODEL_NAMES = (
+    "hist_gbm_persistence_blend",
+    "hist_gbm_positive_persistence_guard",
+    "hist_gbm_no_bacteria_weather_delta",
+)
 SPATIAL_BACKTEST_MODEL_NAMES = (*PRODUCTION_MODEL_NAMES, *SPATIAL_DIAGNOSTIC_MODEL_NAMES)
 SPATIAL_BACKTEST_STRATEGIES = ("shortlist", "requested", "quick")
 PERSISTENCE_BLEND_ALPHAS = tuple(float(alpha) for alpha in np.linspace(0.0, 1.0, 11))
@@ -428,6 +432,16 @@ def _blend_probabilities(
     return alpha * np.asarray(model_probabilities, dtype=float) + (1.0 - alpha) * np.asarray(
         persistence_probabilities, dtype=float
     )
+
+
+def _positive_persistence_guarded_blend_probabilities(
+    model_probabilities: np.ndarray,
+    persistence_probabilities: np.ndarray,
+    alpha: float,
+) -> np.ndarray:
+    blended = _blend_probabilities(model_probabilities, persistence_probabilities, alpha)
+    persistence = np.asarray(persistence_probabilities, dtype=float)
+    return np.where(persistence >= 0.5, 1.0, blended)
 
 
 def _select_persistence_blend_alpha(
@@ -1059,6 +1073,28 @@ def _spatial_holdout_fold_result(
             max_alpha=PERSISTENCE_BLEND_MAX_MODEL_ALPHA,
         )
         return labels[test_rows], _blend_probabilities(test_probabilities, persistence[test_rows], alpha)
+
+    if model_name == "hist_gbm_positive_persistence_guard":
+        classifier = _fit_classifier_for_name(features, "hist_gbm")
+        classifier.fit(features.iloc[inner_train_rows], labels[inner_train_rows])
+        valid_raw = classifier.predict_proba(features.iloc[inner_valid_rows])[:, 1]
+        _, calibrator = _identity_or_calibrated(
+            valid_raw,
+            labels[inner_valid_rows],
+            metadata.iloc[inner_valid_rows].reset_index(drop=True),
+        )
+        test_probabilities = classifier.predict_proba(features.iloc[test_rows])[:, 1]
+        test_probabilities = _apply_calibrator(
+            calibrator,
+            test_probabilities,
+            metadata.iloc[test_rows].reset_index(drop=True),
+        )
+        persistence = _persistence_probabilities(features, stv_threshold)
+        return labels[test_rows], _positive_persistence_guarded_blend_probabilities(
+            test_probabilities,
+            persistence[test_rows],
+            PERSISTENCE_BLEND_MAX_MODEL_ALPHA,
+        )
 
     if model_name == "hist_gbm_no_bacteria_weather_delta":
         no_bacteria_features = select_no_bacteria_features(features)
