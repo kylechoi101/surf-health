@@ -2015,6 +2015,13 @@ def _refresh_candidate_advisory_features(
     recent_ids = set(active_adv.loc[is_recent, "beach_id"].tolist())
     candidates["advisory_recent_active"] = candidates["beach_id"].isin(recent_ids).astype(int)
 
+    is_currently_active = active_adv["ended_at_ts"].isna() | (active_adv["ended_at_ts"] >= forecast_ts)
+    is_recent_active_floor = is_currently_active & (
+        (active_adv["started_at"] >= cutoff_365) | (active_adv["cause"].str.contains("Tijuana River", case=False, na=False))
+    )
+    floor_ids = set(active_adv.loc[is_recent_active_floor, "beach_id"].tolist())
+    candidates["advisory_active_recent_for_floor"] = candidates["beach_id"].isin(floor_ids).astype(int)
+
     closed = adv[adv["ended_at_ts"].notna()].copy()
     closed["_days"] = (forecast_ts - closed["ended_at_ts"]).dt.days
     closed = closed[closed["_days"] >= 0]
