@@ -31,6 +31,7 @@ from app.data.pipeline.features import (
 from app.ml.calibration import (
     HierarchicalProbabilityCalibrator,
     ProbabilityCalibrator,
+    _HIGH_THRESHOLD,
     _VERY_HIGH_THRESHOLD as _CAL_VERY_HIGH,
     risk_band,
 )
@@ -2537,28 +2538,28 @@ def _export_forecasts(
                     if zip_key in uv_lookup.index:
                         uv_index = _safe_float(uv_lookup.loc[zip_key].get("uv_index"))
                         uv_alert = uv_lookup.loc[zip_key].get("uv_alert")
-            advisory_recent = _safe_float(feature_row.get("advisory_recent_active")) or 0.0
+            advisory_floor_trigger = _safe_float(feature_row.get("advisory_active_recent_for_floor")) or 0.0
             p_raw = float(probability)
-            p_final = max(p_raw, 0.20) if advisory_recent else p_raw
+            served_p_exceed = max(p_raw, _HIGH_THRESHOLD) if advisory_floor_trigger else p_raw
+            advisory_floor_applied = bool(advisory_floor_trigger and p_raw < _HIGH_THRESHOLD)
             p_lower = probability_lower[i] if i < len(probability_lower) else np.nan
             p_upper = probability_upper[i] if i < len(probability_upper) else np.nan
-            p_lower_final = max(float(p_lower), 0.20) if advisory_recent and np.isfinite(p_lower) else (
-                float(p_lower) if np.isfinite(p_lower) else None
-            )
-            p_upper_final = max(float(p_upper), p_final) if np.isfinite(p_upper) else None
+            p_lower_final = float(p_lower) if np.isfinite(p_lower) else None
+            p_upper_final = max(float(p_upper), served_p_exceed) if np.isfinite(p_upper) else None
             sample_age_value = _safe_float(latest_row.get("sample_age_days")) if latest_row is not None else None
             sample_age_days = int(sample_age_value) if sample_age_value is not None else None
             forecasts.append({
                 "beach_id": beach_id,
                 "forecast_date": forecast_date.isoformat(),
-                "risk_band": risk_band(p_final),
+                "risk_band": risk_band(served_p_exceed),
                 "forecast_label_mode": "model",
                 "sample_age_days": sample_age_days,
                 "sample_recency_band": (
                     latest_row.get("sample_recency_band") if latest_row is not None else "unknown"
                 ),
                 "is_beta_forecast": True,
-                "p_exceed": p_final,
+                "advisory_floor_applied": advisory_floor_applied,
+                "p_exceed": served_p_exceed,
                 "p_exceed_raw": p_raw,
                 "p_exceed_lower": p_lower_final,
                 "p_exceed_upper": p_upper_final,
