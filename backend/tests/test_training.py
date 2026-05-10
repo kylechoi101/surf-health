@@ -975,3 +975,110 @@ def test_model_card_reports_spatial_metrics_for_production_model(tmp_path):
     card = (tmp_path / "model_card.md").read_text()
 
     assert "**Spatial county AUCPR**: 0.655" in card
+
+
+def test_export_forecasts_applies_advisory_safety_floor(monkeypatch, tmp_path):
+    from app.ml.training import _export_forecasts, _TrainedModels, StageTwoTrainingPlan
+    class FixedClassifier:
+        def predict_proba(self, frame):
+            return np.column_stack(
+                [np.full(len(frame), 0.8, dtype=float), np.full(len(frame), 0.2, dtype=float)]
+            )
+
+    class FixedRegressor:
+        def predict(self, frame):
+            return np.full(len(frame), 1.7, dtype=float)
+
+    curated_dir = tmp_path / "curated"
+    curated_dir.mkdir()
+    (curated_dir / "system_health.json").write_text("{}")
+    
+    candidates = pd.DataFrame([
+        {"beach_id": "acute_active", "advisory_active_recent_for_floor": 1},
+        {"beach_id": "chronic_active", "advisory_active_recent_for_floor": 1},
+        {"beach_id": "stale_active", "advisory_active_recent_for_floor": 0},
+    ])
+    monkeypatch.setattr("app.ml.training._build_forecast_candidates", lambda *args, **kwargs: (pd.DataFrame(), candidates))
+    
+    features = pd.DataFrame({"enterococcus_value_last_obs": [180.0, 180.0, 180.0]})
+    forecast_features = pd.DataFrame({"enterococcus_value_last_obs": [180.0, 180.0, 180.0], "advisory_active_recent_for_floor": [1, 1, 0]})
+    forecast_metadata = pd.DataFrame({"beach_id": ["acute_active", "chronic_active", "stale_active"], "sample_date": [pd.Timestamp("2026-04-20")]*3})
+
+    monkeypatch.setattr(
+        "app.ml.training.build_inference_features",
+        lambda inference_input: type(
+            "Inference",
+            (),
+            {"feature_frame": forecast_features, "metadata": forecast_metadata},
+        )(),
+    )
+    monkeypatch.setattr("app.ml.training._inject_agent_features", lambda features, *args: features)
+    monkeypatch.setattr(
+        "app.ml.training._compute_local_drivers",
+        lambda *args, **kwargs: [["mock driver"]]*3,
+    )
+    monkeypatch.setattr("app.ml.training._split_conformal_half_width", lambda *args: None)
+    monkeypatch.setattr("app.ml.training._write_model_card", lambda *args: None)
+
+    _export_forecasts(
+        curated_dir=curated_dir,
+        forecast_date=date(2026, 4, 20),
+        frame=pd.DataFrame(),
+        full_frame=pd.DataFrame(),
+        features=features,
+        densities=np.array([1.0, 1.1, 1.2]),
+        valid_idx=np.array([0, 1]),
+        test_idx=np.array([2]),
+        stations=pd.DataFrame(
+            [
+                {
+                    "beach_id": bid,
+                    "county": "Orange",
+                    "region": "South Coast",
+                    "latitude": 33.0,
+                    "longitude": -117.0,
+                    "zip_code": "92651",
+                } for bid in ["acute_active", "chronic_active", "stale_active"]
+            ]
+        ),
+        uv_daily=pd.DataFrame(),
+        advisories=pd.DataFrame(),
+        models=_TrainedModels(
+            winner="baseline",
+            tree_classifier=FixedClassifier(),
+            tree_calibrator=None,
+            classifier=FixedClassifier(),
+            calibrator=None,
+            logistic=None,
+            logistic_calibrator=None,
+            coastal_cell_logistic=None,
+            hierarchical_logistic=None,
+            ensemble_weights=None,
+            regressor=FixedRegressor(),
+            regressor_valid_predictions=np.array([1.0, 1.1]),
+        ),
+        plan=StageTwoTrainingPlan(
+            production_winner="baseline",
+            research_winner="baseline",
+            spatial_backtest_models=[],
+        ),
+        metrics={"baseline": {}},
+        model_types_to_run=[],
+        spatial_backtests=False,
+        spatial_backtest_models=[],
+        spatial_strategy="shortlist",
+    )
+
+    forecasts = pd.read_parquet(curated_dir / "forecasts.parquet")
+
+    assert forecasts.loc[forecasts["beach_id"] == "acute_active", "p_exceed"].iloc[0] == 0.3
+    assert forecasts.loc[forecasts["beach_id"] == "acute_active", "p_exceed_raw"].iloc[0] == 0.2
+    assert bool(forecasts.loc[forecasts["beach_id"] == "acute_active", "advisory_floor_applied"].iloc[0]) is True
+    
+    assert forecasts.loc[forecasts["beach_id"] == "chronic_active", "p_exceed"].iloc[0] == 0.3
+    assert forecasts.loc[forecasts["beach_id"] == "chronic_active", "p_exceed_raw"].iloc[0] == 0.2
+    assert bool(forecasts.loc[forecasts["beach_id"] == "chronic_active", "advisory_floor_applied"].iloc[0]) is True
+    
+    assert forecasts.loc[forecasts["beach_id"] == "stale_active", "p_exceed"].iloc[0] == 0.2
+    assert forecasts.loc[forecasts["beach_id"] == "stale_active", "p_exceed_raw"].iloc[0] == 0.2
+    assert bool(forecasts.loc[forecasts["beach_id"] == "stale_active", "advisory_floor_applied"].iloc[0]) is False
