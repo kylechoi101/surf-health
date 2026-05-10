@@ -8,6 +8,25 @@ from pydantic import BaseModel, Field
 
 RiskBand = Literal["Low", "Moderate", "High", "Very High"]
 SupportStatus = Literal["production", "beta", "unsupported"]
+ForecastLabelMode = Literal[
+    "model",
+    "official_advisory_override",
+    "derived_persistence",
+    "unavailable",
+]
+SampleRecencyBand = Literal["fresh", "recent", "stale", "very_stale", "unknown"]
+
+
+def sample_recency_band(sample_age_days: int | None) -> SampleRecencyBand:
+    if sample_age_days is None:
+        return "unknown"
+    if sample_age_days <= 3:
+        return "fresh"
+    if sample_age_days <= 20:
+        return "recent"
+    if sample_age_days <= 60:
+        return "stale"
+    return "very_stale"
 
 
 class Point(BaseModel):
@@ -69,6 +88,10 @@ class ForecastRecord(BaseModel):
     forecast_generated_at: datetime
     forecast_age_hours: int | None = None
     official_advisory_active: bool = False
+    forecast_label_mode: ForecastLabelMode = "model"
+    sample_age_days: int | None = Field(default=None, ge=0)
+    sample_recency_band: SampleRecencyBand = "unknown"
+    is_beta_forecast: bool = True
     environmental_summary: EnvironmentalSummary = Field(default_factory=EnvironmentalSummary)
 
 

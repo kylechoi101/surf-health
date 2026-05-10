@@ -88,6 +88,10 @@ def main() -> None:
                 "model_version": clean_text(row.get("model_version")),
                 "forecast_generated_at": to_iso(row.get("forecast_generated_at")),
                 "top_drivers": to_driver_list(row.get("top_drivers")),
+                "forecast_label_mode": clean_text(row.get("forecast_label_mode"), fallback="model"),
+                "sample_age_days": safe_float(row.get("sample_age_days")),
+                "sample_recency_band": clean_text(row.get("sample_recency_band"), fallback="unknown"),
+                "is_beta_forecast": bool(row.get("is_beta_forecast", True)),
             }
             if bid in active_advisory_ids:
                 base_forecast = {
@@ -95,6 +99,7 @@ def main() -> None:
                     "model_risk_band": base_forecast.get("risk_band"),
                     "official_advisory_active": True,
                     "risk_band": "Very High",
+                    "forecast_label_mode": "official_advisory_override",
                     "top_drivers": [
                         "Official health advisory is active for this station.",
                         *to_driver_list(row.get("top_drivers")),

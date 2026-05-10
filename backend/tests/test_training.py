@@ -5,6 +5,8 @@ import pandas as pd
 
 from app.data.pipeline.features import build_sliding_windows
 from app.ml.training import (
+    StageTwoTrainingPlan,
+    _TrainedModels,
     _best_valid_aucpr_model,
     _blocked_indices,
     _build_forecast_candidates,
@@ -16,6 +18,7 @@ from app.ml.training import (
     _predict_coastal_cell_logistic_raw,
     _predict_hierarchical_logistic_raw,
     _positive_persistence_guarded_blend_probabilities,
+    _export_forecasts,
     _promotion_assessment,
     _select_persistence_blend_alpha,
     _spatial_holdout_metrics,
@@ -96,6 +99,120 @@ def test_positive_persistence_guarded_blend_keeps_prior_exceedances_at_one():
     )
 
     assert guarded.tolist() == [1.0, 0.4, 1.0, 0.45]
+
+
+def test_export_forecasts_uses_guarded_probabilities_for_beta_serving_candidate(
+    monkeypatch, tmp_path
+):
+    class FixedClassifier:
+        def predict_proba(self, frame):
+            return np.column_stack(
+                [np.full(len(frame), 0.8, dtype=float), np.full(len(frame), 0.2, dtype=float)]
+            )
+
+    class FixedRegressor:
+        def predict(self, frame):
+            return np.full(len(frame), 1.7, dtype=float)
+
+    curated_dir = tmp_path / "curated"
+    curated_dir.mkdir()
+    (curated_dir / "system_health.json").write_text("{}")
+    frame = pd.DataFrame(
+        [
+            {
+                "beach_id": "alpha",
+                "sample_date": f"2026-04-{day:02d}",
+                "sample_time": f"2026-04-{day:02d}T08:00:00+00:00",
+                "enterococcus_value": 180.0,
+                "exceeds_stv": 1,
+                "wave_height_m": 1.0,
+                "dominant_period_s": 8.0,
+                "water_temperature_c": 16.0,
+                "salinity_psu": 33.0,
+                "uv_index": 5.0,
+                "wind_speed_mps": 3.0,
+                "tidal_height": 1.0,
+                "surf_height_observed": 2.0,
+                "turbidity_observed": 5.0,
+            }
+            for day in (17, 18, 19)
+        ]
+    )
+    features = pd.DataFrame({"enterococcus_value_last_obs": [80.0, 180.0, 180.0]})
+    forecast_features = pd.DataFrame({"enterococcus_value_last_obs": [180.0]})
+    forecast_metadata = pd.DataFrame({"beach_id": ["alpha"], "sample_date": [pd.Timestamp("2026-04-20")]})
+
+    monkeypatch.setattr(
+        "app.ml.training.build_inference_features",
+        lambda inference_input: type(
+            "Inference",
+            (),
+            {"feature_frame": forecast_features, "metadata": forecast_metadata},
+        )(),
+    )
+    monkeypatch.setattr("app.ml.training._inject_agent_features", lambda features, *args: features)
+    monkeypatch.setattr(
+        "app.ml.training._compute_local_drivers",
+        lambda *args, **kwargs: [["elevated bacteria in recent sample"]],
+    )
+    monkeypatch.setattr("app.ml.training._split_conformal_half_width", lambda *args: None)
+    monkeypatch.setattr("app.ml.training._write_model_card", lambda *args: None)
+
+    _export_forecasts(
+        curated_dir=curated_dir,
+        forecast_date=date(2026, 4, 20),
+        frame=frame,
+        full_frame=frame,
+        features=features,
+        densities=np.array([1.0, 1.1, 1.2]),
+        valid_idx=np.array([0, 1]),
+        test_idx=np.array([2]),
+        stations=pd.DataFrame(
+            [
+                {
+                    "beach_id": "alpha",
+                    "county": "Orange",
+                    "region": "South Coast",
+                    "latitude": 33.0,
+                    "longitude": -117.0,
+                    "zip_code": "92651",
+                }
+            ]
+        ),
+        uv_daily=pd.DataFrame(),
+        advisories=pd.DataFrame(),
+        models=_TrainedModels(
+            winner="hist_gbm_positive_persistence_guard",
+            tree_classifier=FixedClassifier(),
+            tree_calibrator=None,
+            classifier=FixedClassifier(),
+            calibrator=None,
+            logistic=None,
+            logistic_calibrator=None,
+            coastal_cell_logistic=None,
+            hierarchical_logistic=None,
+            ensemble_weights=None,
+            regressor=FixedRegressor(),
+            regressor_valid_predictions=np.array([1.0, 1.1]),
+        ),
+        plan=StageTwoTrainingPlan(
+            production_winner="hist_gbm_positive_persistence_guard",
+            research_winner="hist_gbm_positive_persistence_guard",
+            spatial_backtest_models=["hist_gbm_positive_persistence_guard"],
+        ),
+        metrics={"hist_gbm_positive_persistence_guard": {}, "hist_gbm_positive_persistence_guard_valid": {}},
+        model_types_to_run=[],
+        spatial_backtests=False,
+        spatial_backtest_models=["hist_gbm_positive_persistence_guard"],
+        spatial_strategy="shortlist",
+    )
+
+    forecasts = pd.read_parquet(curated_dir / "forecasts.parquet")
+
+    assert forecasts.loc[0, "p_exceed"] == 1.0
+    assert forecasts.loc[0, "risk_band"] == "Very High"
+    assert forecasts.loc[0, "forecast_label_mode"] == "model"
+    assert bool(forecasts.loc[0, "is_beta_forecast"]) is True
 
 
 def test_blocked_indices_handles_timestamp_metadata_from_feature_builder():

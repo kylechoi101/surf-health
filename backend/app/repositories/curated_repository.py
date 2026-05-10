@@ -27,6 +27,7 @@ from app.schemas.domain import (
     ParentBeachSummary,
     Point,
     SystemHealthResponse,
+    sample_recency_band,
 )
 
 OBSERVATION_COLUMNS = [
@@ -79,6 +80,24 @@ def _safe_float(value: object) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _safe_int(value: object) -> int | None:
+    number = _safe_float(value)
+    return int(number) if number is not None else None
+
+
+def _safe_bool(value: object, *, default: bool = True) -> bool:
+    """Parse a boolean that may have been stored as string/int in parquet/SQLite."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(int(value))
+    if isinstance(value, str):
+        return value.lower() not in ("0", "false", "no", "")
+    return default
 
 
 def _driver_list(value: object) -> list[str]:
@@ -361,7 +380,15 @@ class CuratedBeachRepository(BeachRepository):
             row["official_advisory_active"] = True
             row["model_risk_band"] = model_risk_band
             row["risk_band"] = "Very High"
+            row["forecast_label_mode"] = "official_advisory_override"
             row["top_drivers"] = self._advisory_override_drivers(row.get("top_drivers"))
+
+        sample_age = _safe_int(row.get("sample_age_days"))
+        if sample_age is None:
+            sample_age = self._sample_age_days(beach_id, row.get("forecast_date"))
+        row["sample_age_days"] = sample_age
+        row["sample_recency_band"] = str(row.get("sample_recency_band") or sample_recency_band(sample_age))
+        row["is_beta_forecast"] = _safe_bool(row.get("is_beta_forecast"), default=True)
 
         return ForecastRecord.model_validate(row)
 
@@ -406,6 +433,13 @@ class CuratedBeachRepository(BeachRepository):
             raise HTTPException(status_code=404, detail="Forecast data not available")
         beach_obs["sample_time"] = pd.to_datetime(beach_obs["sample_time"], errors="coerce")
         latest = beach_obs.sort_values("sample_time").iloc[-1]
+        sample_age = self._sample_age_days_from_value(latest["sample_time"], forecast_date)
+        recency_band = sample_recency_band(sample_age)
+        if recency_band in ("stale", "very_stale"):
+            raise HTTPException(
+                status_code=404,
+                detail="Forecast data not available because the latest sample is not fresh.",
+            )
         latest_value = float(latest["value"])
         ratio = max(latest_value / self.stv_threshold, 0.01)
         p_exceed = min(max(0.5 + 0.4 * (ratio - 1.0), 0.03), 0.97)
@@ -440,8 +474,32 @@ class CuratedBeachRepository(BeachRepository):
             model_version="derived-persistence-v0",
             forecast_generated_at=datetime.now(UTC),
             official_advisory_active=active_advisory,
+            forecast_label_mode=(
+                "official_advisory_override" if active_advisory else "derived_persistence"
+            ),
+            sample_age_days=sample_age,
+            sample_recency_band=recency_band,
+            is_beta_forecast=True,
             environmental_summary=EnvironmentalSummary(),
         )
+
+    def _sample_age_days(self, beach_id: str, forecast_date_value: object) -> int | None:
+        if not (self.curated_dir / "beaches.parquet").exists() or self.beaches_frame.empty:
+            return None
+        rows = self.beaches_frame.loc[self.beaches_frame["beach_id"] == beach_id]
+        if rows.empty:
+            return None
+        return self._sample_age_days_from_value(
+            rows.iloc[0].get("latest_official_sample_at"),
+            forecast_date_value,
+        )
+
+    def _sample_age_days_from_value(self, sample_time: object, forecast_date_value: object) -> int | None:
+        sample_ts = pd.to_datetime(sample_time, errors="coerce")
+        forecast_ts = pd.to_datetime(forecast_date_value, errors="coerce")
+        if pd.isna(sample_ts) or pd.isna(forecast_ts):
+            return None
+        return max(0, int((forecast_ts.date() - sample_ts.date()).days))
 
     def get_observations(self, beach_id: str) -> ObservationResponse:
         beach_obs = self._obs_for_beach(beach_id)

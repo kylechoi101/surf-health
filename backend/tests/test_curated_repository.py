@@ -120,6 +120,10 @@ def test_curated_repository_derives_forecast_and_observations(tmp_path):
         forecast_date=pd.Timestamp("2026-04-20").date(),
     )
     assert forecast.p_exceed > 0.5
+    assert forecast.forecast_label_mode == "derived_persistence"
+    assert forecast.sample_age_days == 2
+    assert forecast.sample_recency_band == "fresh"
+    assert forecast.is_beta_forecast is True
     assert forecast.lower_prediction_interval is None
     assert forecast.upper_prediction_interval is None
     observations = repository.get_observations("ca123-orange-main-beach-main-beach-pier")
@@ -166,6 +170,7 @@ def test_curated_repository_overrides_forecast_when_official_advisory_active(tmp
     assert forecast.official_advisory_active is True
     assert forecast.risk_band == "Very High"
     assert forecast.model_risk_band == "Low"
+    assert forecast.forecast_label_mode == "official_advisory_override"
     assert forecast.top_drivers == [
         "Official health advisory is active for this station.",
         "model signal",
@@ -211,8 +216,39 @@ def test_curated_repository_overrides_derived_forecast_when_official_advisory_ac
     assert forecast.official_advisory_active is True
     assert forecast.risk_band == "Very High"
     assert forecast.model_risk_band == "High"
+    assert forecast.forecast_label_mode == "official_advisory_override"
     assert forecast.top_drivers[0] == "Official health advisory is active for this station."
     assert "above the marine threshold" in forecast.top_drivers[1]
+
+
+def test_curated_repository_does_not_derive_forecast_from_stale_sample(tmp_path):
+    curated_dir = tmp_path / "curated"
+    curated_dir.mkdir()
+    beach_id = "ca123-orange-main-beach-main-beach-pier"
+    pd.DataFrame(
+        [
+            {
+                "beach_id": beach_id,
+                "sample_time": "2026-01-01T08:00:00",
+                "sample_date": "2026-01-01",
+                "analyte": "enterococcus",
+                "method": "Culture",
+                "units": "CFU/100ml",
+                "value": 140.0,
+                "exceeds_stv": True,
+            }
+        ]
+    ).to_parquet(curated_dir / "observations.parquet", index=False)
+
+    repository = CuratedBeachRepository(curated_dir, stv_threshold=104.0)
+
+    try:
+        repository.get_forecast(beach_id, date(2026, 4, 20))
+    except Exception as exc:
+        assert getattr(exc, "status_code", None) == 404
+        assert "fresh" in str(getattr(exc, "detail", "")).lower()
+    else:
+        raise AssertionError("stale samples must not produce derived persistence forecasts")
 
 
 def test_curated_repository_limits_parquet_columns_for_per_beach_reads(monkeypatch, tmp_path):
