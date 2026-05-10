@@ -585,6 +585,7 @@ class CuratedBeachRepository(BeachRepository):
 
         return SystemHealthResponse.model_validate({
             "app_env": os.getenv("APP_ENV", "development"),
+            "is_beta_product": True,
             "active_advisories_count": active_count,
             "forecast_audit": audit,
             "repository_mode": "parquet",

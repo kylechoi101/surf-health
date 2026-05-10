@@ -120,6 +120,7 @@ class ObservationResponse(BaseModel):
 
 class SystemHealthResponse(BaseModel):
     app_env: str
+    is_beta_product: bool = True
     pipeline_freshness: str
     source_freshness: dict[str, str]
     model_registry: dict[str, Any]
