@@ -1,7 +1,7 @@
-# Model Card: Shorelife `hist-gbm-curated-v0`
+# Model Card: Shorelife `hist-gbm-positive-persistence-guard-curated-v0`
 
 ## Deployment Status
-- **Generated at**: 2026-05-08T15:09:44.590403+00:00
+- **Generated at**: 2026-05-10T16:47:37.236275+00:00
 - **Deployment stage**: candidate_ready
 - **Public release eligible**: true
 - **Promotion blocker (latest)**: None
@@ -9,26 +9,26 @@
 ## Headline Metrics (from `system_health.json`)
 
 ### Temporal (held-out time slice)
-- **AUCPR**: 0.344
-- **Brier**: 0.084
-- **Log loss**: 0.289
-- **Calibration slope**: 0.854
+- **AUCPR**: 0.247
+- **Brier**: 0.130
+- **Log loss**: 1.235
+- **Calibration slope**: 0.108
 
 ### Deployment (active stations only; recency-filtered roster)
-- **AUCPR**: 0.351
-- **Brier**: 0.089
-- **n_samples**: 1358
+- **AUCPR**: —
+- **Brier**: —
+- **n_samples**: 0
 
 ### Validation (calibration/training-time slice; not a public headline)
-- **AUCPR**: 0.842
-- **Brier**: 0.124
+- **AUCPR**: 0.627
+- **Brier**: 0.172
 
 ### Spatial (holdouts)
-- **Spatial county AUCPR**: 0.641
+- **Spatial county AUCPR**: 0.655
 - **Spatial county persistence AUCPR**: 0.574
 
 ## Operational Agreement Check
-- **Active-advisory agreement rate** (model flags High band on advised beaches): —
+- **Active-advisory agreement rate** (model flags High band on advised beaches): 0.277
 
 ## Notes
 - Forecasts are decision support and are not official lab results.

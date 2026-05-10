@@ -23,10 +23,13 @@ from app.ml.training import (
     _select_persistence_blend_alpha,
     _spatial_holdout_metrics,
     _spatial_backtest_metrics,
+    _spatially_qualified_production_winner,
     _spatial_holdout_fold_result,
     _identity_or_calibrated,
     _split_conformal_half_width,
     _two_stage_training_plan,
+    _write_model_card,
+    SPATIAL_BACKTEST_MODEL_NAMES,
     train_all,
 )
 from app.ml.calibration import HierarchicalProbabilityCalibrator
@@ -691,6 +694,7 @@ def test_two_stage_training_plan_shortlists_production_and_research_winners():
     assert plan.spatial_backtest_models == [
         "hist_gbm",
         "transformer",
+        "hist_gbm_positive_persistence_guard",
         "hist_gbm_persistence_blend",
         "hist_gbm_no_bacteria_weather_delta",
     ]
@@ -910,3 +914,64 @@ def test_promotion_assessment_blocks_release_when_county_holdout_lags_persistenc
 
     assert promotion["public_release_eligible"] is False
     assert "Held-out county AUCPR does not beat persistence." in promotion["promotion_blockers"]
+
+
+def test_spatially_qualified_winner_vetoes_temporal_winner_for_guard_candidate():
+    metrics = {
+        "hist_gbm_valid": {"aucpr": 0.85, "brier": 0.12},
+        "hist_gbm_positive_persistence_guard_valid": {"aucpr": 0.63, "brier": 0.17},
+        "spatial_county_persistence": {"aucpr": 0.57, "brier": 0.138},
+        "spatial_beach_persistence": {"aucpr": 0.72, "brier": 0.201},
+        "spatial_county_hist_gbm": {"aucpr": 0.60, "brier": 0.142},
+        "spatial_beach_hist_gbm": {"aucpr": 0.90, "brier": 0.109},
+        "spatial_county_hist_gbm_positive_persistence_guard": {
+            "aucpr": 0.65,
+            "brier": 0.126,
+        },
+        "spatial_beach_hist_gbm_positive_persistence_guard": {
+            "aucpr": 0.78,
+            "brier": 0.159,
+        },
+    }
+
+    winner = _spatially_qualified_production_winner(
+        metrics,
+        preferred="hist_gbm",
+        candidates=("hist_gbm", "hist_gbm_positive_persistence_guard"),
+    )
+
+    assert winner == "hist_gbm_positive_persistence_guard"
+
+
+def test_spatial_backtest_models_do_not_duplicate_production_guard_candidate():
+    assert len(SPATIAL_BACKTEST_MODEL_NAMES) == len(set(SPATIAL_BACKTEST_MODEL_NAMES))
+
+
+def test_model_card_reports_spatial_metrics_for_production_model(tmp_path):
+    _write_model_card(
+        tmp_path,
+        {
+            "pipeline_freshness": "2026-05-10T16:47:37+00:00",
+            "model_registry": {
+                "production_model": "hist-gbm-positive-persistence-guard-curated-v0",
+                "deployment_stage": "candidate_ready",
+                "public_release_eligible": True,
+                "promotion_blockers": [],
+                "production_metrics": {"aucpr": 0.25, "brier": 0.13},
+                "validation_metrics": {"aucpr": 0.63, "brier": 0.17},
+                "spatial_metrics": {
+                    "spatial_county_hist_gbm": {"aucpr": 0.59, "brier": 0.142},
+                    "spatial_county_hist_gbm_positive_persistence_guard": {
+                        "aucpr": 0.655,
+                        "brier": 0.127,
+                    },
+                    "spatial_county_persistence": {"aucpr": 0.574, "brier": 0.139},
+                },
+                "metrics": {},
+            },
+        },
+    )
+
+    card = (tmp_path / "model_card.md").read_text()
+
+    assert "**Spatial county AUCPR**: 0.655" in card

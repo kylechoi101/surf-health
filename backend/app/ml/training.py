@@ -67,7 +67,6 @@ PRODUCTION_MODEL_NAMES = (
 SEQUENCE_MODEL_NAMES = ("tcn", "cnn", "lstm", "transformer", "pinn")
 SPATIAL_DIAGNOSTIC_MODEL_NAMES = (
     "hist_gbm_persistence_blend",
-    "hist_gbm_positive_persistence_guard",
     "hist_gbm_no_bacteria_weather_delta",
 )
 SPATIAL_BACKTEST_MODEL_NAMES = (*PRODUCTION_MODEL_NAMES, *SPATIAL_DIAGNOSTIC_MODEL_NAMES)
@@ -1745,6 +1744,8 @@ def _two_stage_training_plan(
     for model_name in (production_winner, research_winner):
         if model_name not in spatial_backtest_models:
             spatial_backtest_models.append(model_name)
+    if "hist_gbm_positive_persistence_guard" not in spatial_backtest_models:
+        spatial_backtest_models.append("hist_gbm_positive_persistence_guard")
     if "hist_gbm_persistence_blend" not in spatial_backtest_models:
         spatial_backtest_models.append("hist_gbm_persistence_blend")
     if "hist_gbm_no_bacteria_weather_delta" not in spatial_backtest_models:
@@ -1754,6 +1755,47 @@ def _two_stage_training_plan(
         research_winner=research_winner,
         spatial_backtest_models=spatial_backtest_models,
     )
+
+
+def _spatially_qualified_production_winner(
+    metrics: dict[str, dict[str, float]],
+    *,
+    preferred: str,
+    candidates: list[str] | tuple[str, ...] = PRODUCTION_MODEL_NAMES,
+) -> str:
+    """Veto a temporal winner when spatial promotion gates reject it.
+
+    Temporal AUCPR is useful for ranking signal, but serving probabilities must
+    first clear the held-out county and beach persistence gates. Prefer the
+    positive persistence guard as the first conservative fallback because it is
+    designed to fail closed on recent confirmed exceedances.
+    """
+    if not any(name.startswith("spatial_") for name in metrics):
+        return preferred
+    if _promotion_assessment(metrics, preferred)["public_release_eligible"]:
+        return preferred
+
+    fallback_order = ["hist_gbm_positive_persistence_guard"]
+    for model_name in fallback_order:
+        if model_name in candidates and _promotion_assessment(metrics, model_name)["public_release_eligible"]:
+            return model_name
+
+    passing = [
+        model_name
+        for model_name in candidates
+        if _promotion_assessment(metrics, model_name)["public_release_eligible"]
+    ]
+    if not passing:
+        return preferred
+
+    def _key(model_name: str) -> tuple[float, float]:
+        valid = metrics.get(f"{model_name}_valid", {})
+        county = metrics.get(f"spatial_county_{model_name}", {})
+        beach = metrics.get(f"spatial_beach_{model_name}", {})
+        spatial_brier = float(county.get("brier", 1.0)) + float(beach.get("brier", 1.0))
+        return (-float(valid.get("aucpr", 0.0)), spatial_brier)
+
+    return min(passing, key=_key)
 
 
 def _promotion_assessment(
@@ -1813,6 +1855,14 @@ def _registry_model_version(model_name: str) -> str:
     return f"{model_name.replace('_', '-')}-curated-v0"
 
 
+def _model_key_from_registry_version(model_version: object) -> str:
+    model_key = str(model_version or "")
+    suffix = "-curated-v0"
+    if model_key.endswith(suffix):
+        model_key = model_key[: -len(suffix)]
+    return model_key.replace("-", "_")
+
+
 def _forecast_model_version(model_name: str, scope: str = "global") -> str:
     if model_name == "logistic_hierarchical":
         return f"logistic-{scope}-curated-v0"
@@ -1831,6 +1881,9 @@ def _write_model_card(curated_dir: Path, health_payload: dict) -> None:
     valid = model_registry.get("validation_metrics") or {}
     spatial = model_registry.get("spatial_metrics") or {}
     all_metrics = model_registry.get("metrics") or {}
+    production_model_key = _model_key_from_registry_version(production_model)
+    active_only = all_metrics.get(f"{production_model_key}_test_active_only") or {}
+    county_spatial = spatial.get(f"spatial_county_{production_model_key}") or {}
 
     def _fmt(x: object) -> str:
         try:
@@ -1862,16 +1915,16 @@ def _write_model_card(curated_dir: Path, health_payload: dict) -> None:
             f"- **Calibration slope**: {_fmt(prod.get('calibration_slope'))}",
             "",
             "### Deployment (active stations only; recency-filtered roster)",
-            f"- **AUCPR**: {_fmt((all_metrics.get('hist_gbm_test_active_only') or {}).get('aucpr'))}",
-            f"- **Brier**: {_fmt((all_metrics.get('hist_gbm_test_active_only') or {}).get('brier'))}",
-            f"- **n_samples**: {int((all_metrics.get('hist_gbm_test_active_only') or {}).get('n_samples') or 0)}",
+            f"- **AUCPR**: {_fmt(active_only.get('aucpr'))}",
+            f"- **Brier**: {_fmt(active_only.get('brier'))}",
+            f"- **n_samples**: {int(active_only.get('n_samples') or 0)}",
             "",
             "### Validation (calibration/training-time slice; not a public headline)",
             f"- **AUCPR**: {_fmt(valid.get('aucpr'))}",
             f"- **Brier**: {_fmt(valid.get('brier'))}",
             "",
             "### Spatial (holdouts)",
-            f"- **Spatial county AUCPR**: {_fmt((spatial.get('spatial_county_hist_gbm') or {}).get('aucpr'))}",
+            f"- **Spatial county AUCPR**: {_fmt(county_spatial.get('aucpr'))}",
             f"- **Spatial county persistence AUCPR**: {_fmt((spatial.get('spatial_county_persistence') or {}).get('aucpr'))}",
             "",
             "## Operational Agreement Check",
@@ -3151,7 +3204,17 @@ def train_curated_and_export(
             )
         )
 
-    winner = plan.production_winner
+    winner = _spatially_qualified_production_winner(
+        metrics,
+        preferred=plan.production_winner,
+        candidates=PRODUCTION_MODEL_NAMES,
+    )
+    if winner != plan.production_winner:
+        plan = StageTwoTrainingPlan(
+            production_winner=winner,
+            research_winner=plan.research_winner,
+            spatial_backtest_models=plan.spatial_backtest_models,
+        )
     classifier = logistic if winner == "logistic" else tree_classifier
     calibrator = logistic_calibrator if winner == "logistic" else tree_calibrator
     if metrics["elastic_net_valid"]["rmse"] <= metrics["hist_gbm_regressor_valid"]["rmse"]:
