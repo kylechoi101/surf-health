@@ -111,3 +111,61 @@ export function RiskChip({
     </span>
   );
 }
+
+/** Renders a compact "Beta forecast" pill when the forecast is a beta model estimate. */
+export function BetaNotice({
+  isBeta,
+  className = "",
+}: {
+  isBeta?: boolean;
+  className?: string;
+}) {
+  if (!isBeta) return null;
+  return (
+    <span
+      className={`sl-label inline-flex items-center gap-1 rounded-full border border-blue-300/50 bg-blue-50 px-2.5 py-1 text-blue-700 ${className}`}
+    >
+      <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+        <circle cx="5" cy="5" r="4" fill="none" stroke="currentColor" strokeWidth="1.2" />
+        <text x="5" y="7.5" textAnchor="middle" fontSize="6" fill="currentColor" fontWeight="700">β</text>
+      </svg>
+      Beta forecast
+    </span>
+  );
+}
+
+/** Renders a sample-age context badge showing how stale the underlying data is. */
+export function RecencyBadge({
+  sampleAgeDays,
+  recencyBand,
+  className = "",
+}: {
+  sampleAgeDays?: number | null;
+  recencyBand?: string;
+  className?: string;
+}) {
+  if (sampleAgeDays == null && !recencyBand) return null;
+  const isStale = recencyBand === "stale" || recencyBand === "very_stale";
+  const label =
+    sampleAgeDays != null
+      ? sampleAgeDays === 0
+        ? "Sampled today"
+        : sampleAgeDays === 1
+          ? "Sampled yesterday"
+          : `Sampled ${sampleAgeDays}d ago`
+      : recencyBand
+        ? `Sample: ${recencyBand.replace("_", " ")}`
+        : null;
+  if (!label) return null;
+  return (
+    <span
+      className={`sl-label inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs ${
+        isStale
+          ? "border-amber-400/50 bg-amber-50 text-amber-700"
+          : "border-[var(--sl-line)] bg-[var(--sl-ecru-deep)] text-[var(--sl-muted)]"
+      } ${className}`}
+    >
+      {label}
+    </span>
+  );
+}

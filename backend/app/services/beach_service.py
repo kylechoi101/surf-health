@@ -45,12 +45,10 @@ class BeachService:
             f"{beach.name} is forecast at {forecast.risk_band.lower()} risk today. "
             f"The model estimates a {forecast.p_exceed:.0%} chance of exceeding the marine "
             f"enterococcus threshold. {driver_line} "
-            "This is a forecast, not a direct lab result — treat uncertainty seriously "
-            "if you have a cut or a weaker immune system."
+            "This is a model estimate, not an official advisory or lab result."
         )
         return ForecastExplanationResponse(
             beach_id=forecast.beach_id,
             summary=summary,
             used_model="template-v1",
         )
-

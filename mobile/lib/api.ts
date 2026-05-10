@@ -25,10 +25,14 @@ export interface ParentBeachSummary {
   has_active_advisory: boolean;
 }
 
+export type ForecastLabelMode = "model" | "official_advisory_override" | "derived_persistence" | "unavailable";
+export type SampleRecencyBand = "fresh" | "recent" | "stale" | "very_stale" | "unknown";
+
 export interface ForecastRecord {
   beach_id: string;
   forecast_date: string;
   risk_band: RiskBand;
+  model_risk_band?: RiskBand;
   p_exceed: number;
   predicted_log_enterococcus: number | null;
   top_drivers: string[];
@@ -36,6 +40,10 @@ export interface ForecastRecord {
   forecast_generated_at: string;
   forecast_age_hours?: number;
   official_advisory_active?: boolean;
+  forecast_label_mode?: ForecastLabelMode;
+  sample_age_days?: number | null;
+  sample_recency_band?: SampleRecencyBand;
+  is_beta_forecast?: boolean;
   environmental_summary: {
     wave_height_m: number | null;
     dominant_period_s: number | null;

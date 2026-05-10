@@ -4,10 +4,10 @@ import Link from 'next/link';
 // Use standard Tailwind components instead of old RiskComponents
 const RISK_ORDER = ['Low', 'Moderate', 'High', 'Very High'];
 const RISK_COPY: Record<string, any> = {
-  'Low': { head: 'Below standard', sub: 'Lower modeled exceedance risk.', cfu: '< 35' },
-  'Moderate': { head: 'Moderate', sub: 'Elevated modeled risk.', cfu: '35–104' },
-  'High': { head: 'High risk', sub: 'Avoid water contact and check advisories.', cfu: '104–320' },
-  'Very High': { head: 'Closure level', sub: 'Check posted county advisory.', cfu: '> 320' },
+  'Low': { head: 'Low modeled risk', sub: 'Lower modeled exceedance risk.', cfu: '< 35' },
+  'Moderate': { head: 'Moderate modeled risk', sub: 'Elevated modeled risk.', cfu: '35–104' },
+  'High': { head: 'Elevated modeled risk', sub: 'High modeled exceedance risk — check county advisories.', cfu: '104–320' },
+  'Very High': { head: 'Very high modeled risk', sub: 'Check posted county advisory.', cfu: '> 320' },
 };
 
 function RiskChip({ band }: { band: string }) {
@@ -145,7 +145,7 @@ export default function LabelsPage() {
               {[
                 'Shorelife forecasts are probabilistic estimates, not certified sample results.',
                 'Official beach closures and advisories are issued by county environmental health agencies under California AB 411.',
-                'A Low band forecast does not guarantee safe water. Localised events (sewage spills, storm runoff) can override model predictions.',
+                'A Low band forecast does not mean safe water. Localised events (sewage spills, storm runoff) can override model predictions. This is a beta model estimate, not an official advisory.',
                 'The model is trained exclusively on marine enterococcus (culture-based, MPN/IDEXX). Freshwater E. coli and other analytes are outside its scope.',
                 'For confirmed regulatory status, always consult the current county health advisory for the specific beach.',
               ].map((li, i) => (

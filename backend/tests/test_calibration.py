@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-from app.ml.calibration import HierarchicalProbabilityCalibrator
+from app.ml.calibration import HierarchicalProbabilityCalibrator, RISK_BAND_DESCRIPTIONS
 
 
 def test_hierarchical_calibrator_partially_pools_county_and_site_effects():
@@ -55,3 +55,12 @@ def test_hierarchical_calibrator_returns_probability_intervals():
     assert np.all(lower <= point)
     assert np.all(point <= upper)
     assert (upper[1] - lower[1]) >= (upper[0] - lower[0])
+
+
+def test_risk_band_descriptions_are_model_estimates_not_official_safety_claims():
+    copy = " ".join(RISK_BAND_DESCRIPTIONS.values()).lower()
+
+    assert "model estimate" in copy or "model estimates" in copy
+    assert "not an official advisory" in copy
+    assert "swimming is not recommended" not in copy
+    assert "unsafe" not in copy

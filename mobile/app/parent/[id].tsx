@@ -92,7 +92,7 @@ export default function ParentBeachScreen() {
               </Text>
               {parent.risk_band && (
                 <View style={s.riskPill}>
-                  <Text style={s.riskPillText}>{parent.risk_band} risk</Text>
+                  <Text style={s.riskPillText}>{parent.risk_band} modeled risk</Text>
                 </View>
               )}
             </View>

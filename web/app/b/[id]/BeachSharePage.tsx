@@ -90,7 +90,7 @@ export default function BeachSharePage({ beachId }: BeachSharePageProps) {
     </main>
   );
 
-  const band = forecast?.risk_band ?? "Moderate";
+  const band = forecast?.official_advisory_active ? "Very High" : (forecast?.risk_band ?? "Moderate");
   const tok = RISK_TOKEN[band] ?? RISK_TOKEN.Moderate;
   const copy = RISK_COPY[band] ?? RISK_COPY.Moderate;
   const env = forecast?.environmental_summary;
@@ -266,7 +266,7 @@ function PhoneMock({
         <div className="relative px-6 pb-8 pt-4 shrink-0" style={{ backgroundColor: headerBg }}>
           <div className="font-mono text-[8px] font-bold tracking-[0.2em] text-white/90">SHORELIFE</div>
           <div className="font-mono text-[8px] text-white/70 tracking-widest uppercase mt-5 mb-1">
-            Can I swim today?
+            Today&apos;s modeled risk
           </div>
           <div className="text-5xl font-light text-white leading-none tracking-tight mb-2">
             {copy.head}

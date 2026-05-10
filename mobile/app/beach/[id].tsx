@@ -5,7 +5,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
 import { getBeaches, getForecast, todayLA, type BeachSummary, type ForecastRecord } from "../../lib/api";
 import { findModeledBeach } from "../../lib/coverage";
-import { riskAdvice, riskHead, RISK_COLORS, mToFt, cToF, fmtPeriod, fmtUv } from "../../lib/utils";
+import { riskAdvice, riskHead, RISK_COLORS, mToFt, cToF, mpsToMph, fmtPeriod, fmtUv } from "../../lib/utils";
 import { palette } from "../../lib/theme";
 import { DropRow, SeverityBar, type RiskBand } from "../../components/RiskSystem";
 
@@ -80,7 +80,7 @@ export default function BeachHome() {
 
             {/* Big answer */}
             <View style={s.answerBlock}>
-              <Text style={s.answerLabel}>Can I swim today?</Text>
+              <Text style={s.answerLabel}>Today&apos;s modeled risk</Text>
               {forecast?.official_advisory_active && (
                 <View style={s.advisoryPill}>
                   <Text style={s.advisoryPillText}>OFFICIAL ADVISORY ACTIVE</Text>
@@ -148,7 +148,7 @@ export default function BeachHome() {
         {forecast && (
           <View style={{ padding: 20, paddingTop: 12 }}>
             <Text style={{ fontSize: 11, color: palette.muted, lineHeight: 17 }}>
-              Model: {forecast.model_version} · This is a forecast, not a lab result. Treat uncertainty seriously if you have a cut or weaker immune system.
+              Model: {forecast.model_version} · This is a beta model estimate, not a lab result. Treat uncertainty seriously if you have a cut or weaker immune system.
             </Text>
           </View>
         )}

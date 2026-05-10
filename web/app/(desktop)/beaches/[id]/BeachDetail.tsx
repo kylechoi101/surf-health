@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { getBeaches, getForecast, getObservations, preferredForecastDate, type BeachSummary, type ForecastRecord, type ObservationResponse } from "@/lib/api";
 import { findModeledBeach } from "@/lib/coverage";
-import { DropRow, SeverityBar, RiskChip } from "@/components/RiskComponents";
+import { DropRow, SeverityBar, RiskChip, BetaNotice, RecencyBadge } from "@/components/RiskComponents";
 import { RISK_COPY, RISK_TOKEN } from "@/lib/riskData";
 import { Skeleton, SkeletonCard } from "@/components/Skeleton";
 
@@ -163,8 +163,12 @@ export default function BeachDetailPage() {
               <div className="flex items-center gap-3">
                 <DropRow band={band} size={18}/>
                 <div className={`font-mono text-xs tracking-[0.2em] font-semibold uppercase ${cardTextClass}`}>
-                  {band} · Forecast
+                  {band} · Beta forecast
                 </div>
+              </div>
+              <div className="flex items-center gap-2 mt-3">
+                <BetaNotice isBeta={forecast.is_beta_forecast !== false} />
+                <RecencyBadge sampleAgeDays={forecast.sample_age_days} recencyBand={forecast.sample_recency_band} />
               </div>
               <div className={`text-6xl sm:text-7xl md:text-[5.5rem] leading-[0.9] mt-8 mb-6 font-light tracking-tight ${cardTextClass}`}>
                 {copy.head}
@@ -224,6 +228,16 @@ export default function BeachDetailPage() {
                 </div>
               </div>
             )}
+
+            {/* Beta provenance notice */}
+            <div className="mt-10 p-6 bg-muted/30 border border-border/50 rounded-2xl">
+              <div className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground mb-3">Model provenance</div>
+              <p className="text-sm text-muted-foreground leading-relaxed">
+                This is a beta model estimate, not a lab result or official advisory.
+                {forecast.model_version && <> Model: <span className="font-mono text-foreground">{forecast.model_version}</span>.</>}
+                {' '}Always check the current county health advisory for confirmed regulatory status.
+              </p>
+            </div>
           </div>
 
           <div>

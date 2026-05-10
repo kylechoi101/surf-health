@@ -1,6 +1,6 @@
 import Link from "next/link";
 
-import { DropRow, SeverityBar } from "@/components/RiskComponents";
+import { DropRow, SeverityBar, BetaNotice } from "@/components/RiskComponents";
 import { featuredMapSite, siteStats } from "@/lib/curated";
 import { RISK_COPY, RISK_TOKEN } from "@/lib/riskData";
 import {
@@ -25,7 +25,7 @@ export function HeroSection() {
       <div className="mx-auto max-w-7xl px-4 pb-20 pt-10 sm:px-6 sm:pt-14 lg:px-8 lg:pb-24">
         <div className="max-w-3xl">
             <div className="sl-eyebrow text-[var(--sl-sun-deep)]">
-              Daily forecast · {formatPacificTimestamp(stats.latestPublishAt)}
+              Daily beta forecast · {formatPacificTimestamp(stats.latestPublishAt)}
             </div>
 
             {showResearchBanner && (
@@ -147,6 +147,7 @@ export function HeroSection() {
 
                   <div className="mt-5 flex flex-wrap items-center gap-3 border-t border-[var(--sl-line-soft)] pt-4 text-sm text-[var(--sl-muted)]">
                     <span className="sl-mono">{stats.productionModel ?? "Unknown model"}</span>
+                    <BetaNotice isBeta={true} />
                     {featuredBeach?.forecast?.top_drivers?.[0] && <span>·</span>}
                     {featuredBeach?.forecast?.top_drivers?.[0] && (
                       <span>{featuredBeach.forecast.top_drivers[0]}</span>

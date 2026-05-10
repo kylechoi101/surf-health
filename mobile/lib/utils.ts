@@ -1,21 +1,21 @@
 import type { RiskBand } from "./api";
 
 export function riskVerdict(band: RiskBand | string): string {
-  const m: Record<string, string> = { Low: "Below standard.", Moderate: "Caution.", High: "Avoid.", "Very High": "Stay out." };
+  const m: Record<string, string> = { Low: "Low modeled risk.", Moderate: "Moderate modeled risk.", High: "Elevated modeled risk.", "Very High": "Very high modeled risk." };
   return m[band] ?? "Unknown.";
 }
 
 export function riskHead(band: RiskBand | string): string {
-  const m: Record<string, string> = { Low: "Below standard.", Moderate: "Caution.", High: "Warning.", "Very High": "Closure level." };
+  const m: Record<string, string> = { Low: "Low modeled risk.", Moderate: "Moderate modeled risk.", High: "Elevated modeled risk.", "Very High": "Very high modeled risk." };
   return m[band] ?? "";
 }
 
 export function riskAdvice(band: RiskBand | string): string {
   const m: Record<string, string> = {
-    Low: "Lower modeled exceedance risk today.",
-    Moderate: "Elevated modeled risk today.",
-    High: "Avoid water contact and check advisories.",
-    "Very High": "Check posted county advisory before entering.",
+    Low: "Model estimates bacteria below the EPA single-sample threshold.",
+    Moderate: "Elevated modeled bacterial signal — consider limiting water contact.",
+    High: "Model estimates bacteria at or above the EPA threshold. Check county advisories.",
+    "Very High": "Model estimates closure-level concentrations. Check the posted county advisory.",
   };
   return m[band] ?? "";
 }

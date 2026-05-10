@@ -23,6 +23,7 @@ from app.schemas.domain import (
     ParentBeachSummary,
     Point,
     SystemHealthResponse,
+    sample_recency_band,
 )
 
 
@@ -34,6 +35,24 @@ def _safe_float(value: object) -> float | None:
         return None if isnan(parsed) else parsed
     except (TypeError, ValueError):
         return None
+
+
+def _safe_int(value: object) -> int | None:
+    number = _safe_float(value)
+    return int(number) if number is not None else None
+
+
+def _safe_bool(value: object, *, default: bool = True) -> bool:
+    """Parse a boolean that may have been stored as string/int in SQLite."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(int(value))
+    if isinstance(value, str):
+        return value.lower() not in ("0", "false", "no", "")
+    return default
 
 
 def _parse_json_list(value: object) -> list[Any]:
@@ -253,17 +272,23 @@ class ServingSnapshotRepository(BeachRepository):
 
         active_advisory = beach_id in self._active_advisory_beach_ids()
         base_drivers = [str(item) for item in _parse_json_list(row.get("top_drivers"))]
+        model_risk_band = str(row["risk_band"])
         if active_advisory:
             drivers = ["Official health advisory is active for this station.", *base_drivers][:5]
             band = "Very High"  # Override to Very High when advisory is active
         else:
             drivers = base_drivers
-            band = str(row["risk_band"])
+            band = model_risk_band
+
+        sample_age = _safe_int(row.get("sample_age_days"))
+        if sample_age is None:
+            sample_age = self._sample_age_days(beach_id, row.get("forecast_date"))
 
         return ForecastRecord(
             beach_id=beach_id,
             forecast_date=_parse_date(row.get("forecast_date")),
             risk_band=band,
+            model_risk_band=model_risk_band if active_advisory else None,
             p_exceed=float(row["p_exceed"]),
             p_exceed_lower=_safe_float(row.get("p_exceed_lower")),
             p_exceed_upper=_safe_float(row.get("p_exceed_upper")),
@@ -276,6 +301,14 @@ class ServingSnapshotRepository(BeachRepository):
             forecast_generated_at=gen_at or datetime.now(UTC),
             forecast_age_hours=age_hours,
             official_advisory_active=active_advisory,
+            forecast_label_mode=(
+                "official_advisory_override"
+                if active_advisory
+                else str(row.get("forecast_label_mode") or "model")
+            ),
+            sample_age_days=sample_age,
+            sample_recency_band=str(row.get("sample_recency_band") or sample_recency_band(sample_age)),
+            is_beta_forecast=_safe_bool(row.get("is_beta_forecast"), default=True),
             environmental_summary=EnvironmentalSummary(
                 wave_height_m=pick("wave_height_m"),
                 dominant_period_s=pick("dominant_period_s"),
@@ -312,6 +345,13 @@ class ServingSnapshotRepository(BeachRepository):
         )
         if latest is None:
             raise HTTPException(status_code=404, detail="Forecast data not available")
+        sample_age = self._sample_age_days_from_value(latest["sample_time"], forecast_date)
+        recency_band = sample_recency_band(sample_age)
+        if recency_band in ("stale", "very_stale"):
+            raise HTTPException(
+                status_code=404,
+                detail="Forecast data not available because the latest sample is not fresh.",
+            )
         latest_value = float(latest["value"])
         ratio = max(latest_value / self.stv_threshold, 0.01)
         p_exceed = min(max(0.5 + 0.4 * (ratio - 1.0), 0.03), 0.97)
@@ -332,14 +372,40 @@ class ServingSnapshotRepository(BeachRepository):
             beach_id=beach_id,
             forecast_date=forecast_date,
             risk_band=("Very High" if active_advisory else risk_band(p_exceed)),
+            model_risk_band=(risk_band(p_exceed) if active_advisory else None),
             p_exceed=float(p_exceed),
             predicted_log_enterococcus=log10(max(latest_value, 1.0)),
             model_version="derived-persistence-v0",
             forecast_generated_at=datetime.now(UTC),
             official_advisory_active=active_advisory,
+            forecast_label_mode=(
+                "official_advisory_override" if active_advisory else "derived_persistence"
+            ),
+            sample_age_days=sample_age,
+            sample_recency_band=recency_band,
+            is_beta_forecast=True,
             environmental_summary=EnvironmentalSummary(),
             top_drivers=drivers[:3],
         )
+
+    def _sample_age_days(self, beach_id: str, forecast_date_value: object) -> int | None:
+        row = self._fetch_one(
+            "select latest_official_sample_at from beaches where beach_id = ?",
+            (beach_id,),
+        )
+        if row is None:
+            return None
+        return self._sample_age_days_from_value(row["latest_official_sample_at"], forecast_date_value)
+
+    def _sample_age_days_from_value(self, sample_time: object, forecast_date_value: object) -> int | None:
+        try:
+            sample_dt = _parse_datetime(sample_time)
+            forecast_dt = _parse_datetime(forecast_date_value)
+        except (ValueError, TypeError):
+            return None
+        if sample_dt is None or forecast_dt is None:
+            return None
+        return max(0, (forecast_dt.date() - sample_dt.date()).days)
 
     def get_observations(self, beach_id: str) -> ObservationResponse:
         rows = self._fetch_all(

@@ -148,7 +148,7 @@ export default function HomeTab() {
             >
               <View style={s.nearestTopRow}>
                 <View style={{ flex: 1 }}>
-                  <Text style={s.nearestEyebrow}>Can I swim today?</Text>
+                  <Text style={s.nearestEyebrow}>Today&apos;s modeled risk</Text>
                   <Text style={s.nearestVerdict}>
                     {RISK_COPY[nearestBand].head}
                   </Text>

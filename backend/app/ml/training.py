@@ -50,12 +50,20 @@ from app.ml.weather_delta import (
     select_delta_cap,
     select_no_bacteria_features,
 )
+from app.schemas.domain import sample_recency_band
 
 MIN_PLAUSIBLE_SAMPLE_TIME = pd.Timestamp("2000-01-01")
 MAX_FUTURE_SAMPLE_LEEWAY_DAYS = 2
 COASTAL_CELL_MIN_BEACHES_PER_CLUSTER = 24
 COASTAL_CELL_MAX_CLUSTERS = 8
-PRODUCTION_MODEL_NAMES = ("logistic", "logistic_coastal_cells", "logistic_hierarchical", "hist_gbm", "stacked_ensemble")
+PRODUCTION_MODEL_NAMES = (
+    "logistic",
+    "logistic_coastal_cells",
+    "logistic_hierarchical",
+    "hist_gbm",
+    "hist_gbm_positive_persistence_guard",
+    "stacked_ensemble",
+)
 SEQUENCE_MODEL_NAMES = ("tcn", "cnn", "lstm", "transformer", "pinn")
 SPATIAL_DIAGNOSTIC_MODEL_NAMES = (
     "hist_gbm_persistence_blend",
@@ -2044,6 +2052,19 @@ def _build_forecast_candidates(
                 continue
         candidate = {column: latest_row.get(column) for column in history.columns}
         candidate["beach_id"] = beach_id
+        latest_sample_date = pd.to_datetime(latest_row.get("sample_date"), errors="coerce")
+        sample_age_days = (
+            int((pd.Timestamp(forecast_date).normalize() - latest_sample_date.normalize()).days)
+            if pd.notna(latest_sample_date)
+            else None
+        )
+        if sample_age_days is not None:
+            sample_age_days = max(0, sample_age_days)
+        candidate["latest_sample_date"] = (
+            latest_sample_date.date().isoformat() if pd.notna(latest_sample_date) else None
+        )
+        candidate["sample_age_days"] = sample_age_days
+        candidate["sample_recency_band"] = sample_recency_band(sample_age_days)
         candidate["sample_date"] = pd.Timestamp(forecast_date)
         candidate["sample_time"] = pd.Timestamp(forecast_timestamp)
         candidate["enterococcus_value"] = np.nan
@@ -2388,6 +2409,22 @@ def _export_forecasts(
             raw_probabilities,
             forecast_group_metadata,
         )
+    elif winner == "hist_gbm_positive_persistence_guard":
+        raw_probabilities = tree_classifier.predict_proba(baseline_forecast_features)[:, 1]
+        calibrated_tree_probabilities = _apply_calibrator(
+            tree_calibrator,
+            raw_probabilities,
+            forecast_group_metadata,
+        )
+        persistence_probabilities = _persistence_probabilities(
+            baseline_forecast_features,
+            _STV_THRESHOLD,
+        )
+        probabilities = _positive_persistence_guarded_blend_probabilities(
+            calibrated_tree_probabilities,
+            persistence_probabilities,
+            PERSISTENCE_BLEND_MAX_MODEL_ALPHA,
+        )
     else:
         raw_probabilities = classifier.predict_proba(baseline_forecast_features)[:, 1]
         probabilities = _apply_calibrator(calibrator, raw_probabilities, forecast_group_metadata)
@@ -2449,10 +2486,18 @@ def _export_forecasts(
                 float(p_lower) if np.isfinite(p_lower) else None
             )
             p_upper_final = max(float(p_upper), p_final) if np.isfinite(p_upper) else None
+            sample_age_value = _safe_float(latest_row.get("sample_age_days")) if latest_row is not None else None
+            sample_age_days = int(sample_age_value) if sample_age_value is not None else None
             forecasts.append({
                 "beach_id": beach_id,
                 "forecast_date": forecast_date.isoformat(),
                 "risk_band": risk_band(p_final),
+                "forecast_label_mode": "model",
+                "sample_age_days": sample_age_days,
+                "sample_recency_band": (
+                    latest_row.get("sample_recency_band") if latest_row is not None else "unknown"
+                ),
+                "is_beta_forecast": True,
                 "p_exceed": p_final,
                 "p_exceed_raw": p_raw,
                 "p_exceed_lower": p_lower_final,
@@ -2995,6 +3040,21 @@ def train_curated_and_export(
     if len(test_idx):
         tree_eval = _apply_calibrator(tree_calibrator, tree_eval, eval_metadata)
     metrics["hist_gbm"] = classification_metrics(labels[eval_idx], tree_eval)
+
+    # Compute validation + eval metrics for the positive persistence guard so it
+    # can participate in production winner selection via _two_stage_training_plan.
+    guard_valid = _positive_persistence_guarded_blend_probabilities(
+        tree_valid_raw, persistence[valid_idx], PERSISTENCE_BLEND_MAX_MODEL_ALPHA,
+    )
+    metrics["hist_gbm_positive_persistence_guard_valid"] = classification_metrics(
+        labels[valid_idx], guard_valid,
+    )
+    guard_eval = _positive_persistence_guarded_blend_probabilities(
+        tree_eval, persistence[eval_idx], PERSISTENCE_BLEND_MAX_MODEL_ALPHA,
+    )
+    metrics["hist_gbm_positive_persistence_guard"] = classification_metrics(
+        labels[eval_idx], guard_eval,
+    )
 
     print("Computing stacked ensemble...", file=sys.stderr, flush=True)
     # Weighted-average blend of the four base classifiers.

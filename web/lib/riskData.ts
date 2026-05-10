@@ -4,25 +4,25 @@ export const RISK_ORDER: readonly RiskBand[] = ["Low", "Moderate", "High", "Very
 
 export const RISK_COPY: Record<RiskBand, { head: string; sub: string; cfu: string; drops: number }> = {
   Low: {
-    head: "Below standard.",
+    head: "Low modeled risk.",
     sub: "Lower modeled exceedance risk today.",
     cfu: "< 35 CFU/100mL",
     drops: 1,
   },
   Moderate: {
-    head: "Caution.",
+    head: "Moderate modeled risk.",
     sub: "Elevated modeled risk today.",
     cfu: "35–104",
     drops: 2,
   },
   High: {
-    head: "Warning.",
-    sub: "Avoid water contact and check advisories.",
+    head: "Elevated modeled risk.",
+    sub: "High modeled exceedance risk — check county advisories.",
     cfu: "104–320",
     drops: 3,
   },
   "Very High": {
-    head: "Closure level.",
+    head: "Very high modeled risk.",
     sub: "Check posted county advisory before entering.",
     cfu: "> 320",
     drops: 3,

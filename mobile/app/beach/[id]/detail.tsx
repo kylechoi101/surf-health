@@ -65,7 +65,7 @@ export default function BeachDetail() {
             <View style={{ flex: 1 }}>
               <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start" }}>
                 <View style={{ flex: 1 }}>
-                  <Text style={[s.riskEyebrow, { color: colors.deep }]}>Water quality · today</Text>
+                  <Text style={[s.riskEyebrow, { color: colors.deep }]}>Beta forecast · today</Text>
                   <Text style={[s.riskHead, { color: colors.deep }]}>{riskCopy.head}</Text>
                   <Text style={[s.riskAdvice, { color: colors.deep }]}>{riskCopy.sub}</Text>
                 </View>
@@ -179,7 +179,7 @@ export default function BeachDetail() {
         {forecast && (
           <View style={{ marginTop: 24 }}>
             <Text style={{ fontSize: 12, color: "#64748b", lineHeight: 18 }}>
-              Model: {forecast.model_version} · Shorelife forecasts are not official lab results — exercise extra caution if you have a cut or compromised immune system.
+              Model: {forecast.model_version} · This is a beta model estimate, not a lab result or official advisory. Exercise extra caution if you have a cut or compromised immune system.
             </Text>
           </View>
         )}

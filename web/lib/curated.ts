@@ -19,6 +19,10 @@ export interface ForecastData {
   top_drivers: string[];
   official_advisory_active?: boolean;
   model_risk_band?: RiskBand;
+  forecast_label_mode?: string;
+  sample_age_days?: number | null;
+  sample_recency_band?: string;
+  is_beta_forecast?: boolean;
 }
 
 export interface EnvData {
