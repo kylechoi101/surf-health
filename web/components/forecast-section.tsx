@@ -1,6 +1,6 @@
 import Link from "next/link";
 
-import { RiskChip } from "@/components/RiskComponents";
+import { BetaNotice, RiskChip } from "@/components/RiskComponents";
 import { featuredBeaches, publicRegions } from "@/lib/curated";
 import { formatPercent, formatWaterFahrenheit, formatWaveFeet } from "@/lib/utils";
 
@@ -12,7 +12,7 @@ export function ForecastSection() {
     <section id="forecast" className="border-b border-[var(--sl-line)] bg-[var(--sl-bone)]">
       <div className="mx-auto max-w-7xl px-4 py-20 sm:px-6 lg:px-8 lg:py-24">
         <div className="max-w-3xl">
-          <div className="sl-eyebrow text-[var(--sl-sun-deep)]">Today&apos;s forecast</div>
+          <div className="sl-eyebrow text-[var(--sl-sun-deep)]">Today&apos;s beta forecast</div>
           <h2 className="sl-display mt-4 text-4xl text-[var(--sl-navy-ink)] sm:text-5xl">
             What the coast looks like right now.
           </h2>
@@ -93,7 +93,12 @@ export function ForecastSection() {
                   <h4 className="mt-3 text-2xl font-medium text-[var(--sl-navy)]">{beach.name}</h4>
                   <p className="mt-2 text-sm text-[var(--sl-muted)]">{beach.region}</p>
                 </div>
-                {beach.forecast && <RiskChip band={beach.forecast.risk_band} />}
+                {beach.forecast && (
+                  <div className="flex flex-col items-end gap-2">
+                    <RiskChip band={beach.forecast.risk_band} />
+                    <BetaNotice isBeta={beach.forecast.is_beta_forecast !== false} />
+                  </div>
+                )}
               </div>
 
               <div className="mt-5 grid grid-cols-3 gap-3 border-t border-[var(--sl-line-soft)] pt-4">

@@ -34,6 +34,7 @@ import {
   RISK_COPY,
   type RiskBand,
 } from "../../components/RiskSystem";
+import { BetaNotice } from "../../components/BetaNotice";
 
 function distanceKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const R = 6371;
@@ -149,6 +150,9 @@ export default function HomeTab() {
               <View style={s.nearestTopRow}>
                 <View style={{ flex: 1 }}>
                   <Text style={s.nearestEyebrow}>Today&apos;s modeled risk</Text>
+                  <View style={{ marginTop: 6 }}>
+                    <BetaNotice isBeta={true} />
+                  </View>
                   <Text style={s.nearestVerdict}>
                     {RISK_COPY[nearestBand].head}
                   </Text>

@@ -8,6 +8,7 @@ import { findModeledBeach } from "../../lib/coverage";
 import { riskAdvice, riskHead, RISK_COLORS, mToFt, cToF, mpsToMph, fmtPeriod, fmtUv } from "../../lib/utils";
 import { palette } from "../../lib/theme";
 import { DropRow, SeverityBar, type RiskBand } from "../../components/RiskSystem";
+import { BetaNotice, RecencyBadge } from "../../components/BetaNotice";
 
 export default function BeachHome() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -101,6 +102,15 @@ export default function BeachHome() {
                   <SeverityBar band={band} height={5} />
                 </View>
               </View>
+              {forecast && (
+                <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 8 }}>
+                  <BetaNotice isBeta={forecast.is_beta_forecast !== false} />
+                  <RecencyBadge
+                    sampleAgeDays={forecast.sample_age_days}
+                    recencyBand={forecast.sample_recency_band}
+                  />
+                </View>
+              )}
             </View>
 
             {/* Stat tiles */}

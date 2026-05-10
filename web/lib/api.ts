@@ -70,6 +70,7 @@ export interface ObservationResponse {
 
 export interface HealthResponse {
   app_env: string;
+  is_beta_product?: boolean;
   pipeline_freshness: string;
   source_freshness: Record<string, string>;
   model_registry: {

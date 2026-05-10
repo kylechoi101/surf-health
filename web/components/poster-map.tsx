@@ -226,7 +226,9 @@ export function PosterMap({
             {featuredSite.forecast && (
               <>
                 <DropRow band={featuredSite.forecast.risk_band} size={12} />
-                <div className="sl-label text-[var(--sl-navy)]">{featuredSite.forecast.risk_band}</div>
+                <div className="sl-label text-[var(--sl-navy)]">
+                  {featuredSite.forecast.risk_band} (beta)
+                </div>
                 <div className="sl-mono text-xs text-[var(--sl-muted)]">
                   {formatPercent(featuredSite.forecast.p_exceed)} exceedance
                 </div>

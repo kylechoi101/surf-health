@@ -6,6 +6,7 @@ import { getBeaches, getForecast, getObservations, todayLA, type BeachSummary, t
 import { findModeledBeach } from "../../../lib/coverage";
 import { riskAdvice, riskHead, RISK_COLORS, mToFt, cToF, mpsToMph, fmtUv, uvLabel, fmtPeriod, daysSince } from "../../../lib/utils";
 import { DropRow, SeverityBar, RISK_COPY, type RiskBand } from "../../../components/RiskSystem";
+import { BetaNotice, RecencyBadge } from "../../../components/BetaNotice";
 
 export default function BeachDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -68,6 +69,15 @@ export default function BeachDetail() {
                   <Text style={[s.riskEyebrow, { color: colors.deep }]}>Beta forecast · today</Text>
                   <Text style={[s.riskHead, { color: colors.deep }]}>{riskCopy.head}</Text>
                   <Text style={[s.riskAdvice, { color: colors.deep }]}>{riskCopy.sub}</Text>
+                  {forecast && (
+                    <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 8 }}>
+                      <BetaNotice isBeta={forecast.is_beta_forecast !== false} />
+                      <RecencyBadge
+                        sampleAgeDays={forecast.sample_age_days}
+                        recencyBand={forecast.sample_recency_band}
+                      />
+                    </View>
+                  )}
                 </View>
                 <View style={{ alignItems: "flex-end", gap: 8 }}>
                   <DropRow band={band} size={15} />

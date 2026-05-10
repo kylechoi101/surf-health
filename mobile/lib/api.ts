@@ -76,6 +76,7 @@ export interface ObservationResponse {
 
 export interface SystemHealthResponse {
   app_env: string;
+  is_beta_product?: boolean;
   pipeline_freshness: string;
   active_advisories_count?: number;
   model_registry?: Record<string, unknown>;

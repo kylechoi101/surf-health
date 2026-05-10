@@ -7,7 +7,31 @@ from pathlib import Path
 import pandas as pd
 import pyarrow as pa
 
-from app.repositories.curated_repository import CuratedBeachRepository
+from app.repositories.curated_repository import CuratedBeachRepository, _safe_bool
+
+
+class TestSafeBool:
+    def test_true_values(self):
+        assert _safe_bool(True) is True
+        assert _safe_bool(1) is True
+        assert _safe_bool("1") is True
+        assert _safe_bool("true") is True
+        assert _safe_bool("True") is True
+        assert _safe_bool("yes") is True
+
+    def test_false_values(self):
+        assert _safe_bool(False) is False
+        assert _safe_bool(0) is False
+        assert _safe_bool("0") is False
+        assert _safe_bool("false") is False
+        assert _safe_bool("False") is False
+        assert _safe_bool("") is False
+
+    def test_none_default_true(self):
+        assert _safe_bool(None, default=True) is True
+
+    def test_none_default_false(self):
+        assert _safe_bool(None, default=False) is False
 
 
 def test_curated_repository_derives_forecast_and_observations(tmp_path):
@@ -129,6 +153,7 @@ def test_curated_repository_derives_forecast_and_observations(tmp_path):
     observations = repository.get_observations("ca123-orange-main-beach-main-beach-pier")
     assert len(observations.observations) == 1
     assert len(observations.advisories) == 1
+    assert repository.get_system_health().is_beta_product is True
 
 
 def test_curated_repository_overrides_forecast_when_official_advisory_active(tmp_path):

@@ -498,6 +498,7 @@ class ServingSnapshotRepository(BeachRepository):
         return SystemHealthResponse.model_validate(
             {
                 "app_env": os.getenv("APP_ENV", "development"),
+                "is_beta_product": True,
                 "active_advisories_count": int(active_count["count"]) if active_count else 0,
                 "forecast_audit": audit,
                 "repository_mode": "sqlite",
