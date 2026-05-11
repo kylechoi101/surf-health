@@ -77,6 +77,7 @@ class ForecastRecord(BaseModel):
     risk_band: RiskBand
     model_risk_band: RiskBand | None = None
     p_exceed: float = Field(ge=0.0, le=1.0)
+    p_exceed_raw: float | None = Field(default=None, ge=0.0, le=1.0)
     p_exceed_lower: float | None = Field(default=None, ge=0.0, le=1.0)
     p_exceed_upper: float | None = Field(default=None, ge=0.0, le=1.0)
     predicted_log_enterococcus: float | None = None
@@ -88,6 +89,7 @@ class ForecastRecord(BaseModel):
     forecast_generated_at: datetime
     forecast_age_hours: int | None = None
     official_advisory_active: bool = False
+    advisory_floor_applied: bool = False
     forecast_label_mode: ForecastLabelMode = "model"
     sample_age_days: int | None = Field(default=None, ge=0)
     sample_recency_band: SampleRecencyBand = "unknown"

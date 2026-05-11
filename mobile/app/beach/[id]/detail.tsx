@@ -4,8 +4,9 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { getBeaches, getForecast, getObservations, todayLA, type BeachSummary, type ForecastRecord, type ObservationResponse } from "../../../lib/api";
 import { findModeledBeach } from "../../../lib/coverage";
-import { riskAdvice, riskHead, RISK_COLORS, mToFt, cToF, mpsToMph, fmtUv, uvLabel, fmtPeriod, daysSince } from "../../../lib/utils";
-import { DropRow, SeverityBar, RISK_COPY, type RiskBand } from "../../../components/RiskSystem";
+import { advisoryProbabilityPresentation, forecastDisplayCopy } from "../../../lib/forecastPresentation";
+import { RISK_COLORS, mToFt, cToF, mpsToMph, fmtUv, uvLabel, fmtPeriod, daysSince } from "../../../lib/utils";
+import { DropRow, SeverityBar, type RiskBand } from "../../../components/RiskSystem";
 import { BetaNotice, RecencyBadge } from "../../../components/BetaNotice";
 
 export default function BeachDetail() {
@@ -37,7 +38,8 @@ export default function BeachDetail() {
   const colors = RISK_COLORS[band] ?? RISK_COLORS.Moderate;
   const env = forecast?.environmental_summary;
   const ds = daysSince(beach.latest_official_sample_at);
-  const riskCopy = RISK_COPY[band];
+  const displayCopy = forecastDisplayCopy(forecast, band);
+  const probability = advisoryProbabilityPresentation(forecast);
 
   return (
     <View style={{ flex: 1, backgroundColor: "#f2f4f7" }}>
@@ -66,9 +68,9 @@ export default function BeachDetail() {
             <View style={{ flex: 1 }}>
               <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start" }}>
                 <View style={{ flex: 1 }}>
-                  <Text style={[s.riskEyebrow, { color: colors.deep }]}>Beta forecast · today</Text>
-                  <Text style={[s.riskHead, { color: colors.deep }]}>{riskCopy.head}</Text>
-                  <Text style={[s.riskAdvice, { color: colors.deep }]}>{riskCopy.sub}</Text>
+                  <Text style={[s.riskEyebrow, { color: colors.deep }]}>{displayCopy.eyebrow} · today</Text>
+                  <Text style={[s.riskHead, { color: colors.deep }]}>{displayCopy.headline}</Text>
+                  <Text style={[s.riskAdvice, { color: colors.deep }]}>{displayCopy.body}</Text>
                   {forecast && (
                     <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 8 }}>
                       <BetaNotice isBeta={forecast.is_beta_forecast !== false} />
@@ -83,8 +85,13 @@ export default function BeachDetail() {
                   <DropRow band={band} size={15} />
                   {forecast && (
                     <View style={{ alignItems: "flex-end" }}>
-                      <Text style={[s.pctBig, { color: colors.deep }]}>{Math.round(forecast.p_exceed * 100)}<Text style={{ fontSize: 14 }}>%</Text></Text>
-                      <Text style={[s.pctSub, { color: colors.deep }]}>exceed chance</Text>
+                      <Text style={[s.pctBig, { color: colors.deep }]}>{probability.primaryPercent ?? "—"}<Text style={{ fontSize: 14 }}>%</Text></Text>
+                      <Text style={[s.pctSub, { color: colors.deep }]}>{probability.primaryLabel}</Text>
+                      {probability.secondaryLabel && (
+                        <Text style={[s.pctSub, { color: colors.deep }]}>
+                          {probability.secondaryLabel}: {probability.secondaryPercent ?? "—"}%
+                        </Text>
+                      )}
                     </View>
                   )}
                 </View>

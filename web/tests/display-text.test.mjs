@@ -19,3 +19,17 @@ test("public beach data does not expose escaped display quotes", () => {
     assert.equal(/\\+['"]/.test(encoded), false, `${file} contains escaped display quotes`);
   }
 });
+
+test("public beach data preserves raw model probability for advisory-adjusted forecasts", () => {
+  const beaches = JSON.parse(fs.readFileSync(new URL("../public/data/beaches.json", import.meta.url), "utf8"));
+  const adjusted = beaches.find((beach) => beach.forecast?.advisory_floor_applied === true);
+
+  if (!adjusted) {
+    return;
+  }
+
+  assert.equal(typeof adjusted.forecast.p_exceed_raw, "number");
+  assert.ok(adjusted.forecast.p_exceed_raw < adjusted.forecast.p_exceed);
+  assert.equal(adjusted.forecast.model_risk_band, "Low");
+  assert.equal(adjusted.forecast.official_advisory_active, true);
+});

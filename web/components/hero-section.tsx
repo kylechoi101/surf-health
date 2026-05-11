@@ -2,10 +2,10 @@ import Link from "next/link";
 
 import { DropRow, SeverityBar, BetaNotice } from "@/components/RiskComponents";
 import { featuredMapSite, siteStats } from "@/lib/curated";
-import { RISK_COPY, RISK_TOKEN } from "@/lib/riskData";
+import { advisoryProbabilityPresentation, forecastDisplayCopy } from "@/lib/forecastPresentation";
+import { RISK_TOKEN } from "@/lib/riskData";
 import {
   formatPacificTimestamp,
-  formatPercent,
   formatRelativeSampleDate,
   formatWaterFahrenheit,
   formatWaveFeet,
@@ -15,7 +15,8 @@ export function HeroSection() {
   const stats = siteStats();
   const featuredSite = featuredMapSite();
   const forecast = featuredSite.forecast;
-  const answerCopy = forecast ? RISK_COPY[forecast.risk_band] : null;
+  const answerCopy = forecast ? forecastDisplayCopy(forecast, forecast.risk_band) : null;
+  const probability = advisoryProbabilityPresentation(forecast);
   const answerToken = forecast ? RISK_TOKEN[forecast.risk_band] : null;
   const featuredBeach = featuredSite.latest_modeled_beach;
   const showResearchBanner = stats.publicReleaseEligible === false;
@@ -100,9 +101,9 @@ export function HeroSection() {
                       <DropRow band={forecast.risk_band} size={14} />
                       <div className="sl-label">{forecast.risk_band}</div>
                     </div>
-                    <div className="sl-display mt-3 text-3xl">{answerCopy.head}</div>
+                    <div className="sl-display mt-3 text-3xl">{answerCopy.headline}</div>
                     <div className="mt-2 max-w-[12rem] text-sm leading-6 opacity-85">
-                      {answerCopy.sub}
+                      {answerCopy.body}
                     </div>
                   </div>
                 ) : (
@@ -120,10 +121,15 @@ export function HeroSection() {
 
                   <div className="mt-4 grid gap-4 border-t border-[var(--sl-line-soft)] pt-4 sm:grid-cols-2">
                     <div>
-                      <div className="sl-label text-[var(--sl-muted)]">Exceedance chance</div>
+                      <div className="sl-label text-[var(--sl-muted)]">{probability.primaryLabel}</div>
                       <div className="mt-2 text-lg font-medium text-[var(--sl-ink)]">
-                        {formatPercent(forecast.p_exceed)}
+                        {probability.primaryPercent ?? "--"}%
                       </div>
+                      {probability.secondaryLabel && (
+                        <div className="mt-1 text-xs text-[var(--sl-muted)]">
+                          {probability.secondaryLabel}: {probability.secondaryPercent ?? "--"}%
+                        </div>
+                      )}
                     </div>
                     <div>
                       <div className="sl-label text-[var(--sl-muted)]">Latest official sample</div>

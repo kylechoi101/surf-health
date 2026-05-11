@@ -13,6 +13,7 @@ import {
   type ParentBeachSummary,
 } from "../../lib/api";
 import { filterModeledBeaches, findModeledBeach } from "../../lib/coverage";
+import { advisoryProbabilityPresentation } from "../../lib/forecastPresentation";
 import { daysSince, RISK_COLORS, riskAdvice, riskHead } from "../../lib/utils";
 import { palette, bandColor } from "../../lib/theme";
 import { DropRow, SeverityBar, type RiskBand } from "../../components/RiskSystem";
@@ -92,11 +93,19 @@ export default function ParentBeachScreen() {
               </Text>
               {parent.risk_band && (
                 <View style={s.riskPill}>
-                  <Text style={s.riskPillText}>{parent.risk_band} modeled risk</Text>
+                  <Text style={s.riskPillText}>
+                    {parent.has_active_advisory ? "Official advisory active" : `${parent.risk_band} modeled risk`}
+                  </Text>
                 </View>
               )}
             </View>
-            {parent.p_exceed != null && <Text style={s.heroAdvice}>{riskAdvice(band)}</Text>}
+            {parent.p_exceed != null && (
+              <Text style={s.heroAdvice}>
+                {parent.has_active_advisory
+                  ? "Follow posted county guidance before entering."
+                  : riskAdvice(band)}
+              </Text>
+            )}
           </SafeAreaView>
         </View>
 
@@ -118,8 +127,14 @@ export default function ParentBeachScreen() {
               <View style={{ flex: 1 }}>
                 <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start" }}>
                   <View>
-                    <Text style={[s.riskBandText, { color: colors.deep }]}>{riskHead(band)}</Text>
-                    <Text style={[s.riskAdviceText, { color: colors.deep }]}>{riskAdvice(band)}</Text>
+                    <Text style={[s.riskBandText, { color: colors.deep }]}>
+                      {parent.has_active_advisory ? "Official advisory active." : riskHead(band)}
+                    </Text>
+                    <Text style={[s.riskAdviceText, { color: colors.deep }]}>
+                      {parent.has_active_advisory
+                        ? "This display is elevated by the official advisory."
+                        : riskAdvice(band)}
+                    </Text>
                   </View>
                   <View style={{ alignItems: "flex-end", gap: 6 }}>
                     <DropRow band={band} size={14} />
@@ -127,7 +142,9 @@ export default function ParentBeachScreen() {
                       {Math.round(parent.p_exceed * 100)}
                       <Text style={{ fontSize: 14 }}>%</Text>
                     </Text>
-                    <Text style={[s.pctSub, { color: colors.deep }]}>exceed chance</Text>
+                    <Text style={[s.pctSub, { color: colors.deep }]}>
+                      {parent.has_active_advisory ? "advisory display" : "exceed chance"}
+                    </Text>
                   </View>
                 </View>
                 <View style={{ marginTop: 12 }}>
@@ -162,7 +179,14 @@ export default function ParentBeachScreen() {
                   <View style={{ flex: 1 }}>
                     <Text style={s.stationName}>{beach.name}</Text>
                     <Text style={s.stationSub}>
-                      {forecast ? `${Math.round(forecast.p_exceed * 100)}% exceed chance` : "Forecast unavailable"}
+                      {forecast
+                        ? (() => {
+                            const probability = advisoryProbabilityPresentation(forecast);
+                            const value = probability.secondaryPercent ?? probability.primaryPercent;
+                            const label = probability.secondaryLabel ? "model-only" : "exceed chance";
+                            return `${value ?? "—"}% ${label}`;
+                          })()
+                        : "Forecast unavailable"}
                       {sampleAge != null
                         ? `  ·  sampled ${
                             sampleAge === 0 ? "today" : sampleAge === 1 ? "yesterday" : `${sampleAge}d ago`

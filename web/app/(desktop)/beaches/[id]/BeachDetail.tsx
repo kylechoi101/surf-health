@@ -5,7 +5,8 @@ import { useParams } from "next/navigation";
 import { getBeaches, getForecast, getObservations, preferredForecastDate, type BeachSummary, type ForecastRecord, type ObservationResponse } from "@/lib/api";
 import { findModeledBeach } from "@/lib/coverage";
 import { DropRow, SeverityBar, RiskChip, BetaNotice, RecencyBadge } from "@/components/RiskComponents";
-import { RISK_COPY, RISK_TOKEN } from "@/lib/riskData";
+import { RISK_TOKEN } from "@/lib/riskData";
+import { advisoryProbabilityPresentation, forecastDisplayCopy } from "@/lib/forecastPresentation";
 import { Skeleton, SkeletonCard } from "@/components/Skeleton";
 
 function mToFt(m: number | null | undefined) {
@@ -98,7 +99,8 @@ export default function BeachDetailPage() {
   const cardBorderClass = RISK_TOKEN[band]?.borderClass || 'border-border/50';
   const cardTextClass = RISK_TOKEN[band]?.textClass || 'text-foreground';
   
-  const copy = RISK_COPY[band];
+  const displayCopy = forecastDisplayCopy(forecast, band);
+  const probability = advisoryProbabilityPresentation(forecast);
   const env = forecast?.environmental_summary;
   
   const prevEnv = obs?.recent_environment && obs.recent_environment.length > 1 ? obs.recent_environment[1] : null;
@@ -163,7 +165,7 @@ export default function BeachDetailPage() {
               <div className="flex items-center gap-3">
                 <DropRow band={band} size={18}/>
                 <div className={`font-mono text-xs tracking-[0.2em] font-semibold uppercase ${cardTextClass}`}>
-                  {band} · Beta forecast
+                  {band} · {displayCopy.eyebrow}
                 </div>
               </div>
               <div className="flex items-center gap-2 mt-3">
@@ -171,18 +173,23 @@ export default function BeachDetailPage() {
                 <RecencyBadge sampleAgeDays={forecast.sample_age_days} recencyBand={forecast.sample_recency_band} />
               </div>
               <div className={`text-6xl sm:text-7xl md:text-[5.5rem] leading-[0.9] mt-8 mb-6 font-light tracking-tight ${cardTextClass}`}>
-                {copy.head}
+                {displayCopy.headline}
               </div>
               <p className={`text-lg md:text-xl leading-relaxed max-w-lg opacity-90 ${cardTextClass}`}>
-                {copy.sub}
+                {displayCopy.body}
               </p>
               
               <div className={`mt-10 pt-6 border-t border-dashed ${cardBorderClass}`}>
                 <SeverityBar band={band} width="100%" height={8}/>
                 <div className={`flex justify-between items-center mt-4 font-mono text-[10px] uppercase tracking-widest opacity-80 ${cardTextClass}`}>
-                  <span>Exceedance chance: {forecast ? Math.round(forecast.p_exceed * 100) : '--'}%</span>
+                  <span>{probability.primaryLabel}: {probability.primaryPercent ?? '--'}%</span>
                   <span>Threshold: 104 CFU</span>
                 </div>
+                {probability.secondaryLabel && (
+                  <div className={`mt-2 font-mono text-[10px] uppercase tracking-widest opacity-80 ${cardTextClass}`}>
+                    {probability.secondaryLabel}: {probability.secondaryPercent ?? '--'}%
+                  </div>
+                )}
               </div>
             </div>
 

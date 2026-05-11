@@ -12,6 +12,7 @@ import {
 } from "react-simple-maps";
 
 import { MapSite } from "@/lib/curated";
+import { advisoryProbabilityPresentation } from "@/lib/forecastPresentation";
 import {
   getInitialMapSelection,
   getMarkerRenderSites,
@@ -20,7 +21,6 @@ import {
 } from "@/lib/mapPresentation";
 import { RISK_TOKEN } from "@/lib/riskData";
 import {
-  formatPercent,
   formatWaveFeet,
   formatWaterFahrenheit,
 } from "@/lib/utils";
@@ -192,9 +192,15 @@ export function CoastalMap({ sites }: { sites: MapSite[] }) {
               </div>
             </div>
             <div>
-              <div className="sl-label text-[var(--sl-muted)]">Exceed</div>
+              <div className="sl-label text-[var(--sl-muted)]">
+                {advisoryProbabilityPresentation(selectedSite.forecast).secondaryLabel ?? "Exceed"}
+              </div>
               <div className="mt-2 font-medium text-[var(--sl-ink)]">
-                {formatPercent(selectedSite.forecast?.p_exceed)}
+                {(() => {
+                  const probability = advisoryProbabilityPresentation(selectedSite.forecast);
+                  const value = probability.secondaryPercent ?? probability.primaryPercent;
+                  return value == null ? "—" : `${value}%`;
+                })()}
               </div>
             </div>
             <div>

@@ -2,7 +2,8 @@ import Link from "next/link";
 
 import { BetaNotice, RiskChip } from "@/components/RiskComponents";
 import { featuredBeaches, publicRegions } from "@/lib/curated";
-import { formatPercent, formatWaterFahrenheit, formatWaveFeet } from "@/lib/utils";
+import { advisoryProbabilityPresentation } from "@/lib/forecastPresentation";
+import { formatWaterFahrenheit, formatWaveFeet } from "@/lib/utils";
 
 export function ForecastSection() {
   const regions = publicRegions();
@@ -103,9 +104,15 @@ export function ForecastSection() {
 
               <div className="mt-5 grid grid-cols-3 gap-3 border-t border-[var(--sl-line-soft)] pt-4">
                 <div>
-                  <div className="sl-label text-[var(--sl-muted)]">Risk</div>
+                  <div className="sl-label text-[var(--sl-muted)]">
+                    {advisoryProbabilityPresentation(beach.forecast).secondaryLabel ?? "Risk"}
+                  </div>
                   <div className="mt-2 text-sm font-medium text-[var(--sl-ink)]">
-                    {formatPercent(beach.forecast?.p_exceed)}
+                    {(() => {
+                      const probability = advisoryProbabilityPresentation(beach.forecast);
+                      const value = probability.secondaryPercent ?? probability.primaryPercent;
+                      return value == null ? "—" : `${value}%`;
+                    })()}
                   </div>
                 </div>
                 <div>

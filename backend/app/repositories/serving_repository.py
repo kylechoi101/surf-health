@@ -272,7 +272,8 @@ class ServingSnapshotRepository(BeachRepository):
 
         active_advisory = beach_id in self._active_advisory_beach_ids()
         base_drivers = [str(item) for item in _parse_json_list(row.get("top_drivers"))]
-        model_risk_band = str(row["risk_band"])
+        raw_p_exceed = _safe_float(row.get("p_exceed_raw"))
+        model_risk_band = risk_band(raw_p_exceed) if raw_p_exceed is not None else str(row["risk_band"])
         if active_advisory:
             drivers = ["Official health advisory is active for this station.", *base_drivers][:5]
             band = "Very High"  # Override to Very High when advisory is active
@@ -290,6 +291,8 @@ class ServingSnapshotRepository(BeachRepository):
             risk_band=band,
             model_risk_band=model_risk_band if active_advisory else None,
             p_exceed=float(row["p_exceed"]),
+            p_exceed_raw=_safe_float(row.get("p_exceed_raw")),
+            advisory_floor_applied=_safe_bool(row.get("advisory_floor_applied"), default=False),
             p_exceed_lower=_safe_float(row.get("p_exceed_lower")),
             p_exceed_upper=_safe_float(row.get("p_exceed_upper")),
             predicted_log_enterococcus=_safe_float(row.get("predicted_log_enterococcus")),
@@ -374,6 +377,8 @@ class ServingSnapshotRepository(BeachRepository):
             risk_band=("Very High" if active_advisory else risk_band(p_exceed)),
             model_risk_band=(risk_band(p_exceed) if active_advisory else None),
             p_exceed=float(p_exceed),
+            p_exceed_raw=float(p_exceed),
+            advisory_floor_applied=False,
             predicted_log_enterococcus=log10(max(latest_value, 1.0)),
             model_version="derived-persistence-v0",
             forecast_generated_at=datetime.now(UTC),

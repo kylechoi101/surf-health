@@ -149,14 +149,20 @@ export default function HomeTab() {
             >
               <View style={s.nearestTopRow}>
                 <View style={{ flex: 1 }}>
-                  <Text style={s.nearestEyebrow}>Today&apos;s modeled risk</Text>
+                  <Text style={s.nearestEyebrow}>
+                    {nearest.has_active_advisory ? "Official advisory status" : "Today's modeled risk"}
+                  </Text>
                   <View style={{ marginTop: 6 }}>
                     <BetaNotice isBeta={true} />
                   </View>
                   <Text style={s.nearestVerdict}>
-                    {RISK_COPY[nearestBand].head}
+                    {nearest.has_active_advisory ? "Official advisory active." : RISK_COPY[nearestBand].head}
                   </Text>
-                  <Text style={s.nearestSub}>{RISK_COPY[nearestBand].sub}</Text>
+                  <Text style={s.nearestSub}>
+                    {nearest.has_active_advisory
+                      ? "Follow posted county guidance before entering."
+                      : RISK_COPY[nearestBand].sub}
+                  </Text>
                 </View>
                 <DropRow band={nearestBand} size={15} />
               </View>

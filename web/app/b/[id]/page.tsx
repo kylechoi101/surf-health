@@ -2,7 +2,7 @@ import { Metadata } from "next";
 import BeachSharePage from "./BeachSharePage";
 import { listBeaches } from "@/lib/curated";
 import { filterModeledBeaches, findModeledBeach } from "@/lib/coverage";
-import { RISK_COPY } from "@/lib/riskData";
+import { forecastDisplayCopy } from "@/lib/forecastPresentation";
 
 export async function generateStaticParams() {
   return filterModeledBeaches(listBeaches()).map((beach) => ({
@@ -18,29 +18,31 @@ export async function generateMetadata(props: { params: Promise<{ id: string }> 
     return { title: "Beach not found · Shorelife" };
   }
 
-  const band = beach.forecast?.risk_band || "Moderate";
+  const band = beach.forecast?.official_advisory_active
+    ? "Very High"
+    : beach.forecast?.risk_band || "Moderate";
   const copy = beach.forecast
-      ? RISK_COPY[band]
-      : {
-          head: "Forecast unavailable",
-          sub: "Daily Shorelife beach health updates based on official monitoring and coastal conditions.",
-        };
+    ? forecastDisplayCopy(beach.forecast, band)
+    : {
+        headline: "Forecast unavailable",
+        body: "Daily Shorelife beach health updates based on official monitoring and coastal conditions.",
+      };
 
   return {
-    title: `${beach.name} · ${copy.head} · Shorelife`,
-    description: copy.sub,
+    title: `${beach.name} · ${copy.headline} · Shorelife`,
+    description: copy.body,
     alternates: {
       canonical: `/b/${id}`,
     },
     openGraph: {
-      title: `${beach.name} · ${copy.head}`,
-      description: copy.sub,
+      title: `${beach.name} · ${copy.headline}`,
+      description: copy.body,
       url: `/b/${id}`,
     },
     twitter: {
       card: "summary_large_image",
-      title: `${beach.name} · ${copy.head}`,
-      description: copy.sub,
+      title: `${beach.name} · ${copy.headline}`,
+      description: copy.body,
     },
   };
 }

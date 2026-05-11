@@ -6,6 +6,7 @@ import { getBeaches, getForecast, preferredForecastDate, type BeachSummary, type
 import { findModeledBeach } from "@/lib/coverage";
 import { DropRow, SeverityBar } from "@/components/RiskComponents";
 import { RISK_COPY, RISK_TOKEN } from "@/lib/riskData";
+import { advisoryProbabilityPresentation, forecastDisplayCopy } from "@/lib/forecastPresentation";
 import { formatPacificDate } from "@/lib/utils";
 
 function mToFt(m: number | null | undefined) {
@@ -18,8 +19,6 @@ type ConditionCard = {
   v: string;
   s: string;
 };
-
-type ShareCopy = (typeof RISK_COPY)[keyof typeof RISK_COPY];
 
 type BeachSharePageProps = {
   beachId?: string;
@@ -92,12 +91,19 @@ export default function BeachSharePage({ beachId }: BeachSharePageProps) {
 
   const band = forecast?.official_advisory_active ? "Very High" : (forecast?.risk_band ?? "Moderate");
   const tok = RISK_TOKEN[band] ?? RISK_TOKEN.Moderate;
-  const copy = RISK_COPY[band] ?? RISK_COPY.Moderate;
+  const riskCopy = RISK_COPY[band] ?? RISK_COPY.Moderate;
+  const displayCopy = forecastDisplayCopy(forecast, band);
+  const probability = advisoryProbabilityPresentation(forecast);
+  const signalText = probability.secondaryLabel
+    ? forecast?.official_advisory_active
+      ? "Official advisory"
+      : "Advisory-adjusted display"
+    : riskCopy.cfu;
   const env = forecast?.environmental_summary;
   const cardBgClass = tok.bgClass;
   const cardBorderClass = tok.borderClass;
   const cardTextClass = tok.textClass;
-  const shareTitle = `${beach.name} · ${copy.head}`;
+  const shareTitle = `${beach.name} · ${displayCopy.headline}`;
   const shareImageSlug = band.toLowerCase().replace(/\s+/g, "-");
 
   const conditions: ConditionCard[] = [
@@ -139,27 +145,32 @@ export default function BeachSharePage({ beachId }: BeachSharePageProps) {
               <div className="relative z-10">
                 <div className="flex items-center gap-3 mb-6">
                   <DropRow band={band} size={18}/>
-                  <div className={`font-mono text-xs tracking-[0.2em] font-semibold uppercase ${cardTextClass}`}>{band} · Today</div>
+                  <div className={`font-mono text-xs tracking-[0.2em] font-semibold uppercase ${cardTextClass}`}>{band} · {displayCopy.eyebrow}</div>
                 </div>
                 <div className={`text-6xl sm:text-7xl md:text-[5.5rem] leading-[0.9] font-light tracking-tight mb-6 ${cardTextClass}`}>
-                  {copy.head}
+                  {displayCopy.headline}
                 </div>
                 <div className={`text-lg md:text-xl font-mono leading-relaxed max-w-lg opacity-90 ${cardTextClass}`}>
-                  {copy.sub}
+                  {displayCopy.body}
                 </div>
                 
                 <div className={`mt-10 pt-8 border-t border-dashed flex flex-wrap justify-between gap-6 ${cardBorderClass}`}>
                   <div>
                     <div className={`font-mono text-[10px] tracking-widest uppercase font-semibold opacity-70 mb-2 ${cardTextClass}`}>Signal</div>
-                    <div className={`text-xl font-mono ${cardTextClass}`}>{copy.cfu}</div>
+                    <div className={`text-xl font-mono ${cardTextClass}`}>{signalText}</div>
                   </div>
                   <div className="text-center">
                     <div className={`font-mono text-[10px] tracking-widest uppercase font-semibold opacity-70 mb-2 ${cardTextClass}`}>
-                      Exceed chance
+                      {probability.primaryLabel}
                     </div>
                     <div className={`text-4xl font-light leading-none ${cardTextClass}`}>
-                      {forecast ? Math.round(forecast.p_exceed * 100) : '--'}<span className="text-xl">%</span>
+                      {probability.primaryPercent ?? '--'}<span className="text-xl">%</span>
                     </div>
+                    {probability.secondaryLabel && (
+                      <div className={`mt-2 font-mono text-[10px] uppercase tracking-widest opacity-80 ${cardTextClass}`}>
+                        {probability.secondaryLabel}: {probability.secondaryPercent ?? '--'}%
+                      </div>
+                    )}
                   </div>
                   <div className="text-right">
                     <div className={`font-mono text-[10px] tracking-widest uppercase font-semibold opacity-70 mb-2 ${cardTextClass}`}>Latest sample</div>
@@ -212,8 +223,10 @@ export default function BeachSharePage({ beachId }: BeachSharePageProps) {
                 <PhoneMock
                   beach={beach}
                   band={band}
-                  copy={copy}
-                  p={forecast ? Math.round(forecast.p_exceed * 100) : 0}
+                  displayCopy={displayCopy}
+                  signalText={signalText}
+                  p={probability.secondaryPercent ?? probability.primaryPercent ?? 0}
+                  pLabel={probability.secondaryLabel ? "MODEL-ONLY" : probability.primaryLabel.toUpperCase()}
                   conditions={conditions}
                 />
               </div>
@@ -224,7 +237,7 @@ export default function BeachSharePage({ beachId }: BeachSharePageProps) {
               <div className="bg-muted/30 border border-border/50 rounded-2xl p-6 font-mono text-[11px] md:text-xs leading-relaxed text-foreground overflow-hidden break-all space-y-2">
                 <div><span className="text-muted-foreground inline-block w-20">url:</span> kylechoi101.github.io/surf-health/b/{beach.id}</div>
                 <div><span className="text-muted-foreground inline-block w-20">og:title:</span> {shareTitle}</div>
-                <div><span className="text-muted-foreground inline-block w-20">og:desc:</span> {copy.sub}</div>
+                <div><span className="text-muted-foreground inline-block w-20">og:desc:</span> {displayCopy.body}</div>
                 <div><span className="text-muted-foreground inline-block w-20">og:image:</span> /og/{beach.id}-{shareImageSlug}.png</div>
               </div>
             </div>
@@ -238,14 +251,18 @@ export default function BeachSharePage({ beachId }: BeachSharePageProps) {
 function PhoneMock({
   beach,
   band,
-  copy,
+  displayCopy,
+  signalText,
   p,
+  pLabel,
   conditions,
 }: {
   beach: BeachSummary;
   band: ForecastRecord["risk_band"];
-  copy: ShareCopy;
+  displayCopy: ReturnType<typeof forecastDisplayCopy>;
+  signalText: string;
   p: number;
+  pLabel: string;
   conditions: ConditionCard[];
 }) {
   // Use explicit hex colors for the phone mock to maintain the "dark mode" preview aesthetic
@@ -266,13 +283,13 @@ function PhoneMock({
         <div className="relative px-6 pb-8 pt-4 shrink-0" style={{ backgroundColor: headerBg }}>
           <div className="font-mono text-[8px] font-bold tracking-[0.2em] text-white/90">SHORELIFE</div>
           <div className="font-mono text-[8px] text-white/70 tracking-widest uppercase mt-5 mb-1">
-            Today&apos;s modeled risk
+            {displayCopy.eyebrow}
           </div>
           <div className="text-5xl font-light text-white leading-none tracking-tight mb-2">
-            {copy.head}
+            {displayCopy.headline}
           </div>
           <div className="text-[11px] text-white/90 leading-relaxed font-sans max-w-[250px]">
-            {copy.sub}
+            {displayCopy.body}
           </div>
           <div className="mt-5 font-mono text-[8px] font-bold text-white/90 tracking-wider uppercase">
             {beach.name} · {beach.county}
@@ -286,13 +303,13 @@ function PhoneMock({
               <div>
                 <div className="text-slate-500 text-[8px] font-mono uppercase font-bold tracking-wider mb-1">Water quality</div>
                 <div className="text-lg font-semibold text-slate-900">{band}</div>
-                <div className="text-[10px] text-slate-500 mt-1 font-sans">Ent: {copy.cfu}</div>
+                <div className="text-[10px] text-slate-500 mt-1 font-sans">Signal: {signalText}</div>
               </div>
               <div className="text-right">
                 <div className="text-3xl text-slate-900 leading-none font-light">
                   {p}<span className="text-sm ml-0.5">%</span>
                 </div>
-                <div className="text-slate-400 text-[8px] mt-1.5 font-mono uppercase font-bold tracking-wider">EXCEED</div>
+                <div className="text-slate-400 text-[8px] mt-1.5 font-mono uppercase font-bold tracking-wider">{pLabel}</div>
               </div>
             </div>
             <div className="mt-4"><SeverityBar band={band} width="100%" height={4}/></div>

@@ -109,6 +109,9 @@ jobs:
       - name: Bake web static data
         run: python scripts/bake_static_data.py
 
+      - name: Verify public release gates
+        run: python scripts/verify_public_release.py
+
       - name: Commit and push if changed
         run: |
           git config user.name "github-actions[bot]"

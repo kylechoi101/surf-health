@@ -34,12 +34,14 @@ export interface ForecastRecord {
   risk_band: RiskBand;
   model_risk_band?: RiskBand;
   p_exceed: number;
+  p_exceed_raw?: number | null;
   predicted_log_enterococcus: number | null;
   top_drivers: string[];
   model_version: string;
   forecast_generated_at: string;
   forecast_age_hours?: number;
   official_advisory_active?: boolean;
+  advisory_floor_applied?: boolean;
   forecast_label_mode?: ForecastLabelMode;
   sample_age_days?: number | null;
   sample_recency_band?: SampleRecencyBand;

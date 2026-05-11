@@ -12,8 +12,10 @@ import { cleanDisplayText } from "@/lib/utils";
 export interface ForecastData {
   risk_band: RiskBand;
   p_exceed: number | null;
+  p_exceed_raw?: number | null;
   p_exceed_lower?: number | null;
   p_exceed_upper?: number | null;
+  advisory_floor_applied?: boolean;
   model_version: string;
   forecast_generated_at: string | null;
   top_drivers: string[];

@@ -5,7 +5,8 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
 import { getBeaches, getForecast, todayLA, type BeachSummary, type ForecastRecord } from "../../lib/api";
 import { findModeledBeach } from "../../lib/coverage";
-import { riskAdvice, riskHead, RISK_COLORS, mToFt, cToF, mpsToMph, fmtPeriod, fmtUv } from "../../lib/utils";
+import { advisoryProbabilityPresentation, forecastDisplayCopy } from "../../lib/forecastPresentation";
+import { RISK_COLORS, mToFt, cToF, mpsToMph, fmtPeriod, fmtUv } from "../../lib/utils";
 import { palette } from "../../lib/theme";
 import { DropRow, SeverityBar, type RiskBand } from "../../components/RiskSystem";
 import { BetaNotice, RecencyBadge } from "../../components/BetaNotice";
@@ -50,11 +51,13 @@ export default function BeachHome() {
 
   const band = ((forecast?.official_advisory_active ? "Very High" : forecast?.risk_band) ?? "Moderate") as RiskBand;
   const colors = RISK_COLORS[band] ?? RISK_COLORS.Moderate;
+  const displayCopy = forecastDisplayCopy(forecast, band);
+  const probability = advisoryProbabilityPresentation(forecast);
   const env = forecast?.environmental_summary;
 
   async function onShare() {
     await Share.share({
-      message: `${beach!.name} water quality: ${riskHead(band)} ${riskAdvice(band)} — kylechoi101.github.io/surf-health/b/?id=${id}`,
+      message: `${beach!.name} water quality: ${displayCopy.headline} ${displayCopy.body} — kylechoi101.github.io/surf-health/b/?id=${id}`,
       url: `https://kylechoi101.github.io/surf-health/b/?id=${id}`,
     });
   }
@@ -81,7 +84,7 @@ export default function BeachHome() {
 
             {/* Big answer */}
             <View style={s.answerBlock}>
-              <Text style={s.answerLabel}>Today&apos;s modeled risk</Text>
+              <Text style={s.answerLabel}>{displayCopy.eyebrow}</Text>
               {forecast?.official_advisory_active && (
                 <View style={s.advisoryPill}>
                   <Text style={s.advisoryPillText}>OFFICIAL ADVISORY ACTIVE</Text>
@@ -94,8 +97,8 @@ export default function BeachHome() {
                   </Text>
                 </View>
               )}
-              <Text style={s.verdict}>{riskHead(band)}</Text>
-              <Text style={s.advice}>{riskAdvice(band)}</Text>
+              <Text style={s.verdict}>{displayCopy.headline}</Text>
+              <Text style={s.advice}>{displayCopy.body}</Text>
               <View style={s.dropSeverityRow}>
                 <DropRow band={band} size={16} />
                 <View style={{ flex: 1, marginLeft: 12 }}>
@@ -115,7 +118,12 @@ export default function BeachHome() {
 
             {/* Stat tiles */}
             <View style={s.stats}>
-              <StatTile iconName="droplet" label="Bacteria" value={forecast ? `${Math.round(forecast.p_exceed * 100)}%` : "—"} sub="exceed chance" />
+              <StatTile
+                iconName="droplet"
+                label={probability.secondaryLabel ?? "Bacteria"}
+                value={forecast ? `${probability.secondaryPercent ?? probability.primaryPercent ?? "—"}%` : "—"}
+                sub={probability.secondaryLabel ? "before advisory" : "exceed chance"}
+              />
               <StatTile iconName="trending-up" label="Surf" value={mToFt(env?.wave_height_m)} sub={fmtPeriod(env?.dominant_period_s) || "—"} />
               <StatTile iconName="thermometer" label="Water" value={cToF(env?.water_temperature_c)} sub={env?.uv_index != null ? `UV ${fmtUv(env.uv_index)}` : "—"} />
               <StatTile iconName="wind" label="Wind" value={mpsToMph(env?.wind_speed_mps)} sub="surface" />

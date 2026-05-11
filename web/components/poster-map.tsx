@@ -2,8 +2,8 @@ import Link from "next/link";
 
 import { DropRow } from "@/components/RiskComponents";
 import { MapSite } from "@/lib/curated";
+import { advisoryProbabilityPresentation } from "@/lib/forecastPresentation";
 import { RISK_TOKEN } from "@/lib/riskData";
-import { formatPercent } from "@/lib/utils";
 
 const CA_PATH = `
   M 245 18
@@ -230,7 +230,11 @@ export function PosterMap({
                   {featuredSite.forecast.risk_band} (beta)
                 </div>
                 <div className="sl-mono text-xs text-[var(--sl-muted)]">
-                  {formatPercent(featuredSite.forecast.p_exceed)} exceedance
+                  {(() => {
+                    const probability = advisoryProbabilityPresentation(featuredSite.forecast);
+                    const value = probability.secondaryPercent ?? probability.primaryPercent;
+                    return value == null ? "—" : `${value}%`;
+                  })()} {featuredSite.forecast.official_advisory_active ? "model-only" : "exceedance"}
                 </div>
               </>
             )}

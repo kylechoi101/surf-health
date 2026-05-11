@@ -11,6 +11,18 @@ REGION_MAP = {
 }
 
 
+def risk_band_from_probability(probability: float | None) -> str | None:
+    if probability is None:
+        return None
+    if probability < 0.20:
+        return "Low"
+    if probability < 0.30:
+        return "Moderate"
+    if probability < 0.70:
+        return "High"
+    return "Very High"
+
+
 def normalize_region(region: object) -> str:
     text = str(region or "").strip() or "Unknown"
     return REGION_MAP.get(text, text)
@@ -29,6 +41,23 @@ def safe_float(value: object) -> float | None:
     if value is None or pd.isna(value):
         return None
     return float(value)
+
+
+def safe_bool(value: object, default: bool = False) -> bool:
+    if value is None:
+        return default
+    try:
+        if pd.isna(value):
+            return default
+    except TypeError:
+        pass
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(int(value))
+    if isinstance(value, str):
+        return value.lower() not in ("0", "false", "no", "")
+    return default
 
 
 def to_iso(value: object) -> str | None:
@@ -83,8 +112,10 @@ def main() -> None:
             base_forecast = {
                 "risk_band": clean_text(row.get("risk_band")),
                 "p_exceed": safe_float(row.get("p_exceed")),
+                "p_exceed_raw": safe_float(row.get("p_exceed_raw")),
                 "p_exceed_lower": safe_float(row.get("p_exceed_lower")),
                 "p_exceed_upper": safe_float(row.get("p_exceed_upper")),
+                "advisory_floor_applied": safe_bool(row.get("advisory_floor_applied")),
                 "model_version": clean_text(row.get("model_version")),
                 "forecast_generated_at": to_iso(row.get("forecast_generated_at")),
                 "top_drivers": to_driver_list(row.get("top_drivers")),
@@ -94,9 +125,10 @@ def main() -> None:
                 "is_beta_forecast": bool(row.get("is_beta_forecast", True)),
             }
             if bid in active_advisory_ids:
+                raw_model_band = risk_band_from_probability(base_forecast.get("p_exceed_raw"))
                 base_forecast = {
                     **base_forecast,
-                    "model_risk_band": base_forecast.get("risk_band"),
+                    "model_risk_band": raw_model_band or base_forecast.get("risk_band"),
                     "official_advisory_active": True,
                     "risk_band": "Very High",
                     "forecast_label_mode": "official_advisory_override",
