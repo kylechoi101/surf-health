@@ -16,6 +16,14 @@ MARINE_WATER_TYPE_TERMS = {"open coast", "sound", "bay", "inlet"}
 MIN_PLAUSIBLE_SAMPLE_TIME = pd.Timestamp("2000-01-01")
 MAX_FUTURE_SAMPLE_LEEWAY_DAYS = 2
 
+COUNTY_ADVISORY_WEBSITES = {
+    "Los Angeles": "http://publichealth.lacounty.gov/phcommon/public/eh/water_quality/beach_grades.cfm",
+    "Orange": "https://ocbeachinfo.com/",
+    "San Diego": "https://www.sdbeachinfo.com/",
+    "Ventura": "https://www.vcpublichealth.org/beach-water-quality/",
+    "Long Beach City": "https://www.longbeach.gov/health/inspections-and-reporting/reporting/beach-water-quality/",
+}
+
 
 def _column(frame: pd.DataFrame, name: str, default: str | None = None) -> pd.Series:
     if name in frame.columns:
@@ -375,7 +383,13 @@ def normalize_advisories(frame: pd.DataFrame) -> pd.DataFrame:
     marine["advisory_type"] = _column(marine, "AdvisoryType", "Unknown").fillna("Unknown")
     marine["cause"] = _column(marine, "AdvisoryCause", "Unknown").fillna("Unknown")
     marine["county"] = _column(marine, "CountyName").fillna(_column(marine, "County"))
+    
+    # Extract website if present, otherwise fallback to county mapping
     marine["advisory_website"] = _column(marine, "AdvisoryWebsite", "Unknown").fillna("Unknown")
+    marine.loc[marine["advisory_website"] == "Unknown", "advisory_website"] = marine["county"].map(
+        COUNTY_ADVISORY_WEBSITES
+    ).fillna("Unknown")
+
     return (
         marine[
             [
