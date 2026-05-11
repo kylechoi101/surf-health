@@ -41,7 +41,6 @@ class _BeachLeakageChecker(ast.NodeVisitor):
                 and child.attr == "groupby"
             ):
                 # check the first arg to groupby is 'beach_id'
-                parent_call = getattr(child, "_parent_call", None)
                 return True  # groupby present — good enough at static level
         return False
 

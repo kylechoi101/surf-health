@@ -8,7 +8,4 @@ Each function signature:
 AGENT_BUILDERS is imported by training.py to inject features before
 _model_feature_columns selects the final column list.
 """
-import pandas as pd
-import numpy as np
-
 AGENT_BUILDERS: list = []

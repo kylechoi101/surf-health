@@ -10,6 +10,7 @@ on:
       - 'web/**'
       - 'data/curated/forecasts.parquet'
       - 'data/curated/system_health.json'
+      - 'scripts/verify_public_release.py'
       - '.github/workflows/deploy-web.yml'
   workflow_dispatch:
 
@@ -44,6 +45,9 @@ jobs:
               json.dump(out, f, separators=(',',':'))
           print(f'Wrote {len(out)} rows to web/public/forecast_summary.json')
           "
+
+      - name: Verify public release gates
+        run: python scripts/verify_public_release.py
 
       - uses: actions/setup-node@v4
         with:

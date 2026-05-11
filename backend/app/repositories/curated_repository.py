@@ -349,7 +349,8 @@ class CuratedBeachRepository(BeachRepository):
     def _build_forecast_record(self, row: dict, beach_id: str) -> ForecastRecord:
         env_fallback = self._latest_beach_day_env(beach_id)
         active_advisory = self._has_active_advisory(beach_id)
-        model_risk_band = str(row["risk_band"])
+        raw_p_exceed = _safe_float(row.get("p_exceed_raw"))
+        model_risk_band = risk_band(raw_p_exceed) if raw_p_exceed is not None else str(row["risk_band"])
 
         def pick(key: str) -> float | None:
             primary = _safe_float(row.get(key))
@@ -466,6 +467,8 @@ class CuratedBeachRepository(BeachRepository):
             risk_band="Very High" if active_advisory else model_risk_band,
             model_risk_band=model_risk_band if active_advisory else None,
             p_exceed=float(p_exceed),
+            p_exceed_raw=float(p_exceed),
+            advisory_floor_applied=False,
             predicted_log_enterococcus=predicted_log,
             lower_prediction_interval=None,
             upper_prediction_interval=None,
