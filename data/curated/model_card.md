@@ -1,7 +1,7 @@
 # Model Card: Shorelife `hist-gbm-positive-persistence-guard-curated-v0`
 
 ## Deployment Status
-- **Generated at**: 2026-05-11T07:56:15.722657+00:00
+- **Generated at**: 2026-05-11T15:07:15.515161+00:00
 - **Deployment stage**: candidate_ready
 - **Public release eligible**: true
 - **Promotion blocker (latest)**: None
@@ -24,7 +24,7 @@
 - **Brier**: —
 
 ### Spatial (holdouts)
-- **Spatial county AUCPR**: 0.656
+- **Spatial county AUCPR**: 0.659
 - **Spatial county persistence AUCPR**: 0.574
 
 ## Operational Agreement Check
