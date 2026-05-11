@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import ast
 import json
 import os
 import re
+from collections.abc import Iterable
 from datetime import UTC, date, datetime
 from functools import cached_property
 from math import log10
@@ -25,6 +27,7 @@ from app.schemas.domain import (
     ParentBeachSummary,
     Point,
     SystemHealthResponse,
+    sample_recency_band,
 )
 
 OBSERVATION_COLUMNS = [
@@ -54,6 +57,8 @@ BEACH_DAY_RECENT_COLUMNS = [
     "turbidity_observed",
 ]
 
+OFFICIAL_ADVISORY_DRIVER = "Official health advisory is active for this station."
+
 
 def _derive_friendly_name(row: object) -> str:
     beach_id = str(row["beach_id"])
@@ -75,6 +80,47 @@ def _safe_float(value: object) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _safe_int(value: object) -> int | None:
+    number = _safe_float(value)
+    return int(number) if number is not None else None
+
+
+def _safe_bool(value: object, *, default: bool = True) -> bool:
+    """Parse a boolean that may have been stored as string/int in parquet/SQLite."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(int(value))
+    if isinstance(value, str):
+        return value.lower() not in ("0", "false", "no", "")
+    return default
+
+
+def _driver_list(value: object) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return [str(item) for item in value]
+    if isinstance(value, str):
+        try:
+            parsed = ast.literal_eval(value)
+        except (SyntaxError, ValueError):
+            return [value]
+        if isinstance(parsed, (list, tuple)):
+            return [str(item) for item in parsed]
+        return [value]
+    if isinstance(value, Iterable) and not isinstance(value, (bytes, dict)):
+        return [str(item) for item in value]
+    try:
+        if pd.isna(value):
+            return []
+    except (TypeError, ValueError):
+        pass
+    return [str(value)]
 
 
 def _read_filtered_parquet(path: Path, beach_id: str, columns: list[str]) -> pd.DataFrame:
@@ -302,6 +348,9 @@ class CuratedBeachRepository(BeachRepository):
 
     def _build_forecast_record(self, row: dict, beach_id: str) -> ForecastRecord:
         env_fallback = self._latest_beach_day_env(beach_id)
+        active_advisory = self._has_active_advisory(beach_id)
+        raw_p_exceed = _safe_float(row.get("p_exceed_raw"))
+        model_risk_band = risk_band(raw_p_exceed) if raw_p_exceed is not None else str(row["risk_band"])
 
         def pick(key: str) -> float | None:
             primary = _safe_float(row.get(key))
@@ -328,6 +377,20 @@ class CuratedBeachRepository(BeachRepository):
         except Exception:
             row["forecast_age_hours"] = None
 
+        if active_advisory:
+            row["official_advisory_active"] = True
+            row["model_risk_band"] = model_risk_band
+            row["risk_band"] = "Very High"
+            row["forecast_label_mode"] = "official_advisory_override"
+            row["top_drivers"] = self._advisory_override_drivers(row.get("top_drivers"))
+
+        sample_age = _safe_int(row.get("sample_age_days"))
+        if sample_age is None:
+            sample_age = self._sample_age_days(beach_id, row.get("forecast_date"))
+        row["sample_age_days"] = sample_age
+        row["sample_recency_band"] = str(row.get("sample_recency_band") or sample_recency_band(sample_age))
+        row["is_beta_forecast"] = _safe_bool(row.get("is_beta_forecast"), default=True)
+
         return ForecastRecord.model_validate(row)
 
     def _latest_beach_day_env(self, beach_id: str) -> dict[str, float | None]:
@@ -350,12 +413,34 @@ class CuratedBeachRepository(BeachRepository):
             )
         }
 
+    def _active_advisory_beach_ids(self) -> set[str]:
+        if self.advisories_frame.empty or "status" not in self.advisories_frame.columns:
+            return set()
+        active = self.advisories_frame.loc[self.advisories_frame["status"] == "active"]
+        return {str(beach_id) for beach_id in active["beach_id"].dropna()}
+
+    def _has_active_advisory(self, beach_id: str) -> bool:
+        return beach_id in self._active_advisory_beach_ids()
+
+    def _advisory_override_drivers(self, drivers: object) -> list[str]:
+        base_drivers = [
+            driver for driver in _driver_list(drivers) if driver != OFFICIAL_ADVISORY_DRIVER
+        ]
+        return [OFFICIAL_ADVISORY_DRIVER, *base_drivers][:5]
+
     def _derived_forecast(self, beach_id: str, forecast_date: date) -> ForecastRecord:
         beach_obs = self._obs_for_beach(beach_id).copy()
         if beach_obs.empty:
             raise HTTPException(status_code=404, detail="Forecast data not available")
         beach_obs["sample_time"] = pd.to_datetime(beach_obs["sample_time"], errors="coerce")
         latest = beach_obs.sort_values("sample_time").iloc[-1]
+        sample_age = self._sample_age_days_from_value(latest["sample_time"], forecast_date)
+        recency_band = sample_recency_band(sample_age)
+        if recency_band in ("stale", "very_stale"):
+            raise HTTPException(
+                status_code=404,
+                detail="Forecast data not available because the latest sample is not fresh.",
+            )
         latest_value = float(latest["value"])
         ratio = max(latest_value / self.stv_threshold, 0.01)
         p_exceed = min(max(0.5 + 0.4 * (ratio - 1.0), 0.03), 0.97)
@@ -371,12 +456,19 @@ class CuratedBeachRepository(BeachRepository):
         storm = latest.get("storm_drain_flow")
         if storm and str(storm).lower() not in ("nan", "none", ""):
             drivers.append(f"Storm drain flow noted as {storm}")
+        model_risk_band = risk_band(p_exceed)
+        active_advisory = self._has_active_advisory(beach_id)
+        if active_advisory:
+            drivers = self._advisory_override_drivers(drivers)
 
         return ForecastRecord(
             beach_id=beach_id,
             forecast_date=forecast_date,
-            risk_band=risk_band(p_exceed),
+            risk_band="Very High" if active_advisory else model_risk_band,
+            model_risk_band=model_risk_band if active_advisory else None,
             p_exceed=float(p_exceed),
+            p_exceed_raw=float(p_exceed),
+            advisory_floor_applied=False,
             predicted_log_enterococcus=predicted_log,
             lower_prediction_interval=None,
             upper_prediction_interval=None,
@@ -384,8 +476,33 @@ class CuratedBeachRepository(BeachRepository):
             top_drivers=drivers[:3],
             model_version="derived-persistence-v0",
             forecast_generated_at=datetime.now(UTC),
+            official_advisory_active=active_advisory,
+            forecast_label_mode=(
+                "official_advisory_override" if active_advisory else "derived_persistence"
+            ),
+            sample_age_days=sample_age,
+            sample_recency_band=recency_band,
+            is_beta_forecast=True,
             environmental_summary=EnvironmentalSummary(),
         )
+
+    def _sample_age_days(self, beach_id: str, forecast_date_value: object) -> int | None:
+        if not (self.curated_dir / "beaches.parquet").exists() or self.beaches_frame.empty:
+            return None
+        rows = self.beaches_frame.loc[self.beaches_frame["beach_id"] == beach_id]
+        if rows.empty:
+            return None
+        return self._sample_age_days_from_value(
+            rows.iloc[0].get("latest_official_sample_at"),
+            forecast_date_value,
+        )
+
+    def _sample_age_days_from_value(self, sample_time: object, forecast_date_value: object) -> int | None:
+        sample_ts = pd.to_datetime(sample_time, errors="coerce")
+        forecast_ts = pd.to_datetime(forecast_date_value, errors="coerce")
+        if pd.isna(sample_ts) or pd.isna(forecast_ts):
+            return None
+        return max(0, int((forecast_ts.date() - sample_ts.date()).days))
 
     def get_observations(self, beach_id: str) -> ObservationResponse:
         beach_obs = self._obs_for_beach(beach_id)
@@ -471,6 +588,7 @@ class CuratedBeachRepository(BeachRepository):
 
         return SystemHealthResponse.model_validate({
             "app_env": os.getenv("APP_ENV", "development"),
+            "is_beta_product": True,
             "active_advisories_count": active_count,
             "forecast_audit": audit,
             "repository_mode": "parquet",

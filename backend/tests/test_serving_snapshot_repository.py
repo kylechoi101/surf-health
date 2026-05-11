@@ -7,7 +7,31 @@ import pandas as pd
 
 from app.data.pipeline.serving_snapshot import build_serving_snapshot
 from app.repositories.factory import build_repository
-from app.repositories.serving_repository import ServingSnapshotRepository
+from app.repositories.serving_repository import ServingSnapshotRepository, _safe_bool
+
+
+class TestSafeBool:
+    def test_true_values(self):
+        assert _safe_bool(True) is True
+        assert _safe_bool(1) is True
+        assert _safe_bool("1") is True
+        assert _safe_bool("true") is True
+        assert _safe_bool("True") is True
+        assert _safe_bool("yes") is True
+
+    def test_false_values(self):
+        assert _safe_bool(False) is False
+        assert _safe_bool(0) is False
+        assert _safe_bool("0") is False
+        assert _safe_bool("false") is False
+        assert _safe_bool("False") is False
+        assert _safe_bool("") is False
+
+    def test_none_default_true(self):
+        assert _safe_bool(None, default=True) is True
+
+    def test_none_default_false(self):
+        assert _safe_bool(None, default=False) is False
 
 
 def _write_curated_inputs(curated_dir):
@@ -64,8 +88,10 @@ def _write_curated_inputs(curated_dir):
                 "forecast_date": "2026-04-20",
                 "risk_band": "High",
                 "p_exceed": 0.72,
+                "p_exceed_raw": 0.18,
                 "p_exceed_lower": 0.61,
                 "p_exceed_upper": 0.84,
+                "advisory_floor_applied": True,
                 "predicted_log_enterococcus": 2.1,
                 "lower_prediction_interval": 1.3,
                 "upper_prediction_interval": 2.9,
@@ -181,6 +207,13 @@ def test_serving_snapshot_limits_hot_path_rows_and_repository_serves_contract(tm
     forecast = repository.get_forecast(beach_id, date(2026, 4, 20))
     assert forecast.risk_band == "Very High"
     assert forecast.official_advisory_active is True
+    assert forecast.model_risk_band == "Low"
+    assert forecast.forecast_label_mode == "official_advisory_override"
+    assert forecast.sample_age_days == 2
+    assert forecast.sample_recency_band == "fresh"
+    assert forecast.p_exceed == 0.72
+    assert forecast.p_exceed_raw == 0.18
+    assert forecast.advisory_floor_applied is True
     assert forecast.p_exceed_lower == 0.61
     assert forecast.p_exceed_upper == 0.84
     assert forecast.environmental_summary.wave_height_m == 1.2
@@ -195,6 +228,7 @@ def test_serving_snapshot_limits_hot_path_rows_and_repository_serves_contract(tm
     assert parents[0].has_active_advisory is True
 
     health = repository.get_system_health()
+    assert health.is_beta_product is True
     assert health.active_advisories_count == 1
     assert health.repository_mode == "sqlite"
 

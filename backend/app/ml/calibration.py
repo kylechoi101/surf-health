@@ -242,10 +242,10 @@ _VERY_HIGH_THRESHOLD = 0.70
 
 # Human-readable explanations shown in the app alongside each band.
 RISK_BAND_DESCRIPTIONS: dict[str, str] = {
-    "Low": "Water quality appears typical for this beach. Swim at your own discretion.",
-    "Moderate": "Slightly elevated risk. Conditions may be less ideal; consider checking again before swimming.",
-    "High": "Elevated risk — estimated exceedance probability is roughly 3× the average beach. Caution advised, especially for vulnerable groups.",
-    "Very High": "High likelihood of unsafe bacteria levels. Swimming is not recommended until conditions improve. This may be due to an active advisory or model prediction.",
+    "Low": "The model estimates typical conditions for this beach. Not an official advisory or lab result.",
+    "Moderate": "The model estimates slightly elevated exceedance probability. Not an official advisory or lab result.",
+    "High": "The model estimates elevated exceedance probability, roughly 3x the average beach. Not an official advisory or lab result.",
+    "Very High": "The model estimates a high exceedance probability; displayed risk may also reflect advisory status. Not an official advisory or lab result.",
 }
 
 

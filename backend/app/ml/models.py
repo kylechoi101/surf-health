@@ -65,8 +65,14 @@ def make_baselines(frame: pd.DataFrame) -> BaselineBundle:
         max_depth=6,
         max_iter=300,
         class_weight={0: 1.0, 1: 3.0},
+        random_state=42,
     )
-    tree_regressor = HistGradientBoostingRegressor(learning_rate=0.05, max_depth=6, max_iter=300)
+    tree_regressor = HistGradientBoostingRegressor(
+        learning_rate=0.05,
+        max_depth=6,
+        max_iter=300,
+        random_state=42,
+    )
 
     return BaselineBundle(
         logistic=logistic,

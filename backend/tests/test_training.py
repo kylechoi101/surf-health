@@ -5,6 +5,8 @@ import pandas as pd
 
 from app.data.pipeline.features import build_sliding_windows
 from app.ml.training import (
+    StageTwoTrainingPlan,
+    _TrainedModels,
     _best_valid_aucpr_model,
     _blocked_indices,
     _build_forecast_candidates,
@@ -15,12 +17,19 @@ from app.ml.training import (
     _metadata_with_groups,
     _predict_coastal_cell_logistic_raw,
     _predict_hierarchical_logistic_raw,
+    _positive_persistence_guarded_blend_probabilities,
+    _export_forecasts,
     _promotion_assessment,
+    _select_persistence_blend_alpha,
     _spatial_holdout_metrics,
     _spatial_backtest_metrics,
+    _spatially_qualified_production_winner,
+    _spatial_holdout_fold_result,
     _identity_or_calibrated,
     _split_conformal_half_width,
     _two_stage_training_plan,
+    _write_model_card,
+    SPATIAL_BACKTEST_MODEL_NAMES,
     train_all,
 )
 from app.ml.calibration import HierarchicalProbabilityCalibrator
@@ -53,6 +62,160 @@ def test_blocked_indices_keep_same_dates_in_same_split():
     assert train_dates.isdisjoint(test_dates)
     assert valid_dates.isdisjoint(test_dates)
     assert train_dates | valid_dates | test_dates == set(sample_dates)
+
+
+def test_select_persistence_blend_alpha_minimizes_validation_brier_conservatively():
+    labels = np.array([1, 1, 0, 0], dtype=float)
+    model_probs = np.array([0.9, 0.8, 0.7, 0.2], dtype=float)
+    persistence_probs = np.array([0.6, 0.6, 0.4, 0.4], dtype=float)
+
+    alpha = _select_persistence_blend_alpha(
+        labels,
+        model_probs,
+        persistence_probs,
+        alphas=[0.0, 0.5, 1.0],
+    )
+
+    assert alpha == 0.5
+
+
+def test_select_persistence_blend_alpha_respects_model_weight_cap():
+    alpha = _select_persistence_blend_alpha(
+        np.array([1, 0], dtype=float),
+        np.array([1, 0], dtype=float),
+        np.array([0, 1], dtype=float),
+        alphas=[0.0, 0.6, 1.0],
+        max_alpha=0.6,
+    )
+
+    assert alpha == 0.6
+
+
+def test_positive_persistence_guarded_blend_keeps_prior_exceedances_at_one():
+    model_probs = np.array([0.2, 0.8, 0.4, 0.9], dtype=float)
+    persistence_probs = np.array([1.0, 0.0, 1.0, 0.0], dtype=float)
+
+    guarded = _positive_persistence_guarded_blend_probabilities(
+        model_probs,
+        persistence_probs,
+        alpha=0.5,
+    )
+
+    assert guarded.tolist() == [1.0, 0.4, 1.0, 0.45]
+
+
+def test_export_forecasts_uses_guarded_probabilities_for_beta_serving_candidate(
+    monkeypatch, tmp_path
+):
+    class FixedClassifier:
+        def predict_proba(self, frame):
+            return np.column_stack(
+                [np.full(len(frame), 0.8, dtype=float), np.full(len(frame), 0.2, dtype=float)]
+            )
+
+    class FixedRegressor:
+        def predict(self, frame):
+            return np.full(len(frame), 1.7, dtype=float)
+
+    curated_dir = tmp_path / "curated"
+    curated_dir.mkdir()
+    (curated_dir / "system_health.json").write_text("{}")
+    frame = pd.DataFrame(
+        [
+            {
+                "beach_id": "alpha",
+                "sample_date": f"2026-04-{day:02d}",
+                "sample_time": f"2026-04-{day:02d}T08:00:00+00:00",
+                "enterococcus_value": 180.0,
+                "exceeds_stv": 1,
+                "wave_height_m": 1.0,
+                "dominant_period_s": 8.0,
+                "water_temperature_c": 16.0,
+                "salinity_psu": 33.0,
+                "uv_index": 5.0,
+                "wind_speed_mps": 3.0,
+                "tidal_height": 1.0,
+                "surf_height_observed": 2.0,
+                "turbidity_observed": 5.0,
+            }
+            for day in (17, 18, 19)
+        ]
+    )
+    features = pd.DataFrame({"enterococcus_value_last_obs": [80.0, 180.0, 180.0]})
+    forecast_features = pd.DataFrame({"enterococcus_value_last_obs": [180.0]})
+    forecast_metadata = pd.DataFrame({"beach_id": ["alpha"], "sample_date": [pd.Timestamp("2026-04-20")]})
+
+    monkeypatch.setattr(
+        "app.ml.training.build_inference_features",
+        lambda inference_input: type(
+            "Inference",
+            (),
+            {"feature_frame": forecast_features, "metadata": forecast_metadata},
+        )(),
+    )
+    monkeypatch.setattr("app.ml.training._inject_agent_features", lambda features, *args: features)
+    monkeypatch.setattr(
+        "app.ml.training._compute_local_drivers",
+        lambda *args, **kwargs: [["elevated bacteria in recent sample"]],
+    )
+    monkeypatch.setattr("app.ml.training._split_conformal_half_width", lambda *args: None)
+    monkeypatch.setattr("app.ml.training._write_model_card", lambda *args: None)
+
+    _export_forecasts(
+        curated_dir=curated_dir,
+        forecast_date=date(2026, 4, 20),
+        frame=frame,
+        full_frame=frame,
+        features=features,
+        densities=np.array([1.0, 1.1, 1.2]),
+        valid_idx=np.array([0, 1]),
+        test_idx=np.array([2]),
+        stations=pd.DataFrame(
+            [
+                {
+                    "beach_id": "alpha",
+                    "county": "Orange",
+                    "region": "South Coast",
+                    "latitude": 33.0,
+                    "longitude": -117.0,
+                    "zip_code": "92651",
+                }
+            ]
+        ),
+        uv_daily=pd.DataFrame(),
+        advisories=pd.DataFrame(),
+        models=_TrainedModels(
+            winner="hist_gbm_positive_persistence_guard",
+            tree_classifier=FixedClassifier(),
+            tree_calibrator=None,
+            classifier=FixedClassifier(),
+            calibrator=None,
+            logistic=None,
+            logistic_calibrator=None,
+            coastal_cell_logistic=None,
+            hierarchical_logistic=None,
+            ensemble_weights=None,
+            regressor=FixedRegressor(),
+            regressor_valid_predictions=np.array([1.0, 1.1]),
+        ),
+        plan=StageTwoTrainingPlan(
+            production_winner="hist_gbm_positive_persistence_guard",
+            research_winner="hist_gbm_positive_persistence_guard",
+            spatial_backtest_models=["hist_gbm_positive_persistence_guard"],
+        ),
+        metrics={"hist_gbm_positive_persistence_guard": {}, "hist_gbm_positive_persistence_guard_valid": {}},
+        model_types_to_run=[],
+        spatial_backtests=False,
+        spatial_backtest_models=["hist_gbm_positive_persistence_guard"],
+        spatial_strategy="shortlist",
+    )
+
+    forecasts = pd.read_parquet(curated_dir / "forecasts.parquet")
+
+    assert forecasts.loc[0, "p_exceed"] == 1.0
+    assert forecasts.loc[0, "risk_band"] == "Very High"
+    assert forecasts.loc[0, "forecast_label_mode"] == "model"
+    assert bool(forecasts.loc[0, "is_beta_forecast"]) is True
 
 
 def test_blocked_indices_handles_timestamp_metadata_from_feature_builder():
@@ -307,13 +470,84 @@ def test_spatial_backtests_emit_beach_and_county_metrics():
     )
 
     assert "spatial_beach_hist_gbm" in metrics
+    assert "spatial_beach_hist_gbm_persistence_blend" in metrics
+    assert "spatial_beach_hist_gbm_positive_persistence_guard" in metrics
+    assert "spatial_beach_hist_gbm_no_bacteria_weather_delta" in metrics
     assert "spatial_beach_logistic_coastal_cells" in metrics
     assert "spatial_county_hist_gbm" in metrics
+    assert "spatial_county_hist_gbm_persistence_blend" in metrics
+    assert "spatial_county_hist_gbm_positive_persistence_guard" in metrics
+    assert "spatial_county_hist_gbm_no_bacteria_weather_delta" in metrics
     assert "spatial_county_logistic_coastal_cells" in metrics
     assert metrics["spatial_beach_hist_gbm"]["folds"] >= 1.0
     assert metrics["spatial_county_hist_gbm"]["folds"] >= 1.0
     assert 0.0 <= metrics["spatial_beach_hist_gbm"]["aucpr"] <= 1.0
     assert not np.isnan(metrics["spatial_county_logistic"]["brier"])
+
+
+def test_no_bacteria_weather_delta_fold_excludes_bacteria_history(monkeypatch):
+    rows = []
+    for county, beach_id, offset in (
+        ("San Diego", "alpha", 0),
+        ("San Diego", "beta", 1),
+        ("Orange", "gamma", 2),
+        ("Orange", "delta", 3),
+    ):
+        for day in range(1, 13):
+            rows.append(
+                {
+                    "county": county,
+                    "beach_id": beach_id,
+                    "sample_date": pd.Timestamp(f"2026-04-{day:02d}"),
+                    "enterococcus_value_last_obs": float(40 + day + offset),
+                    "enterococcus_geomean_42d_lagged": float(30 + day + offset),
+                    "precip_mm_24h": float(day % 4),
+                    "wave_height_m_last_obs": float(0.5 + offset * 0.1),
+                }
+            )
+    metadata = pd.DataFrame(rows)
+    features = metadata[
+        [
+            "enterococcus_value_last_obs",
+            "enterococcus_geomean_42d_lagged",
+            "precip_mm_24h",
+            "wave_height_m_last_obs",
+        ]
+    ]
+    labels = np.array([(idx % 5) == 0 for idx in range(len(features))], dtype=float)
+    seen_columns: list[list[str]] = []
+
+    class RecordingClassifier:
+        def fit(self, frame, labels):
+            seen_columns.append(list(frame.columns))
+            return self
+
+        def predict_proba(self, frame):
+            seen_columns.append(list(frame.columns))
+            probabilities = np.clip(0.2 + frame["precip_mm_24h"].to_numpy(dtype=float) * 0.05, 0.05, 0.95)
+            return np.column_stack([1.0 - probabilities, probabilities])
+
+    monkeypatch.setattr(
+        "app.ml.training._fit_classifier_for_name",
+        lambda frame, model_name: RecordingClassifier(),
+    )
+
+    result = _spatial_holdout_fold_result(
+        features,
+        labels,
+        metadata,
+        model_name="hist_gbm_no_bacteria_weather_delta",
+        group_column="beach_id",
+        group_value="alpha",
+        stv_threshold=104.0,
+        min_rows=3,
+    )
+
+    assert result is not None
+    assert seen_columns
+    for columns in seen_columns:
+        assert "enterococcus_value_last_obs" not in columns
+        assert "enterococcus_geomean_42d_lagged" not in columns
 
 
 def test_spatial_backtests_can_limit_stage_two_models():
@@ -457,7 +691,13 @@ def test_two_stage_training_plan_shortlists_production_and_research_winners():
 
     assert plan.production_winner == "hist_gbm"
     assert plan.research_winner == "transformer"
-    assert plan.spatial_backtest_models == ["hist_gbm", "transformer"]
+    assert plan.spatial_backtest_models == [
+        "hist_gbm",
+        "transformer",
+        "hist_gbm_positive_persistence_guard",
+        "hist_gbm_persistence_blend",
+        "hist_gbm_no_bacteria_weather_delta",
+    ]
 
 
 def test_two_stage_training_plan_picks_by_aucpr_not_brier():
@@ -674,3 +914,171 @@ def test_promotion_assessment_blocks_release_when_county_holdout_lags_persistenc
 
     assert promotion["public_release_eligible"] is False
     assert "Held-out county AUCPR does not beat persistence." in promotion["promotion_blockers"]
+
+
+def test_spatially_qualified_winner_vetoes_temporal_winner_for_guard_candidate():
+    metrics = {
+        "hist_gbm_valid": {"aucpr": 0.85, "brier": 0.12},
+        "hist_gbm_positive_persistence_guard_valid": {"aucpr": 0.63, "brier": 0.17},
+        "spatial_county_persistence": {"aucpr": 0.57, "brier": 0.138},
+        "spatial_beach_persistence": {"aucpr": 0.72, "brier": 0.201},
+        "spatial_county_hist_gbm": {"aucpr": 0.60, "brier": 0.142},
+        "spatial_beach_hist_gbm": {"aucpr": 0.90, "brier": 0.109},
+        "spatial_county_hist_gbm_positive_persistence_guard": {
+            "aucpr": 0.65,
+            "brier": 0.126,
+        },
+        "spatial_beach_hist_gbm_positive_persistence_guard": {
+            "aucpr": 0.78,
+            "brier": 0.159,
+        },
+    }
+
+    winner = _spatially_qualified_production_winner(
+        metrics,
+        preferred="hist_gbm",
+        candidates=("hist_gbm", "hist_gbm_positive_persistence_guard"),
+    )
+
+    assert winner == "hist_gbm_positive_persistence_guard"
+
+
+def test_spatial_backtest_models_do_not_duplicate_production_guard_candidate():
+    assert len(SPATIAL_BACKTEST_MODEL_NAMES) == len(set(SPATIAL_BACKTEST_MODEL_NAMES))
+
+
+def test_model_card_reports_spatial_metrics_for_production_model(tmp_path):
+    _write_model_card(
+        tmp_path,
+        {
+            "pipeline_freshness": "2026-05-10T16:47:37+00:00",
+            "model_registry": {
+                "production_model": "hist-gbm-positive-persistence-guard-curated-v0",
+                "deployment_stage": "candidate_ready",
+                "public_release_eligible": True,
+                "promotion_blockers": [],
+                "production_metrics": {"aucpr": 0.25, "brier": 0.13},
+                "validation_metrics": {"aucpr": 0.63, "brier": 0.17},
+                "spatial_metrics": {
+                    "spatial_county_hist_gbm": {"aucpr": 0.59, "brier": 0.142},
+                    "spatial_county_hist_gbm_positive_persistence_guard": {
+                        "aucpr": 0.655,
+                        "brier": 0.127,
+                    },
+                    "spatial_county_persistence": {"aucpr": 0.574, "brier": 0.139},
+                },
+                "metrics": {},
+            },
+        },
+    )
+
+    card = (tmp_path / "model_card.md").read_text()
+
+    assert "**Spatial county AUCPR**: 0.655" in card
+
+
+def test_export_forecasts_applies_advisory_safety_floor(monkeypatch, tmp_path):
+    from app.ml.training import _export_forecasts, _TrainedModels, StageTwoTrainingPlan
+    class FixedClassifier:
+        def predict_proba(self, frame):
+            return np.column_stack(
+                [np.full(len(frame), 0.8, dtype=float), np.full(len(frame), 0.2, dtype=float)]
+            )
+
+    class FixedRegressor:
+        def predict(self, frame):
+            return np.full(len(frame), 1.7, dtype=float)
+
+    curated_dir = tmp_path / "curated"
+    curated_dir.mkdir()
+    (curated_dir / "system_health.json").write_text("{}")
+    
+    candidates = pd.DataFrame([
+        {"beach_id": "acute_active", "advisory_active_recent_for_floor": 1},
+        {"beach_id": "chronic_active", "advisory_active_recent_for_floor": 1},
+        {"beach_id": "stale_active", "advisory_active_recent_for_floor": 0},
+    ])
+    monkeypatch.setattr("app.ml.training._build_forecast_candidates", lambda *args, **kwargs: (pd.DataFrame(), candidates))
+    
+    features = pd.DataFrame({"enterococcus_value_last_obs": [180.0, 180.0, 180.0]})
+    forecast_features = pd.DataFrame({"enterococcus_value_last_obs": [180.0, 180.0, 180.0], "advisory_active_recent_for_floor": [1, 1, 0]})
+    forecast_metadata = pd.DataFrame({"beach_id": ["acute_active", "chronic_active", "stale_active"], "sample_date": [pd.Timestamp("2026-04-20")]*3})
+
+    monkeypatch.setattr(
+        "app.ml.training.build_inference_features",
+        lambda inference_input: type(
+            "Inference",
+            (),
+            {"feature_frame": forecast_features, "metadata": forecast_metadata},
+        )(),
+    )
+    monkeypatch.setattr("app.ml.training._inject_agent_features", lambda features, *args: features)
+    monkeypatch.setattr(
+        "app.ml.training._compute_local_drivers",
+        lambda *args, **kwargs: [["mock driver"]]*3,
+    )
+    monkeypatch.setattr("app.ml.training._split_conformal_half_width", lambda *args: None)
+    monkeypatch.setattr("app.ml.training._write_model_card", lambda *args: None)
+
+    _export_forecasts(
+        curated_dir=curated_dir,
+        forecast_date=date(2026, 4, 20),
+        frame=pd.DataFrame(),
+        full_frame=pd.DataFrame(),
+        features=features,
+        densities=np.array([1.0, 1.1, 1.2]),
+        valid_idx=np.array([0, 1]),
+        test_idx=np.array([2]),
+        stations=pd.DataFrame(
+            [
+                {
+                    "beach_id": bid,
+                    "county": "Orange",
+                    "region": "South Coast",
+                    "latitude": 33.0,
+                    "longitude": -117.0,
+                    "zip_code": "92651",
+                } for bid in ["acute_active", "chronic_active", "stale_active"]
+            ]
+        ),
+        uv_daily=pd.DataFrame(),
+        advisories=pd.DataFrame(),
+        models=_TrainedModels(
+            winner="baseline",
+            tree_classifier=FixedClassifier(),
+            tree_calibrator=None,
+            classifier=FixedClassifier(),
+            calibrator=None,
+            logistic=None,
+            logistic_calibrator=None,
+            coastal_cell_logistic=None,
+            hierarchical_logistic=None,
+            ensemble_weights=None,
+            regressor=FixedRegressor(),
+            regressor_valid_predictions=np.array([1.0, 1.1]),
+        ),
+        plan=StageTwoTrainingPlan(
+            production_winner="baseline",
+            research_winner="baseline",
+            spatial_backtest_models=[],
+        ),
+        metrics={"baseline": {}},
+        model_types_to_run=[],
+        spatial_backtests=False,
+        spatial_backtest_models=[],
+        spatial_strategy="shortlist",
+    )
+
+    forecasts = pd.read_parquet(curated_dir / "forecasts.parquet")
+
+    assert forecasts.loc[forecasts["beach_id"] == "acute_active", "p_exceed"].iloc[0] == 0.3
+    assert forecasts.loc[forecasts["beach_id"] == "acute_active", "p_exceed_raw"].iloc[0] == 0.2
+    assert bool(forecasts.loc[forecasts["beach_id"] == "acute_active", "advisory_floor_applied"].iloc[0]) is True
+    
+    assert forecasts.loc[forecasts["beach_id"] == "chronic_active", "p_exceed"].iloc[0] == 0.3
+    assert forecasts.loc[forecasts["beach_id"] == "chronic_active", "p_exceed_raw"].iloc[0] == 0.2
+    assert bool(forecasts.loc[forecasts["beach_id"] == "chronic_active", "advisory_floor_applied"].iloc[0]) is True
+    
+    assert forecasts.loc[forecasts["beach_id"] == "stale_active", "p_exceed"].iloc[0] == 0.2
+    assert forecasts.loc[forecasts["beach_id"] == "stale_active", "p_exceed_raw"].iloc[0] == 0.2
+    assert bool(forecasts.loc[forecasts["beach_id"] == "stale_active", "advisory_floor_applied"].iloc[0]) is False

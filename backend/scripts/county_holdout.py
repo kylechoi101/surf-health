@@ -7,7 +7,6 @@ Run from backend/:
 import sys
 sys.path.insert(0, ".")
 
-import numpy as np
 import pandas as pd
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.metrics import average_precision_score

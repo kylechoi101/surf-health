@@ -8,6 +8,25 @@ from pydantic import BaseModel, Field
 
 RiskBand = Literal["Low", "Moderate", "High", "Very High"]
 SupportStatus = Literal["production", "beta", "unsupported"]
+ForecastLabelMode = Literal[
+    "model",
+    "official_advisory_override",
+    "derived_persistence",
+    "unavailable",
+]
+SampleRecencyBand = Literal["fresh", "recent", "stale", "very_stale", "unknown"]
+
+
+def sample_recency_band(sample_age_days: int | None) -> SampleRecencyBand:
+    if sample_age_days is None:
+        return "unknown"
+    if sample_age_days <= 3:
+        return "fresh"
+    if sample_age_days <= 20:
+        return "recent"
+    if sample_age_days <= 60:
+        return "stale"
+    return "very_stale"
 
 
 class Point(BaseModel):
@@ -56,7 +75,9 @@ class ForecastRecord(BaseModel):
     beach_id: str
     forecast_date: date
     risk_band: RiskBand
+    model_risk_band: RiskBand | None = None
     p_exceed: float = Field(ge=0.0, le=1.0)
+    p_exceed_raw: float | None = Field(default=None, ge=0.0, le=1.0)
     p_exceed_lower: float | None = Field(default=None, ge=0.0, le=1.0)
     p_exceed_upper: float | None = Field(default=None, ge=0.0, le=1.0)
     predicted_log_enterococcus: float | None = None
@@ -68,6 +89,11 @@ class ForecastRecord(BaseModel):
     forecast_generated_at: datetime
     forecast_age_hours: int | None = None
     official_advisory_active: bool = False
+    advisory_floor_applied: bool = False
+    forecast_label_mode: ForecastLabelMode = "model"
+    sample_age_days: int | None = Field(default=None, ge=0)
+    sample_recency_band: SampleRecencyBand = "unknown"
+    is_beta_forecast: bool = True
     environmental_summary: EnvironmentalSummary = Field(default_factory=EnvironmentalSummary)
 
 
@@ -96,6 +122,7 @@ class ObservationResponse(BaseModel):
 
 class SystemHealthResponse(BaseModel):
     app_env: str
+    is_beta_product: bool = True
     pipeline_freshness: str
     source_freshness: dict[str, str]
     model_registry: dict[str, Any]

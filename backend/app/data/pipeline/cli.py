@@ -420,7 +420,6 @@ def main() -> None:
             from datetime import date as _date
             from app.data.connectors.hydrology_sources import (
                 UsgsNwisConnector,
-                CnrfcObservedPrecipConnector,
                 OpenMeteoHistoricalPrecipConnector,
             )
             from app.data.pipeline.hydrography import build_hydrologic_beach_links

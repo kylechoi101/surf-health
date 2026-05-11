@@ -26,12 +26,12 @@ from app.data.pipeline.features import (
     STORMWATER_EXPERT_NUMERIC_COLUMNS,
     SlidingWindowDataset,
     build_inference_features,
-    build_inference_windows,
     build_sliding_windows,
 )
 from app.ml.calibration import (
     HierarchicalProbabilityCalibrator,
     ProbabilityCalibrator,
+    _HIGH_THRESHOLD,
     _VERY_HIGH_THRESHOLD as _CAL_VERY_HIGH,
     risk_band,
 )
@@ -45,14 +45,37 @@ from app.ml.models import (
     BeachPINN_MultiTask, 
     make_baselines
 )
+from app.ml.weather_delta import (
+    clip_weather_delta,
+    fit_smoothed_rate_prior,
+    select_delta_cap,
+    select_no_bacteria_features,
+)
+from app.schemas.domain import sample_recency_band
 
 MIN_PLAUSIBLE_SAMPLE_TIME = pd.Timestamp("2000-01-01")
 MAX_FUTURE_SAMPLE_LEEWAY_DAYS = 2
 COASTAL_CELL_MIN_BEACHES_PER_CLUSTER = 24
 COASTAL_CELL_MAX_CLUSTERS = 8
-PRODUCTION_MODEL_NAMES = ("logistic", "logistic_coastal_cells", "logistic_hierarchical", "hist_gbm", "stacked_ensemble")
+PRODUCTION_MODEL_NAMES = (
+    "logistic",
+    "logistic_coastal_cells",
+    "logistic_hierarchical",
+    "hist_gbm",
+    "hist_gbm_positive_persistence_guard",
+    "stacked_ensemble",
+)
 SEQUENCE_MODEL_NAMES = ("tcn", "cnn", "lstm", "transformer", "pinn")
+SPATIAL_DIAGNOSTIC_MODEL_NAMES = (
+    "hist_gbm_persistence_blend",
+    "hist_gbm_no_bacteria_weather_delta",
+)
+SPATIAL_BACKTEST_MODEL_NAMES = (*PRODUCTION_MODEL_NAMES, *SPATIAL_DIAGNOSTIC_MODEL_NAMES)
 SPATIAL_BACKTEST_STRATEGIES = ("shortlist", "requested", "quick")
+PERSISTENCE_BLEND_ALPHAS = tuple(float(alpha) for alpha in np.linspace(0.0, 1.0, 11))
+PERSISTENCE_BLEND_MAX_MODEL_ALPHA = 0.6
+WEATHER_DELTA_CAPS = tuple(float(cap) for cap in np.linspace(0.0, 0.3, 7))
+WEATHER_DELTA_MAX_BLEND_ALPHA = 0.7
 COASTAL_CELL_FEATURE_COLUMNS = [
     "coastal_x_km",
     "coastal_y_km",
@@ -407,6 +430,51 @@ def _persistence_probabilities(features: pd.DataFrame, stv_threshold: float) -> 
     if last_obs is None:
         return np.zeros(len(features), dtype=float)
     return last_obs.fillna(0.0).gt(stv_threshold).astype(float).to_numpy()
+
+
+def _blend_probabilities(
+    model_probabilities: np.ndarray,
+    persistence_probabilities: np.ndarray,
+    alpha: float,
+) -> np.ndarray:
+    return alpha * np.asarray(model_probabilities, dtype=float) + (1.0 - alpha) * np.asarray(
+        persistence_probabilities, dtype=float
+    )
+
+
+def _positive_persistence_guarded_blend_probabilities(
+    model_probabilities: np.ndarray,
+    persistence_probabilities: np.ndarray,
+    alpha: float,
+) -> np.ndarray:
+    blended = _blend_probabilities(model_probabilities, persistence_probabilities, alpha)
+    persistence = np.asarray(persistence_probabilities, dtype=float)
+    return np.where(persistence >= 0.5, 1.0, blended)
+
+
+def _select_persistence_blend_alpha(
+    labels: np.ndarray,
+    model_probabilities: np.ndarray,
+    persistence_probabilities: np.ndarray,
+    *,
+    alphas: list[float] | tuple[float, ...] = PERSISTENCE_BLEND_ALPHAS,
+    max_alpha: float | None = None,
+) -> float:
+    labels = np.asarray(labels, dtype=float)
+    candidate_alphas = [
+        float(alpha)
+        for alpha in alphas
+        if max_alpha is None or float(alpha) <= max_alpha
+    ]
+    if not candidate_alphas:
+        candidate_alphas = [float(max_alpha or 0.0)]
+
+    def score(alpha: float) -> tuple[float, float]:
+        blended = _blend_probabilities(model_probabilities, persistence_probabilities, alpha)
+        brier = float(np.mean((blended - labels) ** 2))
+        return brier, alpha
+
+    return min(candidate_alphas, key=score)
 
 
 def _metadata_with_groups(
@@ -974,14 +1042,109 @@ def _spatial_holdout_fold_result(
         from sklearn.metrics import average_precision_score
         aucs = []
         for v in [log_val, cc_val, h_val, gbm_val]:
-            try: aucs.append(average_precision_score(labels[inner_valid_rows], v))
-            except: aucs.append(0.0)
+            try:
+                aucs.append(average_precision_score(labels[inner_valid_rows], v))
+            except ValueError:
+                aucs.append(0.0)
         _aucs = np.array(aucs)
         _s = _aucs.sum()
         w = _aucs / _s if _s > 0 else np.full(4, 0.25)
 
         test_probabilities = log_test * w[0] + cc_test * w[1] + h_test * w[2] + gbm_test * w[3]
         return labels[test_rows], test_probabilities
+
+    if model_name == "hist_gbm_persistence_blend":
+        classifier = _fit_classifier_for_name(features, "hist_gbm")
+        classifier.fit(features.iloc[inner_train_rows], labels[inner_train_rows])
+        valid_raw = classifier.predict_proba(features.iloc[inner_valid_rows])[:, 1]
+        _, calibrator = _identity_or_calibrated(
+            valid_raw,
+            labels[inner_valid_rows],
+            metadata.iloc[inner_valid_rows].reset_index(drop=True),
+        )
+        valid_probabilities = _apply_calibrator(
+            calibrator,
+            valid_raw,
+            metadata.iloc[inner_valid_rows].reset_index(drop=True),
+        )
+        test_probabilities = classifier.predict_proba(features.iloc[test_rows])[:, 1]
+        test_probabilities = _apply_calibrator(
+            calibrator,
+            test_probabilities,
+            metadata.iloc[test_rows].reset_index(drop=True),
+        )
+        persistence = _persistence_probabilities(features, stv_threshold)
+        alpha = _select_persistence_blend_alpha(
+            labels[inner_valid_rows],
+            valid_probabilities,
+            persistence[inner_valid_rows],
+            max_alpha=PERSISTENCE_BLEND_MAX_MODEL_ALPHA,
+        )
+        return labels[test_rows], _blend_probabilities(test_probabilities, persistence[test_rows], alpha)
+
+    if model_name == "hist_gbm_positive_persistence_guard":
+        classifier = _fit_classifier_for_name(features, "hist_gbm")
+        classifier.fit(features.iloc[inner_train_rows], labels[inner_train_rows])
+        valid_raw = classifier.predict_proba(features.iloc[inner_valid_rows])[:, 1]
+        _, calibrator = _identity_or_calibrated(
+            valid_raw,
+            labels[inner_valid_rows],
+            metadata.iloc[inner_valid_rows].reset_index(drop=True),
+        )
+        test_probabilities = classifier.predict_proba(features.iloc[test_rows])[:, 1]
+        test_probabilities = _apply_calibrator(
+            calibrator,
+            test_probabilities,
+            metadata.iloc[test_rows].reset_index(drop=True),
+        )
+        persistence = _persistence_probabilities(features, stv_threshold)
+        return labels[test_rows], _positive_persistence_guarded_blend_probabilities(
+            test_probabilities,
+            persistence[test_rows],
+            PERSISTENCE_BLEND_MAX_MODEL_ALPHA,
+        )
+
+    if model_name == "hist_gbm_no_bacteria_weather_delta":
+        no_bacteria_features = select_no_bacteria_features(features)
+        if no_bacteria_features.empty or no_bacteria_features.shape[1] == 0:
+            return None
+        classifier = _fit_classifier_for_name(no_bacteria_features, "hist_gbm")
+        classifier.fit(no_bacteria_features.iloc[inner_train_rows], labels[inner_train_rows])
+        valid_raw = classifier.predict_proba(no_bacteria_features.iloc[inner_valid_rows])[:, 1]
+        _, calibrator = _identity_or_calibrated(
+            valid_raw,
+            labels[inner_valid_rows],
+            metadata.iloc[inner_valid_rows].reset_index(drop=True),
+        )
+        valid_weather = _apply_calibrator(
+            calibrator,
+            valid_raw,
+            metadata.iloc[inner_valid_rows].reset_index(drop=True),
+        )
+        test_weather = classifier.predict_proba(no_bacteria_features.iloc[test_rows])[:, 1]
+        test_weather = _apply_calibrator(
+            calibrator,
+            test_weather,
+            metadata.iloc[test_rows].reset_index(drop=True),
+        )
+        prior = fit_smoothed_rate_prior(labels, metadata, inner_train_rows)
+        valid_prior = prior.predict(metadata.iloc[inner_valid_rows].reset_index(drop=True))
+        test_prior = prior.predict(metadata.iloc[test_rows].reset_index(drop=True))
+        max_delta = select_delta_cap(
+            labels[inner_valid_rows],
+            valid_weather,
+            valid_prior,
+            caps=WEATHER_DELTA_CAPS,
+        )
+        valid_gap_fill = clip_weather_delta(valid_weather, valid_prior, max_delta=max_delta)
+        alpha = _select_persistence_blend_alpha(
+            labels[inner_valid_rows],
+            valid_gap_fill,
+            valid_prior,
+            max_alpha=WEATHER_DELTA_MAX_BLEND_ALPHA,
+        )
+        test_gap_fill = clip_weather_delta(test_weather, test_prior, max_delta=max_delta)
+        return labels[test_rows], _blend_probabilities(test_gap_fill, test_prior, alpha)
 
     classifier = _fit_classifier_for_name(features, model_name)
     classifier.fit(features.iloc[inner_train_rows], labels[inner_train_rows])
@@ -1101,7 +1264,7 @@ def _spatial_backtest_metrics(
     metrics: dict[str, dict[str, float]] = {}
     selected_model_names = model_names_to_run
     if selected_model_names is None:
-        selected_model_names = [*PRODUCTION_MODEL_NAMES]
+        selected_model_names = [*SPATIAL_BACKTEST_MODEL_NAMES]
         if model_types_to_run:
             selected_model_names.extend(
                 model_name for model_name in model_types_to_run if model_name in SEQUENCE_MODEL_NAMES
@@ -1109,7 +1272,10 @@ def _spatial_backtest_metrics(
 
     normalized_model_names: list[str] = []
     for model_name in ["persistence", *selected_model_names]:
-        if model_name != "persistence" and model_name not in PRODUCTION_MODEL_NAMES and model_name not in SEQUENCE_MODEL_NAMES:
+        is_supported_spatial_model = (
+            model_name in SPATIAL_BACKTEST_MODEL_NAMES or model_name in SEQUENCE_MODEL_NAMES
+        )
+        if model_name != "persistence" and not is_supported_spatial_model:
             continue
         if model_name not in normalized_model_names:
             normalized_model_names.append(model_name)
@@ -1579,11 +1745,58 @@ def _two_stage_training_plan(
     for model_name in (production_winner, research_winner):
         if model_name not in spatial_backtest_models:
             spatial_backtest_models.append(model_name)
+    if "hist_gbm_positive_persistence_guard" not in spatial_backtest_models:
+        spatial_backtest_models.append("hist_gbm_positive_persistence_guard")
+    if "hist_gbm_persistence_blend" not in spatial_backtest_models:
+        spatial_backtest_models.append("hist_gbm_persistence_blend")
+    if "hist_gbm_no_bacteria_weather_delta" not in spatial_backtest_models:
+        spatial_backtest_models.append("hist_gbm_no_bacteria_weather_delta")
     return StageTwoTrainingPlan(
         production_winner=production_winner,
         research_winner=research_winner,
         spatial_backtest_models=spatial_backtest_models,
     )
+
+
+def _spatially_qualified_production_winner(
+    metrics: dict[str, dict[str, float]],
+    *,
+    preferred: str,
+    candidates: list[str] | tuple[str, ...] = PRODUCTION_MODEL_NAMES,
+) -> str:
+    """Veto a temporal winner when spatial promotion gates reject it.
+
+    Temporal AUCPR is useful for ranking signal, but serving probabilities must
+    first clear the held-out county and beach persistence gates. Prefer the
+    positive persistence guard as the first conservative fallback because it is
+    designed to fail closed on recent confirmed exceedances.
+    """
+    if not any(name.startswith("spatial_") for name in metrics):
+        return preferred
+    if _promotion_assessment(metrics, preferred)["public_release_eligible"]:
+        return preferred
+
+    fallback_order = ["hist_gbm_positive_persistence_guard"]
+    for model_name in fallback_order:
+        if model_name in candidates and _promotion_assessment(metrics, model_name)["public_release_eligible"]:
+            return model_name
+
+    passing = [
+        model_name
+        for model_name in candidates
+        if _promotion_assessment(metrics, model_name)["public_release_eligible"]
+    ]
+    if not passing:
+        return preferred
+
+    def _key(model_name: str) -> tuple[float, float]:
+        valid = metrics.get(f"{model_name}_valid", {})
+        county = metrics.get(f"spatial_county_{model_name}", {})
+        beach = metrics.get(f"spatial_beach_{model_name}", {})
+        spatial_brier = float(county.get("brier", 1.0)) + float(beach.get("brier", 1.0))
+        return (-float(valid.get("aucpr", 0.0)), spatial_brier)
+
+    return min(passing, key=_key)
 
 
 def _promotion_assessment(
@@ -1643,6 +1856,14 @@ def _registry_model_version(model_name: str) -> str:
     return f"{model_name.replace('_', '-')}-curated-v0"
 
 
+def _model_key_from_registry_version(model_version: object) -> str:
+    model_key = str(model_version or "")
+    suffix = "-curated-v0"
+    if model_key.endswith(suffix):
+        model_key = model_key[: -len(suffix)]
+    return model_key.replace("-", "_")
+
+
 def _forecast_model_version(model_name: str, scope: str = "global") -> str:
     if model_name == "logistic_hierarchical":
         return f"logistic-{scope}-curated-v0"
@@ -1661,6 +1882,9 @@ def _write_model_card(curated_dir: Path, health_payload: dict) -> None:
     valid = model_registry.get("validation_metrics") or {}
     spatial = model_registry.get("spatial_metrics") or {}
     all_metrics = model_registry.get("metrics") or {}
+    production_model_key = _model_key_from_registry_version(production_model)
+    active_only = all_metrics.get(f"{production_model_key}_test_active_only") or {}
+    county_spatial = spatial.get(f"spatial_county_{production_model_key}") or {}
 
     def _fmt(x: object) -> str:
         try:
@@ -1692,16 +1916,16 @@ def _write_model_card(curated_dir: Path, health_payload: dict) -> None:
             f"- **Calibration slope**: {_fmt(prod.get('calibration_slope'))}",
             "",
             "### Deployment (active stations only; recency-filtered roster)",
-            f"- **AUCPR**: {_fmt((all_metrics.get('hist_gbm_test_active_only') or {}).get('aucpr'))}",
-            f"- **Brier**: {_fmt((all_metrics.get('hist_gbm_test_active_only') or {}).get('brier'))}",
-            f"- **n_samples**: {int((all_metrics.get('hist_gbm_test_active_only') or {}).get('n_samples') or 0)}",
+            f"- **AUCPR**: {_fmt(active_only.get('aucpr'))}",
+            f"- **Brier**: {_fmt(active_only.get('brier'))}",
+            f"- **n_samples**: {int(active_only.get('n_samples') or 0)}",
             "",
             "### Validation (calibration/training-time slice; not a public headline)",
             f"- **AUCPR**: {_fmt(valid.get('aucpr'))}",
             f"- **Brier**: {_fmt(valid.get('brier'))}",
             "",
             "### Spatial (holdouts)",
-            f"- **Spatial county AUCPR**: {_fmt((spatial.get('spatial_county_hist_gbm') or {}).get('aucpr'))}",
+            f"- **Spatial county AUCPR**: {_fmt(county_spatial.get('aucpr'))}",
             f"- **Spatial county persistence AUCPR**: {_fmt((spatial.get('spatial_county_persistence') or {}).get('aucpr'))}",
             "",
             "## Operational Agreement Check",
@@ -1791,6 +2015,13 @@ def _refresh_candidate_advisory_features(
     )
     recent_ids = set(active_adv.loc[is_recent, "beach_id"].tolist())
     candidates["advisory_recent_active"] = candidates["beach_id"].isin(recent_ids).astype(int)
+
+    is_currently_active = active_adv["ended_at_ts"].isna() | (active_adv["ended_at_ts"] >= forecast_ts)
+    is_recent_active_floor = is_currently_active & (
+        (active_adv["started_at"] >= cutoff_365) | (active_adv["cause"].str.contains("Tijuana River", case=False, na=False))
+    )
+    floor_ids = set(active_adv.loc[is_recent_active_floor, "beach_id"].tolist())
+    candidates["advisory_active_recent_for_floor"] = candidates["beach_id"].isin(floor_ids).astype(int)
 
     closed = adv[adv["ended_at_ts"].notna()].copy()
     closed["_days"] = (forecast_ts - closed["ended_at_ts"]).dt.days
@@ -1882,6 +2113,19 @@ def _build_forecast_candidates(
                 continue
         candidate = {column: latest_row.get(column) for column in history.columns}
         candidate["beach_id"] = beach_id
+        latest_sample_date = pd.to_datetime(latest_row.get("sample_date"), errors="coerce")
+        sample_age_days = (
+            int((pd.Timestamp(forecast_date).normalize() - latest_sample_date.normalize()).days)
+            if pd.notna(latest_sample_date)
+            else None
+        )
+        if sample_age_days is not None:
+            sample_age_days = max(0, sample_age_days)
+        candidate["latest_sample_date"] = (
+            latest_sample_date.date().isoformat() if pd.notna(latest_sample_date) else None
+        )
+        candidate["sample_age_days"] = sample_age_days
+        candidate["sample_recency_band"] = sample_recency_band(sample_age_days)
         candidate["sample_date"] = pd.Timestamp(forecast_date)
         candidate["sample_time"] = pd.Timestamp(forecast_timestamp)
         candidate["enterococcus_value"] = np.nan
@@ -2226,6 +2470,22 @@ def _export_forecasts(
             raw_probabilities,
             forecast_group_metadata,
         )
+    elif winner == "hist_gbm_positive_persistence_guard":
+        raw_probabilities = tree_classifier.predict_proba(baseline_forecast_features)[:, 1]
+        calibrated_tree_probabilities = _apply_calibrator(
+            tree_calibrator,
+            raw_probabilities,
+            forecast_group_metadata,
+        )
+        persistence_probabilities = _persistence_probabilities(
+            baseline_forecast_features,
+            _STV_THRESHOLD,
+        )
+        probabilities = _positive_persistence_guarded_blend_probabilities(
+            calibrated_tree_probabilities,
+            persistence_probabilities,
+            PERSISTENCE_BLEND_MAX_MODEL_ALPHA,
+        )
     else:
         raw_probabilities = classifier.predict_proba(baseline_forecast_features)[:, 1]
         probabilities = _apply_calibrator(calibrator, raw_probabilities, forecast_group_metadata)
@@ -2251,7 +2511,6 @@ def _export_forecasts(
     else:
         driver_baseline_probs = probabilities
     computed_drivers = _compute_local_drivers(tree_classifier, baseline_forecast_features, driver_baseline_probs)
-    settings = get_settings()
     forecasts = []
     forecast_lookup = (
         forecast_candidates.drop_duplicates(subset=["beach_id"], keep="last").set_index("beach_id")
@@ -2279,20 +2538,28 @@ def _export_forecasts(
                     if zip_key in uv_lookup.index:
                         uv_index = _safe_float(uv_lookup.loc[zip_key].get("uv_index"))
                         uv_alert = uv_lookup.loc[zip_key].get("uv_alert")
-            advisory_recent = _safe_float(feature_row.get("advisory_recent_active")) or 0.0
+            advisory_floor_trigger = _safe_float(feature_row.get("advisory_active_recent_for_floor")) or 0.0
             p_raw = float(probability)
-            p_final = max(p_raw, 0.20) if advisory_recent else p_raw
+            served_p_exceed = max(p_raw, _HIGH_THRESHOLD) if advisory_floor_trigger else p_raw
+            advisory_floor_applied = bool(advisory_floor_trigger and p_raw < _HIGH_THRESHOLD)
             p_lower = probability_lower[i] if i < len(probability_lower) else np.nan
             p_upper = probability_upper[i] if i < len(probability_upper) else np.nan
-            p_lower_final = max(float(p_lower), 0.20) if advisory_recent and np.isfinite(p_lower) else (
-                float(p_lower) if np.isfinite(p_lower) else None
-            )
-            p_upper_final = max(float(p_upper), p_final) if np.isfinite(p_upper) else None
+            p_lower_final = float(p_lower) if np.isfinite(p_lower) else None
+            p_upper_final = max(float(p_upper), served_p_exceed) if np.isfinite(p_upper) else None
+            sample_age_value = _safe_float(latest_row.get("sample_age_days")) if latest_row is not None else None
+            sample_age_days = int(sample_age_value) if sample_age_value is not None else None
             forecasts.append({
                 "beach_id": beach_id,
                 "forecast_date": forecast_date.isoformat(),
-                "risk_band": risk_band(p_final),
-                "p_exceed": p_final,
+                "risk_band": risk_band(served_p_exceed),
+                "forecast_label_mode": "model",
+                "sample_age_days": sample_age_days,
+                "sample_recency_band": (
+                    latest_row.get("sample_recency_band") if latest_row is not None else "unknown"
+                ),
+                "is_beta_forecast": True,
+                "advisory_floor_applied": advisory_floor_applied,
+                "p_exceed": served_p_exceed,
                 "p_exceed_raw": p_raw,
                 "p_exceed_lower": p_lower_final,
                 "p_exceed_upper": p_upper_final,
@@ -2467,7 +2734,6 @@ def _run_winner_only(
             flush=True,
         )
 
-    valid_metadata = metadata.iloc[valid_idx].reset_index(drop=True)
     cal_metadata = metadata.iloc[cal_idx].reset_index(drop=True)
     val_metric_metadata = metadata.iloc[val_metric_idx].reset_index(drop=True)
     eval_metadata = metadata.iloc[eval_idx].reset_index(drop=True)
@@ -2836,6 +3102,21 @@ def train_curated_and_export(
         tree_eval = _apply_calibrator(tree_calibrator, tree_eval, eval_metadata)
     metrics["hist_gbm"] = classification_metrics(labels[eval_idx], tree_eval)
 
+    # Compute validation + eval metrics for the positive persistence guard so it
+    # can participate in production winner selection via _two_stage_training_plan.
+    guard_valid = _positive_persistence_guarded_blend_probabilities(
+        tree_valid_raw, persistence[valid_idx], PERSISTENCE_BLEND_MAX_MODEL_ALPHA,
+    )
+    metrics["hist_gbm_positive_persistence_guard_valid"] = classification_metrics(
+        labels[valid_idx], guard_valid,
+    )
+    guard_eval = _positive_persistence_guarded_blend_probabilities(
+        tree_eval, persistence[eval_idx], PERSISTENCE_BLEND_MAX_MODEL_ALPHA,
+    )
+    metrics["hist_gbm_positive_persistence_guard"] = classification_metrics(
+        labels[eval_idx], guard_eval,
+    )
+
     print("Computing stacked ensemble...", file=sys.stderr, flush=True)
     # Weighted-average blend of the four base classifiers.
     # Weights: AUCPR-proportional from the validation set.
@@ -2897,7 +3178,7 @@ def train_curated_and_export(
         metrics[mt] = artifacts.test_metrics
 
     plan = _two_stage_training_plan(metrics, model_types_to_run)
-    spatial_backtest_models = [*PRODUCTION_MODEL_NAMES, *model_types_to_run]
+    spatial_backtest_models = [*SPATIAL_BACKTEST_MODEL_NAMES, *model_types_to_run]
     effective_beach_limit = spatial_beach_limit
     effective_county_limit = spatial_county_limit
 
@@ -2931,7 +3212,17 @@ def train_curated_and_export(
             )
         )
 
-    winner = plan.production_winner
+    winner = _spatially_qualified_production_winner(
+        metrics,
+        preferred=plan.production_winner,
+        candidates=PRODUCTION_MODEL_NAMES,
+    )
+    if winner != plan.production_winner:
+        plan = StageTwoTrainingPlan(
+            production_winner=winner,
+            research_winner=plan.research_winner,
+            spatial_backtest_models=plan.spatial_backtest_models,
+        )
     classifier = logistic if winner == "logistic" else tree_classifier
     calibrator = logistic_calibrator if winner == "logistic" else tree_calibrator
     if metrics["elastic_net_valid"]["rmse"] <= metrics["hist_gbm_regressor_valid"]["rmse"]:
