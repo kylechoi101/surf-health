@@ -87,6 +87,20 @@ def _safe_int(value: object) -> int | None:
     return int(number) if number is not None else None
 
 
+def _coerce_advisory_website(raw: object) -> str | None:
+    if raw is None:
+        return None
+    try:
+        if pd.isna(raw):
+            return None
+    except (TypeError, ValueError):
+        pass
+    text = str(raw).strip()
+    if not text or text.lower() == "unknown":
+        return None
+    return text
+
+
 def _safe_bool(value: object, *, default: bool = True) -> bool:
     """Parse a boolean that may have been stored as string/int in parquet/SQLite."""
     if value is None:
@@ -534,6 +548,7 @@ class CuratedBeachRepository(BeachRepository):
                         else None
                     ),
                     status=row["status"],
+                    advisory_website=_coerce_advisory_website(row.get("advisory_website")),
                 )
             )
 

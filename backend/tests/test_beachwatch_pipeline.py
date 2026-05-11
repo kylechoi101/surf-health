@@ -174,12 +174,14 @@ def test_beachwatch_bundle_builds_beach_day_and_advisories():
                 "USEPAID": "CA123",
                 "WaterBodyClass": "Saltwater",
                 "WaterBodyType": "Open Coast",
+                "AdvisoryWebsite": "https://www.ocgov.com/beach/advisory",
             }
         ]
     )
     advisories = normalize_advisories(advisories_raw)
     beach_day = build_beach_day_frame(observations, stations, advisories)
     assert len(advisories) == 1
+    assert advisories.iloc[0]["advisory_website"] == "https://www.ocgov.com/beach/advisory"
     assert len(beach_day) == 1
     assert beach_day.iloc[0]["historical_advisory_count"] == 1
     assert beach_day.iloc[0]["enterococcus_value"] == 120.0

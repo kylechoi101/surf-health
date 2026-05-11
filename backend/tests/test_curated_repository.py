@@ -90,6 +90,7 @@ def test_curated_repository_derives_forecast_and_observations(tmp_path):
                 "status": "historical",
                 "cause": "Unknown Cause",
                 "county": "Orange",
+                "advisory_website": "https://www.ocgov.com/beach/advisory",
             }
         ]
     ).to_parquet(curated_dir / "advisories.parquet", index=False)
@@ -153,6 +154,7 @@ def test_curated_repository_derives_forecast_and_observations(tmp_path):
     observations = repository.get_observations("ca123-orange-main-beach-main-beach-pier")
     assert len(observations.observations) == 1
     assert len(observations.advisories) == 1
+    assert observations.advisories[0].advisory_website == "https://www.ocgov.com/beach/advisory"
     assert repository.get_system_health().is_beta_product is True
 
 

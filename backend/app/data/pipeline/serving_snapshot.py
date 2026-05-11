@@ -95,7 +95,16 @@ def _recent_by_beach(
 
 
 def _recent_advisories(advisories: pd.DataFrame) -> pd.DataFrame:
-    columns = ["beach_id", "advisory_type", "started_at", "ended_at", "status", "cause", "county"]
+    columns = [
+        "beach_id",
+        "advisory_type",
+        "started_at",
+        "ended_at",
+        "status",
+        "cause",
+        "county",
+        "advisory_website",
+    ]
     if advisories.empty:
         return pd.DataFrame(columns=columns)
 

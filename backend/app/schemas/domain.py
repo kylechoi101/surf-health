@@ -111,6 +111,7 @@ class AdvisoryRecord(BaseModel):
     started_at: datetime
     ended_at: datetime | None = None
     status: str
+    advisory_website: str | None = None
 
 
 class ObservationResponse(BaseModel):

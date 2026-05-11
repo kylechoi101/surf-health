@@ -136,7 +136,18 @@ def test_merge_ceden_into_beachwatch_bundle_prefers_existing_beachwatch_duplicat
             }
         ]
     )
-    advisories = pd.DataFrame(columns=["beach_id", "advisory_type", "started_at", "ended_at", "status", "cause", "county"])
+    advisories = pd.DataFrame(
+        columns=[
+            "beach_id",
+            "advisory_type",
+            "started_at",
+            "ended_at",
+            "status",
+            "cause",
+            "county",
+            "advisory_website",
+        ]
+    )
     ceden_results_raw = pd.DataFrame(
         [
             {
@@ -244,7 +255,18 @@ def test_merge_ceden_collapses_mirrored_safe_to_swim_rows_despite_unit_formattin
             }
         ]
     )
-    advisories = pd.DataFrame(columns=["beach_id", "advisory_type", "started_at", "ended_at", "status", "cause", "county"])
+    advisories = pd.DataFrame(
+        columns=[
+            "beach_id",
+            "advisory_type",
+            "started_at",
+            "ended_at",
+            "status",
+            "cause",
+            "county",
+            "advisory_website",
+        ]
+    )
     ceden_results_raw = pd.DataFrame(
         [
             {

@@ -27,6 +27,17 @@ from app.schemas.domain import (
 )
 
 
+def _coerce_advisory_website(raw: object) -> str | None:
+    if raw is None:
+        return None
+    if isinstance(raw, float) and isnan(raw):
+        return None
+    text = str(raw).strip()
+    if not text or text.lower() == "unknown":
+        return None
+    return text
+
+
 def _safe_float(value: object) -> float | None:
     try:
         if value is None:
@@ -433,19 +444,22 @@ class ServingSnapshotRepository(BeachRepository):
             for row in rows
         ]
 
-        advisories = [
-            AdvisoryRecord(
-                advisory_type=str(row["advisory_type"]),
-                started_at=_parse_datetime(row["started_at"]) or datetime.now(UTC),
-                ended_at=_parse_datetime(row["ended_at"]),
-                status=str(row["status"]),
+        advisories = []
+        for row in self._fetch_all(
+            "select * from advisories_recent where beach_id = ? "
+            "order by started_at desc limit 10",
+            (beach_id,),
+        ):
+            adv = dict(row)
+            advisories.append(
+                AdvisoryRecord(
+                    advisory_type=str(adv["advisory_type"]),
+                    started_at=_parse_datetime(adv["started_at"]) or datetime.now(UTC),
+                    ended_at=_parse_datetime(adv["ended_at"]),
+                    status=str(adv["status"]),
+                    advisory_website=_coerce_advisory_website(adv.get("advisory_website")),
+                )
             )
-            for row in self._fetch_all(
-                "select * from advisories_recent where beach_id = ? "
-                "order by started_at desc limit 10",
-                (beach_id,),
-            )
-        ]
 
         recent_environment = [
             {

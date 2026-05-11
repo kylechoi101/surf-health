@@ -375,8 +375,20 @@ def normalize_advisories(frame: pd.DataFrame) -> pd.DataFrame:
     marine["advisory_type"] = _column(marine, "AdvisoryType", "Unknown").fillna("Unknown")
     marine["cause"] = _column(marine, "AdvisoryCause", "Unknown").fillna("Unknown")
     marine["county"] = _column(marine, "CountyName").fillna(_column(marine, "County"))
+    marine["advisory_website"] = _column(marine, "AdvisoryWebsite", "Unknown").fillna("Unknown")
     return (
-        marine[["beach_id", "advisory_type", "started_at", "ended_at", "status", "cause", "county"]]
+        marine[
+            [
+                "beach_id",
+                "advisory_type",
+                "started_at",
+                "ended_at",
+                "status",
+                "cause",
+                "county",
+                "advisory_website",
+            ]
+        ]
         .dropna(subset=["started_at"])
         .reset_index(drop=True)
     )

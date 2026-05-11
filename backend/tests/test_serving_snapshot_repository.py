@@ -169,6 +169,7 @@ def _write_curated_inputs(curated_dir):
                 "status": "active",
                 "cause": "Unknown Cause",
                 "county": "Orange",
+                "advisory_website": "https://www.ocgov.com/beach/advisory",
             }
         ]
     ).to_parquet(curated_dir / "advisories.parquet", index=False)
@@ -222,6 +223,7 @@ def test_serving_snapshot_limits_hot_path_rows_and_repository_serves_contract(tm
     assert len(observations.observations) == 25
     assert len(observations.recent_environment) == 10
     assert observations.observations[0].value == 49.0
+    assert observations.advisories[0].advisory_website == "https://www.ocgov.com/beach/advisory"
 
     parents = repository.list_parent_beaches()
     assert parents[0].risk_band == "Very High"
