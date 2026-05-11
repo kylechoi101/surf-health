@@ -278,6 +278,18 @@ def _apply_public_release_gate(curated_dir: Path, audit: dict) -> None:
     payload["model_registry"] = model_registry
     health_path.write_text(json.dumps(payload, indent=2))
 
+    model_card_path = curated_dir / "model_card.md"
+    if model_card_path.exists() and payload["forecast_audit"]["agreement_rate"] is not None:
+        import re
+        content = model_card_path.read_text()
+        rate_str = f"{float(payload['forecast_audit']['agreement_rate']):.3f}"
+        content = re.sub(
+            r"(Active-advisory agreement rate.*: ).*",
+            r"\g<1>" + rate_str,
+            content
+        )
+        model_card_path.write_text(content)
+
 
 def _is_old_agreement_blocker(message: str) -> bool:
     """Match any agreement-gate blocker so reruns don't accumulate stale duplicates."""
