@@ -26,7 +26,12 @@ class Settings(BaseSettings):
     california_ceden_fib_dataset_slug: str = "surface-water-fecal-indicator-bacteria-results"
     epa_marine_enterococcus_stv: float = 104.0
     public_alert_probability_threshold: float = 0.38
-    
+    cors_allowed_origins: str = (
+        "http://localhost:3000,"
+        "http://127.0.0.1:3000,"
+        "https://kylechoi101.github.io"
+    )
+
     # Phase 1: Hydrology & Weather
     forecast_issue_hour_local: int = 5
     usgs_nwis_base_url: str = "https://waterservices.usgs.gov/nwis"
@@ -39,6 +44,10 @@ class Settings(BaseSettings):
     cnrfc_observed_station_allowlist_path: Path | None = None
     usgs_gage_allowlist_path: Path | None = None
     hydrologic_mapping_path: Path | None = None
+
+    @property
+    def cors_origins(self) -> list[str]:
+        return [origin.strip() for origin in self.cors_allowed_origins.split(",") if origin.strip()]
 
 
 @lru_cache(maxsize=1)

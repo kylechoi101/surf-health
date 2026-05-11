@@ -35,6 +35,20 @@ def test_system_health_endpoint():
     assert "model_registry" in payload
 
 
+def test_cors_allows_public_web_origin_without_wildcard():
+    origin = "https://kylechoi101.github.io"
+
+    response = client.get("/system/health", headers={"Origin": origin})
+
+    assert response.headers["access-control-allow-origin"] == origin
+
+
+def test_cors_rejects_unknown_origin():
+    response = client.get("/system/health", headers={"Origin": "https://example.invalid"})
+
+    assert "access-control-allow-origin" not in response.headers
+
+
 def test_repository_dependency_is_cached(monkeypatch):
     routes.get_repository.cache_clear()
     calls = []
