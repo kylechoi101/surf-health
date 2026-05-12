@@ -168,6 +168,19 @@ class ServingSnapshotRepository(BeachRepository):
         rows = self._fetch_all("select distinct beach_id from advisories_recent where status = 'active'")
         return {str(row["beach_id"]) for row in rows}
 
+    def _active_advisory_websites(self) -> dict[str, str | None]:
+        """Return the most-recent active advisory URL per beach_id."""
+        rows = self._fetch_all(
+            "select beach_id, advisory_website from advisories_recent "
+            "where status = 'active' order by started_at desc"
+        )
+        result: dict[str, str | None] = {}
+        for row in rows:
+            bid = str(row["beach_id"])
+            if bid not in result:
+                result[bid] = _coerce_advisory_website(row["advisory_website"] if "advisory_website" in row.keys() else None)
+        return result
+
     def _beach_from_row(self, row: sqlite3.Row, model_version: str | None = None) -> BeachSummary:
         support = str(row["support_status"]) if model_version else "unsupported"
         beach_id = str(row["beach_id"])
@@ -201,6 +214,7 @@ class ServingSnapshotRepository(BeachRepository):
             for row in forecasts
         }
         active_beach_ids = self._active_advisory_beach_ids()
+        advisory_websites = self._active_advisory_websites()
 
         parents: list[ParentBeachSummary] = []
         for row in rows:
@@ -217,6 +231,16 @@ class ServingSnapshotRepository(BeachRepository):
             has_active = any(beach_id in active_beach_ids for beach_id in member_ids)
             if has_active:
                 worst_band = "Very High"
+
+            # Pick advisory website from first active member station that has one
+            advisory_website: str | None = None
+            if has_active:
+                for bid in member_ids:
+                    url = advisory_websites.get(bid)
+                    if url:
+                        advisory_website = url
+                        break
+
             parents.append(
                 ParentBeachSummary(
                     id=str(row["parent_beach_id"]),
@@ -235,6 +259,7 @@ class ServingSnapshotRepository(BeachRepository):
                     risk_band=worst_band,
                     p_exceed=worst_p,
                     has_active_advisory=has_active,
+                    advisory_website=advisory_website,
                 )
             )
         return parents

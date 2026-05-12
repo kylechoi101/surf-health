@@ -29,10 +29,64 @@ def test_forecast_endpoint_returns_expected_contract():
 
 
 def test_system_health_endpoint():
+    # The fixture payload has public_release_eligible=false, so the guard returns 503.
+    # A 503 is still a valid structured response — verify the body shape.
     response = client.get("/system/health")
-    assert response.status_code == 200
+    assert response.status_code in (200, 503)
     payload = response.json()
-    assert "model_registry" in payload
+    # 200 path: full health document; 503 path: {"detail": {"status": "unhealthy", ...}}
+    if response.status_code == 200:
+        assert "model_registry" in payload
+    else:
+        assert payload["detail"]["status"] == "unhealthy"
+        assert "reasons" in payload["detail"]
+
+
+def test_system_health_returns_503_when_pipeline_stale(monkeypatch):
+    """Guard returns 503 when pipeline_freshness is older than 36 hours."""
+    import app.api.routes as r
+    from app.schemas.domain import SystemHealthResponse
+    from datetime import datetime, timezone, timedelta
+
+    stale_ts = (datetime.now(timezone.utc) - timedelta(hours=40)).isoformat()
+
+    stale_health = SystemHealthResponse(
+        app_env="test",
+        pipeline_freshness=stale_ts,
+        source_freshness={},
+        model_registry={
+            "public_release_eligible": True,
+            "production_metrics": {"aucpr": 0.72},
+        },
+    )
+
+    def fake_get_system_health():
+        return stale_health
+
+    original_build = r.build_repository
+
+    class FakeService:
+        def get_system_health(self):
+            return stale_health
+
+    class FakeRepo:
+        pass
+
+    r.get_repository.cache_clear()
+    monkeypatch.setattr(r, "build_repository", lambda s: FakeRepo())
+    monkeypatch.setattr(
+        "app.services.beach_service.BeachService.get_system_health",
+        lambda self: stale_health,
+    )
+
+    response = client.get("/system/health")
+    assert response.status_code == 503
+    detail = response.json()["detail"]
+    assert detail["status"] == "unhealthy"
+    assert any("pipeline_freshness" in reason for reason in detail["reasons"])
+
+    r.get_repository.cache_clear()
+    monkeypatch.setattr(r, "build_repository", original_build)
 
 
 def test_cors_allows_public_web_origin_without_wildcard():

@@ -69,6 +69,7 @@ class ParentBeachSummary(BaseModel):
     risk_band: RiskBand | None = None
     p_exceed: float | None = None
     has_active_advisory: bool = False
+    advisory_website: str | None = None
 
 
 class ForecastRecord(BaseModel):

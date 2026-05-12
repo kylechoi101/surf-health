@@ -59,12 +59,19 @@ jobs:
         run: npm test
         working-directory: web
 
+      - name: Check required env vars
+        run: |
+          : "${NEXT_PUBLIC_SITE_ORIGIN:?NEXT_PUBLIC_SITE_ORIGIN must be set}"
+        env:
+          NEXT_PUBLIC_SITE_ORIGIN: https://kylechoi101.github.io
+
       - name: Build
         run: npm run build
         working-directory: web
         env:
           NEXT_PUBLIC_API_BASE_URL: https://surf-health-api.onrender.com
           NEXT_PUBLIC_SITE_BASE_PATH: /surf-health
+          NEXT_PUBLIC_SITE_ORIGIN: https://kylechoi101.github.io
 
   mobile:
     runs-on: ubuntu-latest

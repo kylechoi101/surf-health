@@ -242,11 +242,19 @@ class CuratedBeachRepository(BeachRepository):
                 bid = row["beach_id"]
                 forecast_lookup[bid] = (str(row["risk_band"]), float(row["p_exceed"]), str(row.get("model_version", "unknown")))
 
-        # Build advisory lookup: any active advisory per station
+        # Build advisory lookup: any active advisory per station, plus URL from most-recent active
         active_stations: set[str] = set()
+        advisory_website_lookup: dict[str, str | None] = {}
         if not self.advisories_frame.empty:
             active = self.advisories_frame.loc[self.advisories_frame["status"] == "active"]
             active_stations = set(active["beach_id"].tolist())
+            if "advisory_website" in active.columns and not active.empty:
+                # Most-recent active advisory URL per station
+                for bid, grp in active.groupby("beach_id"):
+                    sorted_grp = grp.sort_values("started_at", ascending=False)
+                    advisory_website_lookup[str(bid)] = _coerce_advisory_website(
+                        sorted_grp.iloc[0].get("advisory_website")
+                    )
 
         parents: list[ParentBeachSummary] = []
         for _, row in self.parent_beaches_frame.iterrows():
@@ -266,6 +274,16 @@ class CuratedBeachRepository(BeachRepository):
             
             support = row.get("support_status", "unsupported") if worst_model_v else "unsupported"
 
+            has_active = any(bid in active_stations for bid in member_ids)
+            # Pick advisory website from first active member station that has one
+            advisory_website: str | None = None
+            if has_active:
+                for bid in member_ids:
+                    url = advisory_website_lookup.get(bid)
+                    if url:
+                        advisory_website = url
+                        break
+
             parents.append(ParentBeachSummary(
                 id=str(row["parent_beach_id"]),
                 name=str(row["name"]),
@@ -283,7 +301,8 @@ class CuratedBeachRepository(BeachRepository):
                 geometry=Point(latitude=lat, longitude=lon),
                 risk_band=worst_band,
                 p_exceed=worst_p,
-                has_active_advisory=any(bid in active_stations for bid in member_ids),
+                has_active_advisory=has_active,
+                advisory_website=advisory_website,
             ))
         return parents
 
