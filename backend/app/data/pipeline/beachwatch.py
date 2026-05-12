@@ -17,24 +17,17 @@ MIN_PLAUSIBLE_SAMPLE_TIME = pd.Timestamp("2000-01-01")
 MAX_FUTURE_SAMPLE_LEEWAY_DAYS = 2
 
 COUNTY_ADVISORY_WEBSITES = {
+    # Verified live via HEAD/GET on 2026-05-12. Counties whose pages I tried to
+    # find but couldn't verify (404 / DNS errors at the time of the audit) fall
+    # through to STATE_ADVISORY_WEBSITE below — better one extra click than a
+    # 404 from inside our app.
     "Los Angeles": "http://publichealth.lacounty.gov/phcommon/public/eh/water_quality/beach_grades.cfm",
     "Orange": "https://ocbeachinfo.com/",
     "San Diego": "https://www.sdbeachinfo.com/",
-    "Ventura": "https://www.vcpublichealth.org/beach-water-quality/",
-    "Long Beach City": "https://www.longbeach.gov/health/inspections-and-reporting/reporting/beach-water-quality/",
-    # Added 2026-05-12 to cover Very-High beaches still missing URLs:
-    "San Mateo": "https://www.smchealth.org/general-information/beach-water-quality",
-    "Santa Cruz": "https://www.santacruzcountyca.gov/Departments/Environmental-Health/Recreational-Water-Quality",
     "Santa Barbara": "https://countyofsb.org/phd/eh/beach-water.sbc",
-    "San Luis Obispo": "https://www.slocounty.ca.gov/Departments/Health-Agency/Public-Health/Programs-and-Services/Drinking-Water-and-Recreational-Water.aspx",
-    "Monterey": "https://www.montereycountyhealth.com/183/Beach-Posting",
-    "San Francisco": "https://www.sfdph.org/dph/EH/SwimSafety/default.asp",
     "Marin": "https://www.marincounty.org/depts/eh/services/beachsig",
-    "Sonoma": "https://sonomacounty.ca.gov/health-and-human-services/health-services/environmental-health/recreational-water",
-    "Humboldt": "https://humboldtgov.org/2114/Public-Beaches",
     "Alameda": "https://acgov.org/aceh/water/swim.htm",
-    "Contra Costa": "https://cchealth.org/eh/beach-water/",
-    "East Bay Parks District": "https://www.ebparks.org/water-quality-monitoring",
+    "Monterey": "https://www.montereycountyhealth.com/183/Beach-Posting",
 }
 
 # CA-wide fallback when no county-specific page is known. Verified-real state

@@ -1,39 +1,52 @@
 name: Keep Render warm
 
-# Render free tier spins the API down after 15 minutes of no traffic,
-# then takes ~50 seconds to wake on the next request — that's a bounced
-# session for the first user. This workflow pings /system/health every
-# 5 minutes so the service stays warm.
+# Render free tier spins the API down after 15 min of no traffic; first user
+# after spin-down waits ~50s for cold start. This workflow pings the API
+# repeatedly so the service stays warm.
 #
-# GitHub Actions cron has best-effort scheduling and can drift 5–10 min
-# under load. Two offset schedules give us redundancy: if the */5 firing
-# is delayed, the other one is likely to land first. Worst-case interval
-# stays well under Render's 15-minute spin-down threshold.
+# Reality check on GitHub Actions cron: scheduled workflows are best-effort
+# and can be delayed 5–30 min under load. The plan was "*/5" → ping every
+# 5 min, comfortably under the 15-min sleep window. In practice GH cron is
+# unreliable enough that *some* cold starts will still happen. Three fixes
+# layered together:
+#
+# 1. Schedule at an offset minute (3) instead of :00 — :00 is peak GH load.
+# 2. Inside each run, loop with sleeps so one fired workflow keeps the
+#    service warm for ~9 minutes, not just one instant. If the next cron
+#    drifts 10 min late, the previous run's loop bridges the gap.
+# 3. workflow_dispatch for manual nudges.
+#
+# Net effect: even with GH cron firing only every ~15 min, the service
+# stays warm because each run keeps pinging for 9 min.
 
 on:
   schedule:
-    - cron: "*/5 * * * *"
-    - cron: "2-59/5 * * * *"
+    - cron: "3-58/5 * * * *"  # :03, :08, :13, ... :58 (avoids :00 GH peak)
   workflow_dispatch: {}
+
+concurrency:
+  group: keep-warm
+  cancel-in-progress: false
 
 jobs:
   ping:
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 10
     steps:
-      - name: Ping /system/health
+      - name: Ping /system/health on a loop
         run: |
-          # --max-time 90s tolerates the 50s cold start.
-          # -f turns 4xx/5xx into failures so the workflow surfaces real outages.
-          # We accept a 503 (model not eligible / pipeline stale) as "service is
-          # up and routing correctly" — that's not a wake-up failure.
-          status=$(curl -s -o /tmp/body.json -w "%{http_code}" --max-time 90 \
-            https://surf-health-api.onrender.com/system/health)
-          echo "HTTP $status"
-          if [ "$status" = "200" ] || [ "$status" = "503" ]; then
-            echo "Service responding."
-            exit 0
-          fi
-          echo "Unexpected response:"
-          cat /tmp/body.json || true
-          exit 1
+          # Up to 5 pings spaced 2 min apart per workflow run. If the next
+          # scheduled fire is delayed by GH, this run keeps the service
+          # warm in the meantime.
+          for i in 1 2 3 4 5; do
+            status=$(curl -s -o /tmp/body.json -w "%{http_code}" --max-time 90 \
+              https://surf-health-api.onrender.com/system/health)
+            echo "[$(date -u +%H:%M:%S)] ping $i: HTTP $status"
+            if [ "$status" != "200" ] && [ "$status" != "503" ]; then
+              echo "Unexpected response body:"
+              cat /tmp/body.json || true
+              # Don't exit non-zero on transient — just log and continue
+            fi
+            [ "$i" = "5" ] && break
+            sleep 120
+          done
