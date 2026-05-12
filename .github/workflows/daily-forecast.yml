@@ -96,6 +96,13 @@ jobs:
           python -m app.ml.training --curated --forecast-date "$FORECAST_DATE" --winner-only --spatial-backtests --spatial-strategy shortlist --spatial-beach-limit 50 --spatial-county-limit 12 --training-window-days 365 --forecast-min-recency-days 45
         working-directory: backend
 
+      - name: Forecast-time weather pull (100% wind/UV coverage)
+        run: |
+          FORECAST_DATE=$(TZ=America/Los_Angeles date +%Y-%m-%d)
+          python scripts/refresh_latest_env_weather.py --forecast-date "$FORECAST_DATE"
+        working-directory: backend
+        continue-on-error: true
+
       - name: Audit forecasts vs advisories
         run: |
           python scripts/audit_forecasts_vs_advisories.py \
