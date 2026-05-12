@@ -1,30 +1,30 @@
 # Model Card: Shorelife `hist-gbm-positive-persistence-guard-curated-v0`
 
 ## Deployment Status
-- **Generated at**: 2026-05-12T07:49:22.619246+00:00
+- **Generated at**: 2026-05-12T07:59:31.971858+00:00
 - **Deployment stage**: research_prototype
 - **Public release eligible**: false
-- **Promotion blocker (latest)**: Spatial county calibration slope 0.194 is below 0.4. Probabilities are not trustworthy on held-out counties.
+- **Promotion blocker (latest)**: Spatial county calibration slope 0.193 is below 0.4. Probabilities are not trustworthy on held-out counties.
 
 ## Headline Metrics (from `system_health.json`)
 
 ### Temporal (held-out time slice)
-- **AUCPR**: 0.362
-- **Brier**: 0.082
-- **Log loss**: 0.284
-- **Calibration slope**: 0.857
+- **AUCPR**: 0.361
+- **Brier**: 0.085
+- **Log loss**: 0.294
+- **Calibration slope**: 0.836
 
 ### Deployment (active stations only; recency-filtered roster)
-- **AUCPR**: 0.378
-- **Brier**: 0.091
+- **AUCPR**: 0.376
+- **Brier**: 0.094
 - **n_samples**: 1300
 
 ### Validation (calibration/training-time slice; not a public headline)
-- **AUCPR**: 0.856
-- **Brier**: 0.103
+- **AUCPR**: 0.859
+- **Brier**: 0.102
 
 ### Spatial (holdouts)
-- **Spatial county AUCPR**: 0.656
+- **Spatial county AUCPR**: 0.651
 - **Spatial county persistence AUCPR**: 0.573
 
 ## Operational Agreement Check
