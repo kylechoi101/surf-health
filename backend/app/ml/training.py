@@ -1895,9 +1895,12 @@ def _model_key_from_registry_version(model_version: object) -> str:
 
 
 _WINNER_TO_METRICS_KEY: dict[str, str] = {
-    # hist_gbm_positive_persistence_guard uses hist_gbm's training path and
-    # writes metrics under the "hist_gbm" key, not its own name.
+    # All hist_gbm variants share the underlying HistGBM classifier — the
+    # differences are post-processing applied at inference. Temporal test
+    # metrics are computed once on the base classifier and shared.
     "hist_gbm_positive_persistence_guard": "hist_gbm",
+    "hist_gbm_persistence_blend": "hist_gbm",
+    "hist_gbm_no_bacteria_weather_delta": "hist_gbm",
 }
 
 
@@ -2984,13 +2987,30 @@ def _run_winner_only(
         regressor_valid_predictions = baselines.tree_regressor.predict(features.iloc[valid_idx])
         metrics["hist_gbm_regressor_valid"] = regression_metrics(densities[valid_idx], regressor_valid_predictions)
 
+    # In shortlist mode, backtest the full hist_gbm family so the spatially-
+    # qualified winner selection has alternatives to swap in if the current
+    # winner fails the slope/AUCPR/Brier gates. Same trained classifier under
+    # the hood; the variants differ only in post-processing.
+    if spatial_strategy == "shortlist" and winner.startswith("hist_gbm"):
+        backtest_models = [
+            "hist_gbm",
+            "hist_gbm_positive_persistence_guard",
+            "hist_gbm_persistence_blend",
+            "hist_gbm_no_bacteria_weather_delta",
+        ]
+    else:
+        backtest_models = [winner]
+
     plan = StageTwoTrainingPlan(
-        production_winner=winner, research_winner=winner, spatial_backtest_models=[winner],
+        production_winner=winner, research_winner=winner, spatial_backtest_models=backtest_models,
     )
 
     if spatial_backtests:
-        print(f"Running stage 2 spatial backtests for {winner.upper()}...", file=sys.stderr, flush=True)
-        
+        print(
+            f"Running stage 2 spatial backtests for {', '.join(m.upper() for m in backtest_models)}...",
+            file=sys.stderr, flush=True,
+        )
+
         effective_beach_limit = spatial_beach_limit
         effective_county_limit = spatial_county_limit
         if spatial_strategy == "quick":
@@ -3008,9 +3028,26 @@ def _run_winner_only(
                 county_group_limit=effective_county_limit,
                 spatial_jobs=resolved_spatial_jobs,
                 dataset=dataset,
-                model_names_to_run=[winner],
+                model_names_to_run=backtest_models,
             )
         )
+
+    # Swap winner if the registry's choice fails spatial gates and an
+    # alternative passes. Same classifier + calibrator under the hood for
+    # hist_gbm variants, so we don't need to retrain.
+    if spatial_backtests and winner.startswith("hist_gbm"):
+        new_winner = _spatially_qualified_production_winner(
+            metrics,
+            preferred=winner,
+            candidates=tuple(backtest_models),
+        )
+        if new_winner != winner:
+            print(
+                f"Spatial gates: swapping production winner {winner} → {new_winner}",
+                file=sys.stderr, flush=True,
+            )
+            winner = new_winner
+
     return _export_forecasts(
         curated_dir=curated_dir,
         forecast_date=forecast_date,

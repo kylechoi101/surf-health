@@ -1,4 +1,4 @@
-# Model Card: Shorelife `hist-gbm-positive-persistence-guard-curated-v0`
+# Model Card: Shorelife `hist-gbm-persistence-blend-curated-v0`
 
 ## Deployment Status
 - **Generated at**: 2026-05-12T08:29:55.998145+00:00
