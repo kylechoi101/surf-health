@@ -20,7 +20,6 @@ import time
 from datetime import date
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 from sklearn.metrics import average_precision_score, brier_score_loss
 
@@ -58,7 +57,9 @@ def main() -> int:
     args = ap.parse_args()
 
     curated = Path(args.curated)
-    fc_date = date.fromisoformat(args.forecast_date)
+    # forecast-date is accepted as a CLI arg for parity with training.py but
+    # isn't used here — the temporal split is derived from data, not date.
+    _ = date.fromisoformat(args.forecast_date)
 
     t0 = time.time()
     print(f"Loading curated data from {curated}...")
@@ -149,7 +150,7 @@ def main() -> int:
     print(f"  AUCPR delta: {aucpr_corrected - aucpr_baseline:+.4f} ({(aucpr_corrected - aucpr_baseline) / aucpr_baseline * 100:+.1f}%)")
     print(f"  Brier delta: {brier_corrected - brier_baseline:+.4f} ({(brier_corrected - brier_baseline) / brier_baseline * 100:+.1f}%) (lower is better)")
     print()
-    print(f"  Decision threshold from plan: AUCPR delta ≥ +0.025")
+    print("  Decision threshold from plan: AUCPR delta ≥ +0.025")
     verdict = "SHIP IT" if (aucpr_corrected - aucpr_baseline) >= 0.025 else "MARGINAL — consider not shipping"
     print(f"  Verdict: {verdict}")
     print()
@@ -171,11 +172,11 @@ def main() -> int:
     by_station = by_station[by_station["n"] >= 5]  # noisy below 5 samples
     by_station["mse_delta"] = by_station["mse_corrected"] - by_station["mse_baseline"]
 
-    print(f"Top 10 stations BENEFITING most (largest MSE reduction):")
+    print("Top 10 stations BENEFITING most (largest MSE reduction):")
     for sc, row in by_station.nsmallest(10, "mse_delta").iterrows():
         print(f"  {sc[:40]:40s}  n={int(row['n']):3d}  Δmse={row['mse_delta']:+.4f}")
     print()
-    print(f"Top 10 stations HURT most (largest MSE increase):")
+    print("Top 10 stations HURT most (largest MSE increase):")
     for sc, row in by_station.nlargest(10, "mse_delta").iterrows():
         print(f"  {sc[:40]:40s}  n={int(row['n']):3d}  Δmse={row['mse_delta']:+.4f}")
 
