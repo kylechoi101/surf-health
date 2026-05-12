@@ -43,23 +43,71 @@ FREE_LICENSE_PATTERNS = re.compile(
 )
 IMAGE_EXT = re.compile(r"\.(jpe?g|png|webp)$", re.IGNORECASE)
 
+# Title-level rejections. Commons routinely indexes documents under the same
+# search query as photos — old maps, postcards, fire insurance plats,
+# paintings, museum facades, lifeguard vehicles, government documents, etc.
+# Blocklist hits override license validity. (?:^|\W) handles word boundaries
+# without Python's \b underscore-is-word-char gotcha.
+def _word(pattern: str) -> str:
+    return rf"(?:^|[^a-z0-9])({pattern})(?:$|[^a-z0-9])"
+
+TITLE_BLOCKLIST = re.compile(
+    _word(
+        r"map|sanborn|insurance|postcard|painting|paintings|painted|drawing|"
+        r"print|sketch|document|poster|brochure|signage|guide|guidebook|"
+        r"engraving|illustration|chart|schematic|diagram|advertisement|"
+        r"museum|exhibit|gallery|courthouse|trailer park|gun club|"
+        r"patrol|graffiti|lifeguard.vehicle|fire.department|sanborn|"
+        r"floorplan|architectural|sheet \d"
+    ),
+    re.IGNORECASE,
+)
+
+# Positive signal — title must contain at least one of these to be considered
+# a beach photo. Aggressive but our universe is California beach pages.
+TITLE_REQUIRED = re.compile(
+    _word(
+        r"beach|beaches|cove|cliff|cliffs|coast|coastline|coastal|"
+        r"shore|shoreline|surf|surfing|ocean|seascape|pier|harbor|"
+        r"harbour|bay|lagoon|sand|sands|dunes?|tide|tidepool|wave|"
+        r"waves|breakwater|point|headland|peninsula|estuary|inlet|"
+        r"lighthouse|reef|jetty|seawall|cape|strand"
+    ),
+    re.IGNORECASE,
+)
+
 
 def search(client: httpx.Client, beach_name: str, county: str | None) -> list[str]:
-    """Return up to 5 candidate File: titles for this beach."""
-    query = f'"{beach_name}" California'
+    """Return up to 15 candidate File: titles. Search query adds "beach" so
+    Commons ranks photos above maps/documents that just happen to share the
+    name. We pull 15 candidates rather than 5 because is_usable() now filters
+    aggressively — most candidates will be rejected for being maps/paintings.
+    """
+    queries = []
     if county:
-        query = f'"{beach_name}" {county} County California'
-    r = client.get(COMMONS_API, params={
-        "action": "query",
-        "list": "search",
-        "srsearch": query,
-        "srnamespace": 6,  # File namespace
-        "srlimit": 5,
-        "format": "json",
-    })
-    if r.status_code != 200:
-        return []
-    return [hit["title"] for hit in r.json().get("query", {}).get("search", [])]
+        queries.append(f'"{beach_name}" beach {county} County California')
+    queries.append(f'"{beach_name}" beach California')
+    queries.append(f'"{beach_name}" California coast')
+
+    seen: list[str] = []
+    for query in queries:
+        r = client.get(COMMONS_API, params={
+            "action": "query",
+            "list": "search",
+            "srsearch": query,
+            "srnamespace": 6,  # File namespace
+            "srlimit": 15,
+            "format": "json",
+        })
+        if r.status_code != 200:
+            continue
+        for hit in r.json().get("query", {}).get("search", []):
+            title = hit["title"]
+            if title not in seen:
+                seen.append(title)
+        if len(seen) >= 15:
+            break
+    return seen
 
 
 def image_info(client: httpx.Client, title: str) -> dict | None:
@@ -83,14 +131,37 @@ def image_info(client: httpx.Client, title: str) -> dict | None:
 
 
 def is_usable(title: str, info: dict) -> tuple[bool, str | None, str | None]:
-    """Returns (ok, license_short, author). Filters: image only, free license,
-    width >= 600px (we'll downsize but want enough resolution).
+    """Returns (ok, license_short, author). Filters in order:
+      1. File extension is an image type
+      2. MIME is an image
+      3. Width ≥ 600px (downsize but want enough resolution)
+      4. Free license (PD / CC0 / CC-BY / CC-BY-SA)
+      5. Title NOT in blocklist (no maps, paintings, museums, etc.)
+      6. Title CONTAINS a beach/coast/shore keyword (require positive signal)
+      7. Aspect ratio sane (skip ultra-tall portraits and panoramas wider than 4:1)
     """
     if not IMAGE_EXT.search(title):
         return False, None, None
     if (info.get("mime") or "").startswith("image/") is False:
         return False, None, None
-    if info.get("width", 0) < 600:
+    w = info.get("width", 0) or 0
+    h = info.get("height", 0) or 0
+    if w < 600:
+        return False, None, None
+    if h > 0:
+        aspect = w / h
+        if aspect < 0.6 or aspect > 4.0:
+            return False, None, None  # too tall or too panoramic
+
+    # Normalize: drop "File:" prefix + extension + replace separators with spaces.
+    # Critical: underscores must become spaces because the keyword regex uses
+    # [^a-z0-9] boundaries that wouldn't otherwise match "Sunset_State_Beach".
+    plain_title = re.sub(r"^File:", "", title)
+    plain_title = re.sub(r"\.(jpe?g|png|webp)$", "", plain_title, flags=re.IGNORECASE)
+    plain_title = re.sub(r"[_]+", " ", plain_title)
+    if TITLE_BLOCKLIST.search(plain_title):
+        return False, None, None
+    if not TITLE_REQUIRED.search(plain_title):
         return False, None, None
 
     meta = info.get("extmetadata", {}) or {}
@@ -99,7 +170,6 @@ def is_usable(title: str, info: dict) -> tuple[bool, str | None, str | None]:
         return False, None, None
 
     author_html = (meta.get("Artist", {}) or {}).get("value") or ""
-    # Strip HTML tags
     author = re.sub(r"<[^>]+>", "", author_html).strip() or "Unknown"
     return True, license_short, author
 
