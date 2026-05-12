@@ -29,26 +29,45 @@ PHOTOS_DIR = REPO / "mobile" / "assets" / "beach-photos"
 MANIFEST_PATH = REPO / "mobile" / "lib" / "bundledBeachPhotos.ts"
 
 IMG_W, IMG_H = 400, 267
-SEARCH_RADIUS = 1000  # meters — beaches rarely have panoramas at the water itself
 
 
-def metadata_status(client: httpx.Client, lat: float, lon: float) -> str:
+def _metadata(client: httpx.Client, lat: float, lon: float, radius: int, source: str) -> dict:
     params = {
         "location": f"{lat},{lon}",
-        "radius": SEARCH_RADIUS,
-        "source": "outdoor",
+        "radius": radius,
+        "source": source,
         "key": KEY,
     }
     r = client.get(f"https://maps.googleapis.com/maps/api/streetview/metadata?{urlencode(params)}")
-    return r.json().get("status", "UNKNOWN")
+    return r.json()
 
 
-def download_image(client: httpx.Client, lat: float, lon: float, dest: Path) -> bool:
+def best_pano(client: httpx.Client, lat: float, lon: float) -> tuple[str, int, str] | None:
+    """Pick a panorama that's most likely a real outdoor street scene.
+
+    Prefers Google's official Street View cars (copyright contains 'Google').
+    User-contributed panoramas tagged 'outdoor' often include indoor real
+    estate shots and random snapshots, so we only fall back to them if no
+    Google coverage exists, and even then only at a tight radius.
+
+    Returns (pano_id, radius, source) or None.
+    """
+    # 1. Try Google official cars at 300m
+    md = _metadata(client, lat, lon, radius=300, source="default")
+    if md.get("status") == "OK" and "Google" in md.get("copyright", ""):
+        return md["pano_id"], 300, "default"
+    # 2. Try Google official cars at 1000m
+    md = _metadata(client, lat, lon, radius=1000, source="default")
+    if md.get("status") == "OK" and "Google" in md.get("copyright", ""):
+        return md["pano_id"], 1000, "default"
+    # 3. Skip — no official coverage. User-contributed content is too noisy.
+    return None
+
+
+def download_image(client: httpx.Client, pano_id: str, dest: Path) -> bool:
     params = {
         "size": f"{IMG_W}x{IMG_H}",
-        "location": f"{lat},{lon}",
-        "radius": SEARCH_RADIUS,
-        "source": "outdoor",
+        "pano": pano_id,
         "fov": 90,
         "pitch": 5,
         "key": KEY,
@@ -78,15 +97,16 @@ def main() -> int:
             bid = b["id"]
             lat = b["geometry"]["latitude"]
             lon = b["geometry"]["longitude"]
-            status = metadata_status(client, lat, lon)
-            if status != "OK":
+            chosen = best_pano(client, lat, lon)
+            if not chosen:
                 skipped.append(bid)
-                print(f"[{i}/{len(beaches)}] SKIP {bid} ({status})")
+                print(f"[{i}/{len(beaches)}] SKIP {bid}  (no Google car coverage)")
                 continue
+            pano_id, radius, source = chosen
             dest = PHOTOS_DIR / f"{bid}.jpg"
-            if download_image(client, lat, lon, dest):
+            if download_image(client, pano_id, dest):
                 covered.append(bid)
-                print(f"[{i}/{len(beaches)}] OK   {bid}  ({dest.stat().st_size // 1024}KB)")
+                print(f"[{i}/{len(beaches)}] OK   {bid}  r={radius}m  ({dest.stat().st_size // 1024}KB)")
             else:
                 skipped.append(bid)
                 print(f"[{i}/{len(beaches)}] FAIL {bid}")
