@@ -30,4 +30,10 @@ def build_repository(settings: Settings) -> BeachRepository:
         raise FileNotFoundError(f"Curated repository requested but missing files in {curated_dir}")
     if preferred == "curated" or curated_ready:
         return CuratedBeachRepository(curated_dir, settings.epa_marine_enterococcus_stv)
+    if settings.app_env == "production":
+        raise RuntimeError(
+            f"No data repository available in {curated_dir}. "
+            "Refusing to serve fixture data in production. "
+            "Ensure the daily pipeline has run and curated data files exist."
+        )
     return FixtureBeachRepository(settings.fixture_data_path)

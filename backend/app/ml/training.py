@@ -45,6 +45,10 @@ from app.ml.models import (
     BeachPINN_MultiTask, 
     make_baselines
 )
+from app.ml.stale_evaluation import (
+    RECENCY_COLUMN as _STALE_RECENCY_COL,
+    censor_bacteria_history_for_cutoff,
+)
 from app.ml.weather_delta import (
     clip_weather_delta,
     fit_smoothed_rate_prior,
@@ -927,6 +931,15 @@ def _spatial_holdout_fold_result(
     if len(np.unique(labels[inner_train_rows])) < 2:
         return None
 
+    # In spatial holdout folds the held-out county is never in the calibrator's
+    # training data. HierarchicalProbabilityCalibrator falls back to global params
+    # for unseen counties, causing calibration slope ≈ 0.18.  Force simple
+    # ProbabilityCalibrator (isotonic) by omitting metadata from all calibrator
+    # fits in this scope; _apply_calibrator routes correctly via isinstance check.
+    def _identity_or_calibrated(p, l, m=None):  # type: ignore[misc]
+        from app.ml.training import _identity_or_calibrated as _orig  # noqa: F811
+        return _orig(p, l)  # metadata deliberately excluded
+
     if model_name in ["tcn", "cnn", "lstm", "transformer", "pinn"]:
         if dataset is None:
             return None
@@ -1805,6 +1818,29 @@ def _promotion_assessment(
 ) -> dict[str, object]:
     spatial_metrics = {name: value for name, value in metrics.items() if name.startswith("spatial_")}
     blockers: list[str] = []
+
+    # Gate: production test metrics must be populated.
+    base_key = _metrics_base_key(winner)
+    prod_metrics = metrics.get(base_key) or {}
+    if not prod_metrics or not prod_metrics.get("aucpr"):
+        blockers.append(
+            f"Production test metrics are missing or empty for metrics key '{base_key}'. "
+            "Check that _metrics_base_key() maps the winner correctly."
+        )
+
+    # Gate: val/test AUCPR ratio must not exceed 1.6x (overfitting signal).
+    val_metrics = metrics.get(f"{base_key}_valid_calibrated") or metrics.get(f"{base_key}_valid") or {}
+    val_aucpr = val_metrics.get("aucpr")
+    test_aucpr = prod_metrics.get("aucpr")
+    if val_aucpr and test_aucpr and test_aucpr > 0:
+        ratio = val_aucpr / test_aucpr
+        if ratio > 1.6:
+            blockers.append(
+                f"Validation/test AUCPR ratio is {ratio:.2f}x "
+                f"(val={val_aucpr:.3f}, test={test_aucpr:.3f}). "
+                "Exceeds 1.6x threshold — likely same-beach train/test leakage or distribution shift."
+            )
+
     if not spatial_metrics:
         blockers.append("Spatial holdout metrics have not been run for this artifact.")
     else:
@@ -1823,6 +1859,13 @@ def _promotion_assessment(
             baseline_brier = county_persistence.get("brier")
             if model_brier is not None and baseline_brier is not None and model_brier >= baseline_brier:
                 blockers.append("Held-out county Brier score does not beat persistence.")
+            # Gate: spatial calibration slope must be plausibly calibrated.
+            county_slope = county_model.get("calibration_slope")
+            if county_slope is not None and county_slope < 0.4:
+                blockers.append(
+                    f"Spatial county calibration slope {county_slope:.3f} is below 0.4. "
+                    "Probabilities are not trustworthy on held-out counties."
+                )
         beach_model = metrics.get(f"spatial_beach_{winner}", {})
         beach_persistence = metrics.get("spatial_beach_persistence", {})
         if beach_model and beach_persistence:
@@ -1864,10 +1907,50 @@ def _model_key_from_registry_version(model_version: object) -> str:
     return model_key.replace("-", "_")
 
 
+_WINNER_TO_METRICS_KEY: dict[str, str] = {
+    # hist_gbm_positive_persistence_guard uses hist_gbm's training path and
+    # writes metrics under the "hist_gbm" key, not its own name.
+    "hist_gbm_positive_persistence_guard": "hist_gbm",
+}
+
+
+def _metrics_base_key(model_name: str) -> str:
+    """Return the metrics-dict key that stores training/test results for model_name.
+
+    Some model variants (e.g., the persistence guard) wrap a base model at
+    inference time but share its training path and therefore its metrics key.
+    """
+    return _WINNER_TO_METRICS_KEY.get(model_name, model_name)
+
+
 def _forecast_model_version(model_name: str, scope: str = "global") -> str:
     if model_name == "logistic_hierarchical":
         return f"logistic-{scope}-curated-v0"
     return _registry_model_version(model_name)
+
+
+_STALE_CUTOFF_DAYS: int = 45
+
+
+def _apply_stale_censoring(features: pd.DataFrame) -> pd.DataFrame:
+    """Zero bacteria-history features on rows whose sample age exceeds the stale threshold.
+
+    Trains the model on the same censored view it sees at serve-time for stale
+    beaches, so the serve-time stale-prior router and the training distribution
+    are consistent. Non-stale rows are unchanged.
+    """
+    if _STALE_RECENCY_COL not in features.columns:
+        return features
+    stale_mask = features[_STALE_RECENCY_COL] >= _STALE_CUTOFF_DAYS
+    if not stale_mask.any():
+        return features
+    features = features.copy()
+    censored_rows = censor_bacteria_history_for_cutoff(
+        features.loc[stale_mask], cutoff_days=_STALE_CUTOFF_DAYS
+    )
+    features.loc[stale_mask, censored_rows.columns] = censored_rows
+    return features
+
 
 def _write_model_card(curated_dir: Path, health_payload: dict) -> None:
     """Write a model card that cannot drift from system_health.json."""
@@ -1883,7 +1966,7 @@ def _write_model_card(curated_dir: Path, health_payload: dict) -> None:
     spatial = model_registry.get("spatial_metrics") or {}
     all_metrics = model_registry.get("metrics") or {}
     production_model_key = _model_key_from_registry_version(production_model)
-    active_only = all_metrics.get(f"{production_model_key}_test_active_only") or {}
+    active_only = all_metrics.get(f"{_metrics_base_key(production_model_key)}_test_active_only") or {}
     county_spatial = spatial.get(f"spatial_county_{production_model_key}") or {}
 
     def _fmt(x: object) -> str:
@@ -2629,9 +2712,17 @@ def _export_forecasts(
         "research_models": [_registry_model_version(m) for m in model_types_to_run],
         "spatial_backtest_models": [_registry_model_version(m) for m in spatial_backtest_models],
         "spatial_backtest_strategy": spatial_strategy if spatial_backtests else "disabled",
-        "production_metrics": metrics.get(winner, {}),
-        "validation_metrics": metrics.get(f"{winner}_valid", {}),
-        "temporal_validation_metrics": metrics.get(f"{plan.research_winner}_valid", {}),
+        "production_metrics": metrics.get(_metrics_base_key(winner), {}),
+        "validation_metrics": (
+            metrics.get(f"{_metrics_base_key(winner)}_valid_calibrated")
+            or metrics.get(f"{_metrics_base_key(winner)}_valid")
+            or {}
+        ),
+        "temporal_validation_metrics": (
+            metrics.get(f"{_metrics_base_key(plan.research_winner)}_valid_calibrated")
+            or metrics.get(f"{_metrics_base_key(plan.research_winner)}_valid")
+            or {}
+        ),
         "spatial_metrics": promotion["spatial_metrics"],
         "deployment_stage": promotion["deployment_stage"],
         "public_release_eligible": promotion["public_release_eligible"],
@@ -2681,6 +2772,7 @@ def _run_winner_only(
     dataset = build_sliding_windows(frame)
     features = dataset.feature_frame.select_dtypes(include=["number"]).fillna(0.0)
     features = _inject_agent_features(features, dataset.metadata, full_frame, advisories, stations)
+    features = _apply_stale_censoring(features)
     labels = dataset.targets_exceed
     densities = dataset.targets_log_density
     metadata = _metadata_with_groups(dataset.metadata, frame, stations=stations)
@@ -2997,6 +3089,7 @@ def train_curated_and_export(
     dataset = build_sliding_windows(frame)
     features = dataset.feature_frame.select_dtypes(include=["number"]).fillna(0.0)
     features = _inject_agent_features(features, dataset.metadata, full_frame, advisories, stations)
+    features = _apply_stale_censoring(features)
     labels = dataset.targets_exceed
     densities = dataset.targets_log_density
     metadata = _metadata_with_groups(dataset.metadata, frame, stations=stations)
