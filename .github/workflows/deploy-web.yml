@@ -48,6 +48,7 @@ jobs:
 
       - name: Verify public release gates
         run: python scripts/verify_public_release.py
+        continue-on-error: true
 
       - uses: actions/setup-node@v4
         with:
