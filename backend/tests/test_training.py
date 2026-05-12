@@ -919,7 +919,7 @@ def test_promotion_assessment_blocks_release_when_county_holdout_lags_persistenc
 def test_spatially_qualified_winner_vetoes_temporal_winner_for_guard_candidate():
     # hist_gbm_positive_persistence_guard shares hist_gbm's training path so
     # the test-set metrics live under the "hist_gbm" key (see _metrics_base_key).
-    # Calibration slope omitted → no slope blocker; val/test ratio 0.85/0.62 = 1.37x < 1.6x.
+    # Calibration slope omitted → no slope blocker expected.
     metrics = {
         "hist_gbm": {"aucpr": 0.62, "brier": 0.085},
         "hist_gbm_valid": {"aucpr": 0.85, "brier": 0.12},

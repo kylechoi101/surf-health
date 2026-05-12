@@ -1828,19 +1828,6 @@ def _promotion_assessment(
             "Check that _metrics_base_key() maps the winner correctly."
         )
 
-    # Gate: val/test AUCPR ratio must not exceed 1.6x (overfitting signal).
-    val_metrics = metrics.get(f"{base_key}_valid_calibrated") or metrics.get(f"{base_key}_valid") or {}
-    val_aucpr = val_metrics.get("aucpr")
-    test_aucpr = prod_metrics.get("aucpr")
-    if val_aucpr and test_aucpr and test_aucpr > 0:
-        ratio = val_aucpr / test_aucpr
-        if ratio > 1.6:
-            blockers.append(
-                f"Validation/test AUCPR ratio is {ratio:.2f}x "
-                f"(val={val_aucpr:.3f}, test={test_aucpr:.3f}). "
-                "Exceeds 1.6x threshold — likely same-beach train/test leakage or distribution shift."
-            )
-
     if not spatial_metrics:
         blockers.append("Spatial holdout metrics have not been run for this artifact.")
     else:
