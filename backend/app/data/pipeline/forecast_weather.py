@@ -21,8 +21,7 @@ from __future__ import annotations
 import asyncio
 import math
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
-from io import StringIO
+from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 import httpx
