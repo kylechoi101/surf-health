@@ -1,5 +1,12 @@
 # Surf Health
 
+> **ARCHIVED — historical snapshot.** This document captures the project state
+> on 2026-04-22. As of 2026-05-12 the model gate has flipped to
+> `public_release_eligible: true` (production winner: `hist-gbm-curated-v0`,
+> spatial county AUCPR 0.637 vs persistence 0.569, slope 1.159 ≥ 0.4). For the
+> current state see `data/curated/model_card.md` and the live
+> `/system/health` endpoint.
+
 ## Development Status Report and V1 Vision
 
 Date: April 22, 2026
