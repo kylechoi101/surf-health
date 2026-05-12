@@ -39,6 +39,7 @@ def aggregate_solar_wind_windows(raw: pd.DataFrame) -> pd.DataFrame:
         "station_id", "latitude", "longitude", "sample_date",
         "cloud_cover_24h_mean", "shortwave_24h_sum", "uv_index_24h_max",
         "wind_u_24h_mean", "wind_v_24h_mean", "wind_speed_24h_max",
+        "wind_direction_24h_mean",
         "days_since_sunny",
     ]
     if raw.empty:
@@ -85,10 +86,24 @@ def aggregate_solar_wind_windows(raw: pd.DataFrame) -> pd.DataFrame:
             cc_mean = float(window["cloud_cover"].mean()) if "cloud_cover" in window else np.nan
             sw_sum_wm2_h = float(window["shortwave_radiation"].sum()) if "shortwave_radiation" in window else np.nan
             sw_mj = sw_sum_wm2_h * 3600 / 1e6 if not np.isnan(sw_sum_wm2_h) else np.nan
-            uv_max = float(window["uv_index"].max()) if "uv_index" in window else np.nan
+            # Open-Meteo's archive API returns null for uv_index (forecast-only
+            # variable). Derive from peak hourly shortwave when uv_index is
+            # missing: clear-noon CA gets ~900 W/m² → UV ≈ 11; cloudy ~300 → UV ≈ 3.75.
+            uv_max: float = np.nan
+            if "uv_index" in window and window["uv_index"].notna().any():
+                uv_max = float(window["uv_index"].max())
+            elif "shortwave_radiation" in window and window["shortwave_radiation"].notna().any():
+                sw_peak = float(window["shortwave_radiation"].max())
+                if not np.isnan(sw_peak):
+                    uv_max = max(0.0, min(15.0, sw_peak / 80.0))
             u_mean = float(window["wind_u"].mean()) if "wind_u" in window else np.nan
             v_mean = float(window["wind_v"].mean()) if "wind_v" in window else np.nan
             ws_max = float(window["wind_speed_10m"].max()) if "wind_speed_10m" in window else np.nan
+            # Vector-average wind direction from u/v means. Convert back to
+            # "wind from" meteorological convention (degrees clockwise from north).
+            wd_mean: float = np.nan
+            if not np.isnan(u_mean) and not np.isnan(v_mean) and (u_mean != 0 or v_mean != 0):
+                wd_mean = float((np.rad2deg(np.arctan2(-u_mean, -v_mean)) + 360) % 360)
 
             rows.append({
                 "station_id": station_id,
@@ -101,6 +116,7 @@ def aggregate_solar_wind_windows(raw: pd.DataFrame) -> pd.DataFrame:
                 "wind_u_24h_mean": u_mean,
                 "wind_v_24h_mean": v_mean,
                 "wind_speed_24h_max": ws_max,
+                "wind_direction_24h_mean": wd_mean,
             })
 
     if not rows:

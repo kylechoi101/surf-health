@@ -216,7 +216,7 @@ def build_marine_microbiology_daily(
             "beach_id", "sample_date",
             "shore_normal_wind_ms", "solar_inactivation_index",
             "cloud_cover_24h_mean", "shortwave_24h_sum", "uv_index_24h_max",
-            "wind_speed_24h_max", "days_since_sunny",
+            "wind_speed_24h_max", "wind_direction_24h_mean", "days_since_sunny",
         ])
 
     df = beach_solar_wind_daily.merge(shore_azimuth, on="beach_id", how="left")
@@ -238,7 +238,7 @@ def build_marine_microbiology_daily(
         "beach_id", "sample_date",
         "shore_normal_wind_ms", "solar_inactivation_index",
         "cloud_cover_24h_mean", "shortwave_24h_sum", "uv_index_24h_max",
-        "wind_speed_24h_max", "days_since_sunny",
+        "wind_speed_24h_max", "wind_direction_24h_mean", "days_since_sunny",
     ]
     keep = [c for c in keep if c in df.columns]
     return df[keep].copy()

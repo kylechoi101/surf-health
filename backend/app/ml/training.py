@@ -2670,10 +2670,20 @@ def _export_forecasts(
         )
         _env_present = [c for c in _ENV_COLS if c in _latest_env_source.columns]
         _latest_env = _latest_env_source[["beach_id"] + _env_present].copy()
-        if "wind_speed_mps" not in _latest_env.columns and "wind_speed_24h_max" in _latest_env_source.columns:
-            _latest_env["wind_speed_mps"] = _latest_env_source["wind_speed_24h_max"].to_numpy()
-        if "uv_index" not in _latest_env.columns and "uv_index_24h_max" in _latest_env_source.columns:
-            _latest_env["uv_index"] = _latest_env_source["uv_index_24h_max"].to_numpy()
+        # Map 24h-window aggregates from the data pipeline → API field names.
+        # Force-overwrite when the column either doesn't exist or is all-null,
+        # since the forecast-candidate stage explicitly nulls these via
+        # covariate_columns even when 24h-aggregated data is available.
+        def _map(target: str, source: str) -> None:
+            if source not in _latest_env_source.columns:
+                return
+            has_target = target in _latest_env.columns
+            if not has_target or _latest_env[target].isna().all():
+                _latest_env[target] = _latest_env_source[source].to_numpy()
+
+        _map("wind_speed_mps", "wind_speed_24h_max")
+        _map("uv_index", "uv_index_24h_max")
+        _map("wind_direction_deg", "wind_direction_24h_mean")
     else:
         _env_present = [c for c in _ENV_COLS if c in full_frame.columns]
         _latest_env = (

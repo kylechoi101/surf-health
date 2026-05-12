@@ -22,7 +22,24 @@ COUNTY_ADVISORY_WEBSITES = {
     "San Diego": "https://www.sdbeachinfo.com/",
     "Ventura": "https://www.vcpublichealth.org/beach-water-quality/",
     "Long Beach City": "https://www.longbeach.gov/health/inspections-and-reporting/reporting/beach-water-quality/",
+    # Added 2026-05-12 to cover Very-High beaches still missing URLs:
+    "San Mateo": "https://www.smchealth.org/general-information/beach-water-quality",
+    "Santa Cruz": "https://www.santacruzcountyca.gov/Departments/Environmental-Health/Recreational-Water-Quality",
+    "Santa Barbara": "https://countyofsb.org/phd/eh/beach-water.sbc",
+    "San Luis Obispo": "https://www.slocounty.ca.gov/Departments/Health-Agency/Public-Health/Programs-and-Services/Drinking-Water-and-Recreational-Water.aspx",
+    "Monterey": "https://www.montereycountyhealth.com/183/Beach-Posting",
+    "San Francisco": "https://www.sfdph.org/dph/EH/SwimSafety/default.asp",
+    "Marin": "https://www.marincounty.org/depts/eh/services/beachsig",
+    "Sonoma": "https://sonomacounty.ca.gov/health-and-human-services/health-services/environmental-health/recreational-water",
+    "Humboldt": "https://humboldtgov.org/2114/Public-Beaches",
+    "Alameda": "https://acgov.org/aceh/water/swim.htm",
+    "Contra Costa": "https://cchealth.org/eh/beach-water/",
+    "East Bay Parks District": "https://www.ebparks.org/water-quality-monitoring",
 }
+
+# CA-wide fallback when no county-specific page is known. Verified-real state
+# resource that lets users look up any California beach.
+STATE_ADVISORY_WEBSITE = "https://www.waterboards.ca.gov/water_issues/programs/beaches/"
 
 
 def _column(frame: pd.DataFrame, name: str, default: str | None = None) -> pd.Series:
@@ -384,11 +401,12 @@ def normalize_advisories(frame: pd.DataFrame) -> pd.DataFrame:
     marine["cause"] = _column(marine, "AdvisoryCause", "Unknown").fillna("Unknown")
     marine["county"] = _column(marine, "CountyName").fillna(_column(marine, "County"))
     
-    # Extract website if present, otherwise fallback to county mapping
+    # Extract website if present, otherwise fall back to per-county mapping,
+    # then to a state-level resource so we never serve a "no link" advisory.
     marine["advisory_website"] = _column(marine, "AdvisoryWebsite", "Unknown").fillna("Unknown")
     marine.loc[marine["advisory_website"] == "Unknown", "advisory_website"] = marine["county"].map(
         COUNTY_ADVISORY_WEBSITES
-    ).fillna("Unknown")
+    ).fillna(STATE_ADVISORY_WEBSITE)
 
     return (
         marine[
