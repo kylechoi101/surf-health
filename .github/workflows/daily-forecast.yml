@@ -123,7 +123,10 @@ jobs:
           else
             FORECAST_DATE=$(TZ=America/Los_Angeles date +%Y-%m-%d)
             git commit -m "chore: daily forecast refresh ${FORECAST_DATE}"
-            git pull --rebase --autostash origin main
+            # -X theirs: on rebase, "theirs" = our local commit. Binary files
+            # like serving.sqlite can't auto-merge — always prefer the freshly
+            # regenerated version produced by this pipeline run.
+            git pull --rebase --autostash -X theirs origin main
             git push
           fi
 
