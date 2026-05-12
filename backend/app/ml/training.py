@@ -936,9 +936,9 @@ def _spatial_holdout_fold_result(
     # for unseen counties, causing calibration slope ≈ 0.18.  Force simple
     # ProbabilityCalibrator (isotonic) by omitting metadata from all calibrator
     # fits in this scope; _apply_calibrator routes correctly via isinstance check.
-    def _identity_or_calibrated(p, l, m=None):  # type: ignore[misc]
+    def _identity_or_calibrated(p, labels, m=None):  # type: ignore[misc]
         from app.ml.training import _identity_or_calibrated as _orig  # noqa: F811
-        return _orig(p, l)  # metadata deliberately excluded
+        return _orig(p, labels)  # metadata deliberately excluded
 
     if model_name in ["tcn", "cnn", "lstm", "transformer", "pinn"]:
         if dataset is None:
