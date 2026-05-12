@@ -37,9 +37,12 @@ jobs:
           import pandas as pd, json
           df = pd.read_parquet('data/curated/forecasts.parquet')
           rows = df[['beach_id','risk_band','p_exceed','wave_height_m','water_temperature_c']].copy()
-          rows['p_exceed'] = rows['p_exceed'].round(4)
-          rows['wave_height_m'] = rows['wave_height_m'].round(2)
-          rows['water_temperature_c'] = rows['water_temperature_c'].round(2)
+          # pd.to_numeric tolerates Python None values (Series.round chokes on them).
+          # errors='coerce' converts None / non-numeric to NaN; the JSON serializer
+          # then emits them as null per to_dict's default behavior.
+          rows['p_exceed'] = pd.to_numeric(rows['p_exceed'], errors='coerce').round(4)
+          rows['wave_height_m'] = pd.to_numeric(rows['wave_height_m'], errors='coerce').round(2)
+          rows['water_temperature_c'] = pd.to_numeric(rows['water_temperature_c'], errors='coerce').round(2)
           out = rows.to_dict(orient='records')
           with open('web/public/forecast_summary.json','w') as f:
               json.dump(out, f, separators=(',',':'))
