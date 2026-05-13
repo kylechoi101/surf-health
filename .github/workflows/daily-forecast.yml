@@ -2,7 +2,8 @@ name: Daily forecast refresh
 
 on:
   schedule:
-    - cron: '0 13 * * *'   # 6 AM PDT / 5 AM PST
+    - cron: '0 16 * * *'   # 9 AM PDT / 8 AM PST — gives data.ca.gov BeachWatch
+                            # ETL several hours of buffer after overnight refresh
   push:
     branches: [main]
     paths:
