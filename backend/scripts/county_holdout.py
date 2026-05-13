@@ -5,13 +5,15 @@ Run from backend/:
     python scripts/county_holdout.py
 """
 import sys
+from pathlib import Path
 sys.path.insert(0, ".")
 
 import pandas as pd
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.metrics import average_precision_score
 
-CURATED = "/Users/kylechoi/surf_health/data/curated"
+# Repo-relative path so this script is portable, not username-locked.
+CURATED = str(Path(__file__).resolve().parent.parent.parent / "data" / "curated")
 
 FEATURES = [
     "wave_height_m", "dominant_period_s", "wave_direction_deg",

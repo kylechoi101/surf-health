@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from app.data.pipeline.external_covariates import enrich_beach_day_with_external_covariates
 
-curated_dir = Path("/Users/kylechoi/surf_health/data/curated")
+curated_dir = Path(__file__).resolve().parent.parent.parent / "data" / "curated"
 
 print("Loading curated data...")
 beaches = pd.read_parquet(curated_dir / "beaches.parquet")
