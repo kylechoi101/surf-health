@@ -48,6 +48,16 @@ def _safe_float(value: object) -> float | None:
         return None
 
 
+def _row_get(row: object, key: str) -> object | None:
+    """Tolerant sqlite3.Row accessor — returns None for keys not in the cursor
+    schema. Lets us read columns that may or may not exist depending on when
+    the sqlite snapshot was last baked."""
+    try:
+        return row[key]
+    except (KeyError, IndexError):
+        return None
+
+
 def _safe_int(value: object) -> int | None:
     number = _safe_float(value)
     return int(number) if number is not None else None
@@ -498,6 +508,9 @@ class ServingSnapshotRepository(BeachRepository):
                 "tidal_height": _safe_float(row["tidal_height"]),
                 "surf_height_observed": _safe_float(row["surf_height_observed"]),
                 "turbidity_observed": _safe_float(row["turbidity_observed"]),
+                "wind_speed_mps": _safe_float(_row_get(row, "wind_speed_24h_max")),
+                "wind_direction_deg": _safe_float(_row_get(row, "wind_direction_24h_mean")),
+                "uv_index": _safe_float(_row_get(row, "uv_index_24h_max")),
             }
             for row in self._fetch_all(
                 "select * from recent_environment where beach_id = ? "

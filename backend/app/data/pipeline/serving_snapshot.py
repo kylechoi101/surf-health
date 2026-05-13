@@ -37,6 +37,12 @@ RECENT_ENVIRONMENT_COLUMNS = [
     "tidal_height",
     "surf_height_observed",
     "turbidity_observed",
+    # Wind + UV from solar_wind ingest (Open-Meteo ERA5-Land + derived UV).
+    # Surface so the mobile/web detail page can render daily sparklines next
+    # to the headline value and not just the latest snapshot.
+    "wind_speed_24h_max",
+    "wind_direction_24h_mean",
+    "uv_index_24h_max",
 ]
 
 

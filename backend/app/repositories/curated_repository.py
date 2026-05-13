@@ -587,6 +587,10 @@ class CuratedBeachRepository(BeachRepository):
                         "tidal_height": row.get("tidal_height"),
                         "surf_height_observed": row.get("surf_height_observed"),
                         "turbidity_observed": row.get("turbidity_observed"),
+                        # Wind + UV daily aggregates from solar_wind pipeline.
+                        "wind_speed_mps": row.get("wind_speed_24h_max"),
+                        "wind_direction_deg": row.get("wind_direction_24h_mean"),
+                        "uv_index": row.get("uv_index_24h_max"),
                     }
                 )
 
