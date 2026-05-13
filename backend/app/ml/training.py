@@ -1969,6 +1969,12 @@ def _write_model_card(curated_dir: Path, health_payload: dict) -> None:
 
     audit = health_payload.get("forecast_audit") or {}
     agreement = audit.get("agreement_rate")
+    acute_agreement = audit.get("acute_agreement_rate")
+    chronic_agreement = audit.get("chronic_agreement_rate")
+    stale_agreement = audit.get("stale_agreement_rate")
+    acute_advised = audit.get("acute_advised_beaches")
+    fn_by_pool = audit.get("false_negatives_by_pool") or {}
+    chronic_advised = fn_by_pool.get("chronic_advised") if isinstance(fn_by_pool, dict) else None
 
     content = "\n".join(
         [
@@ -2002,7 +2008,16 @@ def _write_model_card(curated_dir: Path, health_payload: dict) -> None:
             f"- **Spatial county persistence AUCPR**: {_fmt((spatial.get('spatial_county_persistence') or {}).get('aucpr'))}",
             "",
             "## Operational Agreement Check",
-            f"- **Active-advisory agreement rate** (model flags High band on advised beaches): {_fmt(agreement)}",
+            "Active advisories are decomposed into three pools by age. The overall "
+            "agreement rate below is dominated by the stale pool (administrative "
+            "postings the model is not designed to flag), so per-pool numbers are "
+            "the honest model-quality signal.",
+            "",
+            f"- **Acute** (started ≤14 d, real outbreaks): {acute_advised or 0} advised → agreement {_fmt(acute_agreement)}",
+            f"- **Chronic** (15-365 d, geomean postings): agreement {_fmt(chronic_agreement)}",
+            f"- **Stale** (>365 d, admin zombies the model is not expected to flag): agreement {_fmt(stale_agreement)}",
+            "",
+            f"- **Active-advisory agreement rate** (legacy overall metric, dominated by stale pool): {_fmt(agreement)}",
             "",
             "## Notes",
             "- Forecasts are decision support and are not official lab results.",
@@ -2069,10 +2084,26 @@ def _refresh_candidate_advisory_features(
     adv = advisories[["beach_id", "started_at", "ended_at", "cause"]].copy()
     adv["started_at"] = pd.to_datetime(adv["started_at"])
     adv["ended_at_ts"] = pd.to_datetime(adv["ended_at"])
-    adv["ended_at_filled"] = adv["ended_at_ts"].fillna(pd.Timestamp("2099-01-01"))
-
+    # ended_at_filled: rows without a closure date used to default to 2099,
+    # which made every never-closed admin advisory (Tijuana plume, 2022 BSV
+    # postings, etc.) permanently "active" for training and serving. Cap the
+    # fill at started_at + 30 days unless the advisory is genuinely recent —
+    # bacterial advisories rarely run beyond a month, and the audit's stale
+    # pool (>365 d) confirms the rest are zombie data.
     forecast_ts = pd.Timestamp(forecast_date)
     window_start = forecast_ts - pd.Timedelta(days=14)
+    zombie_cutoff = forecast_ts - pd.Timedelta(days=30)
+    fill_default = pd.Timestamp("2099-01-01")
+    # Only treat open-ended advisories as still active if they started recently;
+    # otherwise their "end" should be capped at 30d after start.
+    open_ended_recent = adv["ended_at_ts"].isna() & (adv["started_at"] >= zombie_cutoff)
+    open_ended_old = adv["ended_at_ts"].isna() & (adv["started_at"] < zombie_cutoff)
+    adv["ended_at_filled"] = adv["ended_at_ts"]
+    adv.loc[open_ended_recent, "ended_at_filled"] = fill_default
+    adv.loc[open_ended_old, "ended_at_filled"] = (
+        adv.loc[open_ended_old, "started_at"] + pd.Timedelta(days=30)
+    )
+    adv["ended_at_filled"] = adv["ended_at_filled"].fillna(fill_default)
 
     active_adv = adv[
         (adv["started_at"] < forecast_ts) & (adv["ended_at_filled"] > window_start)
