@@ -59,7 +59,7 @@ python -m app.ml.training --curated --winner-only \
 
 ## Methodology
 
-The full methodology, calibration metrics, known failure modes, and citations are in [`data/curated/model_card.md`](data/curated/model_card.md). System health and live metrics are available at [`https://surf-health-api.onrender.com/system/health`](https://surf-health-api.onrender.com/system/health).
+The full methodology, calibration metrics, known failure modes, and citations are in [`data/curated/model_card.md`](data/curated/model_card.md). System health and live metrics are available at [`https://surf-health-api-aabr.onrender.com/system/health`](https://surf-health-api-aabr.onrender.com/system/health).
 
 ## License
 

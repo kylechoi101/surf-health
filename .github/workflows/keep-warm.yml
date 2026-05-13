@@ -40,7 +40,7 @@ jobs:
           # warm in the meantime.
           for i in 1 2 3 4 5; do
             status=$(curl -s -o /tmp/body.json -w "%{http_code}" --max-time 90 \
-              https://surf-health-api.onrender.com/system/health)
+              https://surf-health-api-aabr.onrender.com/system/health)
             echo "[$(date -u +%H:%M:%S)] ping $i: HTTP $status"
             if [ "$status" != "200" ] && [ "$status" != "503" ]; then
               echo "Unexpected response body:"

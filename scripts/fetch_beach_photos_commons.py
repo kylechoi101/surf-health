@@ -29,7 +29,7 @@ from pathlib import Path
 import httpx
 
 REPO = Path(__file__).resolve().parent.parent
-API_URL = os.environ.get("API_URL", "https://surf-health-api.onrender.com")
+API_URL = os.environ.get("API_URL", "https://surf-health-api-aabr.onrender.com")
 PHOTOS_DIR = REPO / "mobile" / "assets" / "beach-photos-cams"
 MANIFEST_PATH = REPO / "mobile" / "lib" / "bundledBeachPhotos.ts"
 ATTRIBUTIONS_PATH = REPO / "mobile" / "lib" / "beachPhotoAttributions.ts"
