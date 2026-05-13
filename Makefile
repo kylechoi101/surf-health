@@ -1,18 +1,17 @@
 PYTHON ?= python3.12
 
-.PHONY: setup-backend setup-web dev-api dev-web test-backend lint-backend train-sample refresh-data
+.PHONY: setup-backend dev-api test-backend lint-backend train-sample refresh-data
+
+# web/ and mobile/ now live in separate private repos:
+#   github.com/kylechoi101/shorelife-web
+#   github.com/kylechoi101/shorelife-mobile
+# This Makefile only covers the public backend + ML pipeline.
 
 setup-backend:
 	cd backend && $(PYTHON) -m venv .venv && . .venv/bin/activate && pip install -U pip && pip install -e ".[dev]"
 
-setup-web:
-	cd web && npm install
-
 dev-api:
 	cd backend && . .venv/bin/activate && uvicorn app.main:app --reload --port 8000
-
-dev-web:
-	cd web && npm run dev
 
 test-backend:
 	cd backend && . .venv/bin/activate && pytest
