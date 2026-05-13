@@ -31,8 +31,8 @@
 Active advisories are decomposed into three pools by age. The overall agreement rate below is dominated by the stale pool (administrative postings the model is not designed to flag), so per-pool numbers are the honest model-quality signal.
 
 - **Acute** (started ≤14 d, real outbreaks): 0 advised → agreement —
-- **Chronic** (15-365 d, geomean postings): agreement —
-- **Stale** (>365 d, admin zombies the model is not expected to flag): agreement —
+- **Chronic** (15-365 d, geomean postings): agreement 0.346
+- **Stale** (>365 d, admin zombies the model is not expected to flag): agreement 0.000
 
 - **Active-advisory agreement rate** (legacy overall metric, dominated by stale pool): 0.191
 

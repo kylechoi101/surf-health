@@ -2084,22 +2084,21 @@ def _refresh_candidate_advisory_features(
     adv["ended_at_ts"] = pd.to_datetime(adv["ended_at"])
     # ended_at_filled: rows without a closure date used to default to 2099,
     # which made every never-closed admin advisory (Tijuana plume, 2022 BSV
-    # postings, etc.) permanently "active" for training and serving. Cap the
-    # fill at started_at + 30 days unless the advisory is genuinely recent —
-    # bacterial advisories rarely run beyond a month, and the audit's stale
-    # pool (>365 d) confirms the rest are zombie data.
+    # postings, etc.) permanently "active" for training and serving. We cap
+    # open-ended advisories at started_at + 14 days unless they started in
+    # the last 14 days (those are still genuinely current). Matches the
+    # serving override window and WHO/EPA acute-event guidance — anything
+    # not refreshed in two weeks is bureaucratic, not operational.
     forecast_ts = pd.Timestamp(forecast_date)
     window_start = forecast_ts - pd.Timedelta(days=14)
-    zombie_cutoff = forecast_ts - pd.Timedelta(days=30)
+    zombie_cutoff = forecast_ts - pd.Timedelta(days=14)
     fill_default = pd.Timestamp("2099-01-01")
-    # Only treat open-ended advisories as still active if they started recently;
-    # otherwise their "end" should be capped at 30d after start.
     open_ended_recent = adv["ended_at_ts"].isna() & (adv["started_at"] >= zombie_cutoff)
     open_ended_old = adv["ended_at_ts"].isna() & (adv["started_at"] < zombie_cutoff)
     adv["ended_at_filled"] = adv["ended_at_ts"]
     adv.loc[open_ended_recent, "ended_at_filled"] = fill_default
     adv.loc[open_ended_old, "ended_at_filled"] = (
-        adv.loc[open_ended_old, "started_at"] + pd.Timedelta(days=30)
+        adv.loc[open_ended_old, "started_at"] + pd.Timedelta(days=14)
     )
     adv["ended_at_filled"] = adv["ended_at_filled"].fillna(fill_default)
 

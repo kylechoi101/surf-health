@@ -177,8 +177,10 @@ class ServingSnapshotRepository(BeachRepository):
     # data.ca.gov advisories are sometimes left status='active' for years after
     # the actual posting was lifted (counties don't reliably log closure events).
     # Only treat an advisory as currently in effect if its start date is within
-    # this window — past that we consider it stale and fall back to the model.
-    _ACTIVE_ADVISORY_WINDOW_DAYS = 30
+    # this window. 14 days matches WHO/EPA acute-event guidance and the audit
+    # script's acute-pool boundary — any advisory not re-posted in two weeks
+    # is bureaucratic, not operational.
+    _ACTIVE_ADVISORY_WINDOW_DAYS = 14
 
     def _active_advisory_beach_ids(self) -> set[str]:
         rows = self._fetch_all(

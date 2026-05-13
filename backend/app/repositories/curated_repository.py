@@ -34,9 +34,10 @@ from app.schemas.domain import (
 # the county never logged a closure event. A bacterial-violation advisory in
 # real life rarely lasts more than a week; treating a 4-year-old "active" row
 # as currently in effect produces false positives like Windansea (advisory
-# posted 2022-07-12, never closed). 30 days is generous and matches the
-# longest plausible legitimate posting; older active-status rows are stale.
-ADVISORY_MAX_AGE_DAYS = 30
+# posted 2022-07-12, never closed). 14 days matches WHO/EPA acute-event
+# guidance and the audit script's acute-pool boundary — any advisory not
+# re-posted in two weeks is bureaucratic, not operational.
+ADVISORY_MAX_AGE_DAYS = 14
 
 
 def filter_currently_active(advisories: pd.DataFrame) -> pd.DataFrame:
