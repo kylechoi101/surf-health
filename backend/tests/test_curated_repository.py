@@ -1,7 +1,7 @@
 import json
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -186,7 +186,10 @@ def test_curated_repository_overrides_forecast_when_official_advisory_active(tmp
             {
                 "beach_id": beach_id,
                 "advisory_type": "Posting",
-                "started_at": "2026-04-20T10:30:00",
+                # Dynamic recent date so the fixture stays inside the
+                # ADVISORY_MAX_AGE_DAYS window (14d) when this test runs
+                # any time in the future.
+                "started_at": (datetime.utcnow() - timedelta(days=2)).isoformat(),
                 "ended_at": None,
                 "status": "active",
             }
@@ -234,7 +237,7 @@ def test_curated_repository_overrides_derived_forecast_when_official_advisory_ac
             {
                 "beach_id": beach_id,
                 "advisory_type": "Posting",
-                "started_at": "2026-04-18T10:30:00",
+                "started_at": (datetime.utcnow() - timedelta(days=2)).isoformat(),
                 "ended_at": None,
                 "status": "active",
             }

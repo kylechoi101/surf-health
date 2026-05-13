@@ -1,6 +1,6 @@
 import json
 import sqlite3
-from datetime import date
+from datetime import date, datetime, timedelta
 from types import SimpleNamespace
 
 import pandas as pd
@@ -164,7 +164,9 @@ def _write_curated_inputs(curated_dir):
             {
                 "beach_id": beach_id,
                 "advisory_type": "Posting",
-                "started_at": "2026-04-18T10:30:00",
+                # Dynamic recent date so this stays inside the 14-day active
+                # window regardless of when the test runs.
+                "started_at": (datetime.utcnow() - timedelta(days=2)).isoformat(),
                 "ended_at": None,
                 "status": "active",
                 "cause": "Unknown Cause",
