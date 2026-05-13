@@ -1,5 +1,23 @@
 .DS_Store
+# Secrets — only commit .env.example templates; never real values.
 .env
+.env.*
+!.env.example
+credentials.json
+*.key
+*.pem
+*.p12
+*.keystore
+# Repo-clutter / experimental scratchpads kept out of the public source tree.
+nvidia_status.txt
+run_pipeline.sh
+codex_*.log
+codex_*.md
+*.aab
+*.ipa
+issues_screenshot/
+research_result*.md
+logs/
 .venv/
 .idea/
 .vscode/

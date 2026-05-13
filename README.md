@@ -7,7 +7,7 @@ The consumer-facing web and mobile apps live in private repositories:
 
 | Surface | Source | Status |
 |---|---|---|
-| Backend API + ML pipeline | This repo (Apache-2.0) | Public, reviewable |
+| Backend API + ML pipeline | This repo (AGPL-3.0) | Public, reviewable |
 | Web app (Next.js → GitHub Pages) | `kylechoi101/shorelife-web` | Private |
 | Mobile app (Expo → iOS + Android) | `kylechoi101/shorelife-mobile` | Private |
 
@@ -46,7 +46,7 @@ python -m app.ml.training --curated --winner-only \
 
 ## Automated pipeline
 
-`.github/workflows/daily-forecast.yml` runs daily at 6 AM PT and:
+`.github/workflows/daily-forecast.yml` runs daily at 9 AM PT and:
 
 1. Pulls California BeachWatch + CEDEN safe-to-swim data
 2. Pulls external covariates (CDIP, CeNCOOS, EPA UV, hydrology, stormwater)
@@ -63,7 +63,21 @@ The full methodology, calibration metrics, known failure modes, and citations ar
 
 ## License
 
-Apache License 2.0 — see [LICENSE](LICENSE). Anyone may use, modify, and redistribute this code with attribution.
+GNU Affero General Public License v3.0 — see [LICENSE](LICENSE).
+
+You're free to use, study, modify, and redistribute this code. The AGPL's
+network-clause means: **if you run a modified version of Shorelife as a
+network service, you must offer the source of your modifications to your
+users.** Pure local use or unmodified deployment imposes no obligation.
+
+If the AGPL doesn't fit your use case (e.g., you want to ship a closed
+commercial fork), reach out — a commercial license is available.
+
+## Security
+
+Found a vulnerability? See [SECURITY.md](SECURITY.md) for the disclosure
+policy. Don't open public issues for security topics — email
+kylechoidsc@gmail.com directly.
 
 ## Acknowledgement
 
