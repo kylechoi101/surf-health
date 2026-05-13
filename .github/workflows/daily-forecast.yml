@@ -113,8 +113,9 @@ jobs:
         run: python -m app.data.pipeline.serving_snapshot --curated ../data/curated/
         working-directory: backend
 
-      - name: Bake web static data
-        run: python scripts/bake_static_data.py
+      # Web static data baking moved to kylechoi101/shorelife-web private repo.
+      # That repo's CI pulls data/curated/ from this public repo via the
+      # GitHub raw URL and bakes its own static export.
 
       - name: Verify public release gates
         run: python scripts/verify_public_release.py
@@ -124,7 +125,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/curated/ web/public/data/
+          git add data/curated/
           if git diff --staged --quiet; then
             echo "No data changes."
           else

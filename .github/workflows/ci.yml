@@ -37,66 +37,7 @@ jobs:
         run: python scripts/verify_public_release.py
         continue-on-error: true
 
-  web:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '23'
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-
-      - name: Install dependencies
-        run: npm ci
-        working-directory: web
-
-      - name: Security audit
-        run: npm audit --omit=dev --audit-level=high
-        working-directory: web
-
-      - name: Test
-        run: npm test
-        working-directory: web
-
-      - name: Check required env vars
-        run: |
-          : "${NEXT_PUBLIC_SITE_ORIGIN:?NEXT_PUBLIC_SITE_ORIGIN must be set}"
-        env:
-          NEXT_PUBLIC_SITE_ORIGIN: https://kylechoi101.github.io
-
-      - name: Build
-        run: npm run build
-        working-directory: web
-        env:
-          NEXT_PUBLIC_API_BASE_URL: https://surf-health-api.onrender.com
-          NEXT_PUBLIC_SITE_BASE_PATH: /surf-health
-          NEXT_PUBLIC_SITE_ORIGIN: https://kylechoi101.github.io
-
-  mobile:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '23'
-          cache: npm
-          cache-dependency-path: mobile/package-lock.json
-
-      - name: Install dependencies
-        run: npm ci
-        working-directory: mobile
-
-      - name: Security audit
-        run: npm audit --omit=dev --audit-level=moderate
-        working-directory: mobile
-
-      - name: Test
-        run: npm test
-        working-directory: mobile
-
-      - name: Typecheck
-        run: npx tsc --noEmit
-        working-directory: mobile
+  # web/ and mobile/ have moved to private repos:
+  #   kylechoi101/shorelife-web
+  #   kylechoi101/shorelife-mobile
+  # Each runs its own CI within those repos.
