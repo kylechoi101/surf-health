@@ -1973,8 +1973,6 @@ def _write_model_card(curated_dir: Path, health_payload: dict) -> None:
     chronic_agreement = audit.get("chronic_agreement_rate")
     stale_agreement = audit.get("stale_agreement_rate")
     acute_advised = audit.get("acute_advised_beaches")
-    fn_by_pool = audit.get("false_negatives_by_pool") or {}
-    chronic_advised = fn_by_pool.get("chronic_advised") if isinstance(fn_by_pool, dict) else None
 
     content = "\n".join(
         [
