@@ -82,6 +82,19 @@ jobs:
             --with-solar-wind
         working-directory: backend
 
+      - name: Fetch county-direct advisories (overrides stale state feed)
+        # The data.ca.gov BeachWatch dataset lags county postings by weeks.
+        # This step scrapes the SD County DEH page (sdbeachinfo.com) for live
+        # postings and rewrites advisories.parquet's "active" records for any
+        # beach the county currently has posted. Must run AFTER the state
+        # ingest (which writes advisories.parquet) and BEFORE training (which
+        # consumes it as a feature). continue-on-error: any HTTP/parse failure
+        # falls back to state-feed data without breaking the daily run.
+        continue-on-error: true
+        run: |
+          python scripts/fetch_county_advisories.py --curated ../data/curated/
+        working-directory: backend
+
       - name: Run stormwater/outfall feature pipeline
         # External ArcGIS endpoints (e.g. Orange County) occasionally return 500/503.
         # Don't fail the whole daily pipeline over a transient upstream outage —
