@@ -1,11 +1,11 @@
 {
-  "generated_at": "2026-05-13T20:51:19.417878+00:00",
+  "generated_at": "2026-05-13T21:26:20.405082+00:00",
   "forecast_date": "2026-05-13",
   "model_version": "hist-gbm-curated-v0",
   "risk_threshold": 0.3,
   "total_beaches": 230,
   "active_advisories": 47,
-  "agreement_rate": 0.17,
+  "agreement_rate": 0.213,
   "pool_metrics": {
     "acute": {
       "advised_beaches": 0,
@@ -14,8 +14,8 @@
     },
     "chronic": {
       "advised_beaches": 26,
-      "model_flagged": 8,
-      "agreement_rate": 0.308
+      "model_flagged": 10,
+      "agreement_rate": 0.385
     },
     "stale": {
       "advised_beaches": 21,
@@ -29,20 +29,27 @@
     }
   },
   "false_negatives": {
-    "count": 39,
+    "count": 37,
     "description": "Active advisory but model says Low/Moderate",
     "by_pool": {
       "acute": 0,
-      "chronic": 18,
+      "chronic": 16,
       "stale": 21,
       "unknown_duration": 0
     },
     "worst_acute": [],
     "worst_chronic": [
       {
+        "beach_id": "ca604254-san-diego-coronado-north-beach-eh-060",
+        "risk_band": "Low",
+        "p_exceed": 0.028,
+        "pool": "chronic",
+        "advisory_age_days": 132
+      },
+      {
         "beach_id": "ca612137-ventura-faria-county-park-beach-7000",
         "risk_band": "Low",
-        "p_exceed": 0.025,
+        "p_exceed": 0.032,
         "pool": "chronic",
         "advisory_age_days": 78
       },
@@ -54,162 +61,211 @@
         "advisory_age_days": 71
       },
       {
-        "beach_id": "ca125649-santa-barbara-goleta-beach-wp0000037",
+        "beach_id": "ca674364-los-angeles-inner-cabrillo-beach-cb-01",
         "risk_band": "Low",
-        "p_exceed": 0.035,
+        "p_exceed": 0.051,
         "pool": "chronic",
-        "advisory_age_days": 100
-      },
-      {
-        "beach_id": "ca604254-san-diego-coronado-north-beach-eh-060",
-        "risk_band": "Low",
-        "p_exceed": 0.035,
-        "pool": "chronic",
-        "advisory_age_days": 132
+        "advisory_age_days": 140
       },
       {
         "beach_id": "ca506450-san-diego-san-diego-bay-eh-070",
         "risk_band": "Low",
-        "p_exceed": 0.038,
+        "p_exceed": 0.055,
         "pool": "chronic",
         "advisory_age_days": 111
       },
       {
         "beach_id": "ca465304-san-luis-obispo-olde-port-beach-olde12",
         "risk_band": "Low",
-        "p_exceed": 0.05,
+        "p_exceed": 0.057,
         "pool": "chronic",
         "advisory_age_days": 218
       },
       {
-        "beach_id": "ca400333-san-mateo-oyster-point-marina-oyster-point-marina",
+        "beach_id": "ca125649-santa-barbara-goleta-beach-wp0000037",
         "risk_band": "Low",
-        "p_exceed": 0.064,
+        "p_exceed": 0.058,
         "pool": "chronic",
-        "advisory_age_days": 126
-      },
-      {
-        "beach_id": "ca141759-san-mateo-roosevelt-state-beach-roosevelt-state-beach",
-        "risk_band": "Low",
-        "p_exceed": 0.071,
-        "pool": "chronic",
-        "advisory_age_days": 70
+        "advisory_age_days": 100
       },
       {
         "beach_id": "ca643858-los-angeles-malibu-lagoon-state-beach-smb-mc-2",
         "risk_band": "Low",
-        "p_exceed": 0.081,
+        "p_exceed": 0.084,
         "pool": "chronic",
         "advisory_age_days": 72
       },
       {
-        "beach_id": "ca674364-los-angeles-inner-cabrillo-beach-cb-01",
+        "beach_id": "ca400333-san-mateo-oyster-point-marina-oyster-point-marina",
         "risk_band": "Low",
         "p_exceed": 0.086,
         "pool": "chronic",
-        "advisory_age_days": 139
-      },
-      {
-        "beach_id": "ca880045-san-mateo-rockaway-beach-rockaway-beach",
-        "risk_band": "Low",
-        "p_exceed": 0.122,
-        "pool": "chronic",
-        "advisory_age_days": 70
+        "advisory_age_days": 126
       },
       {
         "beach_id": "ca674364-los-angeles-inner-cabrillo-beach-cb-02",
         "risk_band": "Low",
-        "p_exceed": 0.142,
+        "p_exceed": 0.092,
         "pool": "chronic",
-        "advisory_age_days": 139
+        "advisory_age_days": 140
+      },
+      {
+        "beach_id": "ca141759-san-mateo-roosevelt-state-beach-roosevelt-state-beach",
+        "risk_band": "Low",
+        "p_exceed": 0.101,
+        "pool": "chronic",
+        "advisory_age_days": 70
       },
       {
         "beach_id": "ca562372-san-mateo-venice-state-beach-venice-beach",
         "risk_band": "Low",
-        "p_exceed": 0.144,
-        "pool": "chronic",
-        "advisory_age_days": 126
-      },
-      {
-        "beach_id": "ca809706-san-diego-border-field-state-park-ib-010",
-        "risk_band": "Low",
         "p_exceed": 0.157,
         "pool": "chronic",
-        "advisory_age_days": 132
+        "advisory_age_days": 126
       },
       {
         "beach_id": "ca735620-los-angeles-santa-monica-state-beach-smb-3-3",
         "risk_band": "Low",
-        "p_exceed": 0.163,
+        "p_exceed": 0.162,
         "pool": "chronic",
         "advisory_age_days": 77
       },
       {
-        "beach_id": "ca981265-ventura-surfers-knoll-beach-25000",
+        "beach_id": "ca880045-san-mateo-rockaway-beach-rockaway-beach",
         "risk_band": "Low",
-        "p_exceed": 0.185,
+        "p_exceed": 0.18,
+        "pool": "chronic",
+        "advisory_age_days": 70
+      },
+      {
+        "beach_id": "ca981265-ventura-surfers-knoll-beach-25000",
+        "risk_band": "Moderate",
+        "p_exceed": 0.204,
         "pool": "chronic",
         "advisory_age_days": 71
       },
       {
-        "beach_id": "ca068221-san-diego-imperial-beach-municipal-beach-other-ib-050",
+        "beach_id": "ca809706-san-diego-border-field-state-park-ib-010",
         "risk_band": "Moderate",
-        "p_exceed": 0.265,
+        "p_exceed": 0.289,
         "pool": "chronic",
         "advisory_age_days": 132
-      },
-      {
-        "beach_id": "ca217714-san-mateo-pomponio-state-beach-pomponio-state-beach",
-        "risk_band": "Moderate",
-        "p_exceed": 0.277,
-        "pool": "chronic",
-        "advisory_age_days": 126
       }
     ]
   },
   "false_positives": {
-    "count": 6,
+    "count": 16,
     "description": "Model says High/VeryHigh but no active advisory",
     "worst": [
       {
         "beach_id": "ca104746-san-diego-tijuana-slough-national-wildlife-refuge-ib-030",
         "risk_band": "Very High",
-        "p_exceed": 0.919,
+        "p_exceed": 0.953,
         "pool": "none",
         "advisory_age_days": null
       },
       {
         "beach_id": "ca104746-san-diego-tijuana-slough-national-wildlife-refuge-ib-040",
         "risk_band": "Very High",
-        "p_exceed": 0.702,
+        "p_exceed": 0.794,
         "pool": "none",
         "advisory_age_days": null
       },
       {
         "beach_id": "ca880471-santa-cruz-capitola-city-beach-o235",
-        "risk_band": "High",
-        "p_exceed": 0.39,
+        "risk_band": "Very High",
+        "p_exceed": 0.784,
         "pool": "none",
         "advisory_age_days": null
       },
       {
         "beach_id": "ca880471-santa-cruz-capitola-city-beach-o240",
-        "risk_band": "High",
-        "p_exceed": 0.37,
+        "risk_band": "Very High",
+        "p_exceed": 0.751,
         "pool": "none",
         "advisory_age_days": null
       },
       {
-        "beach_id": "ca826873-east-bay-parks-district-keller-beach-contra-costa-co-keller-mid-beach",
+        "beach_id": "ca905766-santa-cruz-main-beach-o460",
         "risk_band": "High",
-        "p_exceed": 0.314,
+        "p_exceed": 0.489,
+        "pool": "none",
+        "advisory_age_days": null
+      },
+      {
+        "beach_id": "ca447069-san-mateo-pacifica-state-beach-linda-mar-beach-7",
+        "risk_band": "High",
+        "p_exceed": 0.455,
         "pool": "none",
         "advisory_age_days": null
       },
       {
         "beach_id": "ca839312-san-diego-baja-california-mexico-bc-030",
         "risk_band": "High",
-        "p_exceed": 0.306,
+        "p_exceed": 0.441,
+        "pool": "none",
+        "advisory_age_days": null
+      },
+      {
+        "beach_id": "ca517375-san-mateo-fitzgerald-marine-moss-beach-fitzgerald-marine-moss-beach",
+        "risk_band": "High",
+        "p_exceed": 0.428,
+        "pool": "none",
+        "advisory_age_days": null
+      },
+      {
+        "beach_id": "ca905766-santa-cruz-main-beach-o450",
+        "risk_band": "High",
+        "p_exceed": 0.416,
+        "pool": "none",
+        "advisory_age_days": null
+      },
+      {
+        "beach_id": "ca809706-san-diego-border-field-state-park-ib-020",
+        "risk_band": "High",
+        "p_exceed": 0.408,
+        "pool": "none",
+        "advisory_age_days": null
+      },
+      {
+        "beach_id": "ca826873-east-bay-parks-district-keller-beach-contra-costa-co-keller-mid-beach",
+        "risk_band": "High",
+        "p_exceed": 0.391,
+        "pool": "none",
+        "advisory_age_days": null
+      },
+      {
+        "beach_id": "ca883945-san-mateo-pescadero-state-beach-pescadero-state-beach",
+        "risk_band": "High",
+        "p_exceed": 0.38,
+        "pool": "none",
+        "advisory_age_days": null
+      },
+      {
+        "beach_id": "ca202251-santa-cruz-cowell-beach-o490",
+        "risk_band": "High",
+        "p_exceed": 0.353,
+        "pool": "none",
+        "advisory_age_days": null
+      },
+      {
+        "beach_id": "ca852440-san-mateo-pillar-point-harbor-pillar-point-7",
+        "risk_band": "High",
+        "p_exceed": 0.342,
+        "pool": "none",
+        "advisory_age_days": null
+      },
+      {
+        "beach_id": "ca549911-east-bay-parks-district-crown-beach-alameda-co-crown-windsurfer-corner",
+        "risk_band": "High",
+        "p_exceed": 0.302,
+        "pool": "none",
+        "advisory_age_days": null
+      },
+      {
+        "beach_id": "ca534500-san-mateo-gazos-creek-access-gazos-creek-access",
+        "risk_band": "High",
+        "p_exceed": 0.301,
         "pool": "none",
         "advisory_age_days": null
       }
