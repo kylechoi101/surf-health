@@ -50,6 +50,22 @@ def explain_forecast(beach_id: str, date: date, service: BeachService = Depends(
     return service.explain_forecast(beach_id, date)
 
 
+@router.get("/beaches/{beach_id}/hourly")
+async def get_hourly(beach_id: str, service: BeachService = Depends(get_service)):
+    """Hourly intra-day series for Surfline-style charts on the client.
+    Returns wind, UV, temperature, wave height/period/direction at hourly
+    resolution from yesterday-noon through ~48h ahead. Cached server-side
+    for 1 hour per 0.1° lat/lon grid cell."""
+    from app.services.hourly_weather import fetch_hourly
+
+    # Look up the beach to get coordinates. get_beach raises 404 if unknown.
+    beach = service.repository.get_beach(beach_id)
+    payload = await fetch_hourly(beach.geometry.latitude, beach.geometry.longitude)
+    if payload is None:
+        raise HTTPException(status_code=502, detail="upstream weather service unavailable")
+    return {"beach_id": beach_id, **payload}
+
+
 @router.get("/system/health")
 def system_health(service: BeachService = Depends(get_service)):
     health = service.get_system_health()
