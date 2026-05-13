@@ -2,15 +2,25 @@
 
 California marine beach health forecast platform focused on daily enterococcus risk for surfers and beachgoers.
 
-## Project Structure
+This **public repository** holds the open-source ML pipeline + research methodology.
+The consumer-facing web and mobile apps live in private repositories:
+
+| Surface | Source | Status |
+|---|---|---|
+| Backend API + ML pipeline | This repo (Apache-2.0) | Public, reviewable |
+| Web app (Next.js → GitHub Pages) | `kylechoi101/shorelife-web` | Private |
+| Mobile app (Expo → iOS + Android) | `kylechoi101/shorelife-mobile` | Private |
+
+Open-core rationale: the science is reviewable so users, journalists, and partners can trust the forecast. The brand, UX, and operational artifacts that constitute the competitive surface live behind the private repos. See [docs/REPO_RESTRUCTURE.md](docs/REPO_RESTRUCTURE.md).
+
+## Project Structure (public repo)
 
 - `backend/`: Python FastAPI service, ingestion pipelines (BeachWatch, CEDEN, Stormwater), feature engineering, model training, and tests.
-- `web/`: Next.js (React) website for public and research-facing views.
-- `mobile/`: React Native (Expo) mobile application for iOS and Android.
+- `scripts/`: Reproducible research scripts (per-station residual benchmarks, Wikimedia photo curation, hourly weather refresh, etc.).
+- `data/curated/`: Schemas and small samples. The production `serving.sqlite` artifact is served from Render at runtime.
+- `docs/`: Methodology, model card, outreach kit.
 
 ## Local Development
-
-### Backend
 
 The backend requires Python 3.12.
 
@@ -26,67 +36,36 @@ To run the API locally:
 uvicorn app.main:app --reload
 ```
 
-### Web
-
-The web app uses Next.js.
-
+To run a daily training pass:
 ```bash
-cd web
-npm install
+python -m app.ml.training --curated --winner-only \
+  --spatial-backtests --spatial-strategy shortlist \
+  --training-window-days 365 --forecast-min-recency-days 45 \
+  --forecast-date "$(TZ=America/Los_Angeles date +%Y-%m-%d)"
 ```
 
-Set `NEXT_PUBLIC_API_BASE_URL=http://localhost:8000` in `web/.env.local`.
+## Automated pipeline
 
-To run the web app:
-```bash
-npm run dev
-```
+`.github/workflows/daily-forecast.yml` runs daily at 6 AM PT and:
 
-### Mobile
+1. Pulls California BeachWatch + CEDEN safe-to-swim data
+2. Pulls external covariates (CDIP, CeNCOOS, EPA UV, hydrology, stormwater)
+3. Trains the production ML model with spatial holdout backtests
+4. Refreshes forecast-time weather (Open-Meteo) to give every beach 100% wind/UV coverage
+5. Audits forecasts vs official advisories
+6. Bakes the API serving snapshot (`serving.sqlite`)
+7. Verifies public-release gates (calibration slope, AUCPR vs persistence)
+8. Commits and pushes the refreshed `data/curated/`, triggering an automatic Render redeploy
 
-The mobile app is built with Expo.
+## Methodology
 
-```bash
-cd mobile
-npm install
-```
+The full methodology, calibration metrics, known failure modes, and citations are in [`data/curated/model_card.md`](data/curated/model_card.md). System health and live metrics are available at [`https://surf-health-api.onrender.com/system/health`](https://surf-health-api.onrender.com/system/health).
 
-To run the mobile app locally:
-```bash
-npm start
-```
+## License
 
-## Data + Modeling
-
-The backend ships with fixtures so the API and UI work immediately without needing to run the full pipeline.
-
-### Automated Pipelines
-
-The entire data ingestion, ML training, and static data generation process is fully automated via GitHub Actions (`daily-forecast.yml`). It runs daily to:
-1. Fetch the latest California BeachWatch data.
-2. Fetch CEDEN Safe-to-Swim data.
-3. Fetch external covariates (CDIP, CeNCOOS, EPA UV, Hydrology, Stormwater).
-4. Run ML model training and generate forecasts.
-5. Bake static data for the web/mobile apps.
-6. Commit the updated curated data back to the repository.
-
-### Manual Data Pipeline
-
-If you need to run the pipeline manually locally, refer to the scripts in `backend/app/data/pipeline/` and `backend/app/ml/training.py`.
-
-## Mobile Deployment
-
-Mobile deployment to iOS and Android is handled via Expo Application Services (EAS).
-
-- **iOS:** Run `./build_and_submit.sh` in the `mobile/` directory to build and submit to TestFlight.
-- **Android:** Run `./build_and_submit_android.sh` to trigger an EAS cloud build. Note: The first `.aab` upload must be done manually via the Google Play Console.
-
-## Notes
-
-- Operational storage targets Postgres/PostGIS and research snapshots target DuckDB/Parquet/SQLite.
-- The current repo is scaffolded for local-first development on Apple Silicon with PyTorch MPS.
+Apache License 2.0 — see [LICENSE](LICENSE). Anyone may use, modify, and redistribute this code with attribution.
 
 ## Acknowledgement
 
-- This project is inspired by the project my team attempted to do: https://github.com/SatrunsDream/DataTide
+- This project is inspired by the project my team attempted: https://github.com/SatrunsDream/DataTide
 - Special thanks to Allison Sharpe, Stormwater Environmental Specialist at City of San Diego.
