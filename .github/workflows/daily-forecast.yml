@@ -82,6 +82,10 @@ jobs:
         working-directory: backend
 
       - name: Run stormwater/outfall feature pipeline
+        # External ArcGIS endpoints (e.g. Orange County) occasionally return 500/503.
+        # Don't fail the whole daily pipeline over a transient upstream outage —
+        # cached parquets from the previous run carry the model through.
+        continue-on-error: true
         run: |
           python -m app.data.pipeline.stormwater \
             --curated-dir ../data/curated \
