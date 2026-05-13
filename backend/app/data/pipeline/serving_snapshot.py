@@ -121,7 +121,11 @@ def _recent_advisories(advisories: pd.DataFrame) -> pd.DataFrame:
     recent["started_at"] = pd.to_datetime(recent["started_at"], errors="coerce")
     recent = recent.sort_values(["beach_id", "started_at"], ascending=[True, False])
     latest = recent.groupby("beach_id", as_index=False, group_keys=False).head(10)
-    active = recent.loc[recent["status"] == "active"]
+    # Only carry currently-active advisories (started within the last 30 days).
+    # See filter_currently_active() docstring for rationale — protects against
+    # zombie advisories that were never explicitly closed in the source feed.
+    from app.repositories.curated_repository import filter_currently_active
+    active = filter_currently_active(recent)
     return pd.concat([latest, active], ignore_index=True).drop_duplicates()[columns]
 
 

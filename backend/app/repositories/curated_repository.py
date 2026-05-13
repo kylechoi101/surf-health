@@ -30,6 +30,31 @@ from app.schemas.domain import (
     sample_recency_band,
 )
 
+# Advisories from data.ca.gov sometimes carry status="active" for years because
+# the county never logged a closure event. A bacterial-violation advisory in
+# real life rarely lasts more than a week; treating a 4-year-old "active" row
+# as currently in effect produces false positives like Windansea (advisory
+# posted 2022-07-12, never closed). 30 days is generous and matches the
+# longest plausible legitimate posting; older active-status rows are stale.
+ADVISORY_MAX_AGE_DAYS = 30
+
+
+def filter_currently_active(advisories: pd.DataFrame) -> pd.DataFrame:
+    """Return the rows that are both status='active' and started within the
+    ADVISORY_MAX_AGE_DAYS window. Used by serving_snapshot and the live
+    repository so the API and the snapshot agree."""
+    if advisories.empty or "status" not in advisories.columns:
+        return advisories.iloc[0:0]
+    active = advisories.loc[advisories["status"] == "active"].copy()
+    if active.empty:
+        return active
+    if "started_at" not in active.columns:
+        return active
+    started = pd.to_datetime(active["started_at"], errors="coerce", utc=True)
+    cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=ADVISORY_MAX_AGE_DAYS)
+    return active.loc[started >= cutoff]
+
+
 OBSERVATION_COLUMNS = [
     "beach_id",
     "sample_time",
@@ -246,7 +271,7 @@ class CuratedBeachRepository(BeachRepository):
         active_stations: set[str] = set()
         advisory_website_lookup: dict[str, str | None] = {}
         if not self.advisories_frame.empty:
-            active = self.advisories_frame.loc[self.advisories_frame["status"] == "active"]
+            active = filter_currently_active(self.advisories_frame)
             active_stations = set(active["beach_id"].tolist())
             if "advisory_website" in active.columns and not active.empty:
                 # Most-recent active advisory URL per station
@@ -447,9 +472,9 @@ class CuratedBeachRepository(BeachRepository):
         }
 
     def _active_advisory_beach_ids(self) -> set[str]:
-        if self.advisories_frame.empty or "status" not in self.advisories_frame.columns:
+        active = filter_currently_active(self.advisories_frame)
+        if active.empty:
             return set()
-        active = self.advisories_frame.loc[self.advisories_frame["status"] == "active"]
         return {str(beach_id) for beach_id in active["beach_id"].dropna()}
 
     def _has_active_advisory(self, beach_id: str) -> bool:

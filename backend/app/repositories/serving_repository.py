@@ -174,15 +174,27 @@ class ServingSnapshotRepository(BeachRepository):
         self._parent_name_by_member_id = mapping
         return mapping
 
+    # data.ca.gov advisories are sometimes left status='active' for years after
+    # the actual posting was lifted (counties don't reliably log closure events).
+    # Only treat an advisory as currently in effect if its start date is within
+    # this window — past that we consider it stale and fall back to the model.
+    _ACTIVE_ADVISORY_WINDOW_DAYS = 30
+
     def _active_advisory_beach_ids(self) -> set[str]:
-        rows = self._fetch_all("select distinct beach_id from advisories_recent where status = 'active'")
+        rows = self._fetch_all(
+            "select distinct beach_id from advisories_recent "
+            "where status = 'active' "
+            f"and started_at >= datetime('now', '-{self._ACTIVE_ADVISORY_WINDOW_DAYS} days')"
+        )
         return {str(row["beach_id"]) for row in rows}
 
     def _active_advisory_websites(self) -> dict[str, str | None]:
         """Return the most-recent active advisory URL per beach_id."""
         rows = self._fetch_all(
             "select beach_id, advisory_website from advisories_recent "
-            "where status = 'active' order by started_at desc"
+            "where status = 'active' "
+            f"and started_at >= datetime('now', '-{self._ACTIVE_ADVISORY_WINDOW_DAYS} days') "
+            "order by started_at desc"
         )
         result: dict[str, str | None] = {}
         for row in rows:
