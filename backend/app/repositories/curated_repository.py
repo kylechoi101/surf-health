@@ -41,9 +41,19 @@ ADVISORY_MAX_AGE_DAYS = 14
 
 
 def filter_currently_active(advisories: pd.DataFrame) -> pd.DataFrame:
-    """Return the rows that are both status='active' and started within the
-    ADVISORY_MAX_AGE_DAYS window. Used by serving_snapshot and the live
-    repository so the API and the snapshot agree."""
+    """Return the rows that are both status='active' and currently in effect.
+
+    Postings (and similar acute advisories) are gated by the
+    ADVISORY_MAX_AGE_DAYS window to prevent zombie records (counties
+    don't reliably log closure events).
+
+    Closures are NOT age-gated — they describe ongoing health hazards that
+    persist until the county explicitly lifts them. Long-standing shoreline
+    closures (Tijuana Slough since Oct 2025, Imperial Beach Pier since
+    Dec 2025) need to surface forever until the scraper stops seeing them
+    in the live feed (at which point the county-direct merge demotes
+    them via the authoritative-county rule).
+    """
     if advisories.empty or "status" not in advisories.columns:
         return advisories.iloc[0:0]
     active = advisories.loc[advisories["status"] == "active"].copy()
@@ -53,7 +63,9 @@ def filter_currently_active(advisories: pd.DataFrame) -> pd.DataFrame:
         return active
     started = pd.to_datetime(active["started_at"], errors="coerce", utc=True)
     cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=ADVISORY_MAX_AGE_DAYS)
-    return active.loc[started >= cutoff]
+    advisory_type = active.get("advisory_type", pd.Series("", index=active.index))
+    is_closure = advisory_type.fillna("").str.contains("closure", case=False, na=False)
+    return active.loc[is_closure | (started >= cutoff)]
 
 
 OBSERVATION_COLUMNS = [

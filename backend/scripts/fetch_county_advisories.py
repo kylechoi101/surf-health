@@ -231,8 +231,31 @@ SD_HOMEPAGE = "https://www.sdbeachinfo.com/"
 SD_GETDATA = "https://www.sdbeachinfo.com/Home/GetData"
 
 
+def _sd_fetch_partial(client: httpx.Client, name: str) -> str:
+    resp = client.post(
+        SD_GETDATA,
+        data={"name": name},
+        headers={
+            "User-Agent": UA,
+            "X-Requested-With": "XMLHttpRequest",
+            "Referer": SD_HOMEPAGE,
+        },
+        timeout=30.0,
+    )
+    resp.raise_for_status()
+    return resp.text
+
+
 def fetch_san_diego_advisories(client: httpx.Client, resolver: StationResolver) -> tuple[list[CountyAdvisory], CountyReport]:
-    """Scrape sdbeachinfo.com /Home/GetData?name=_AdvisoryPartialView."""
+    """Scrape sdbeachinfo.com.
+
+    Pulls TWO partials:
+      - _AdvisoryPartialView: per-station Advisories / Closures / Chronic
+        Advisories (with station code in parentheses).
+      - _ClosurePartialView: shoreline-scope closures (Tijuana Slough,
+        Silver Strand, Imperial Beach) that span multiple stations and
+        have no per-station code.
+    """
     rpt = CountyReport(
         county="San Diego",
         success=False,
@@ -241,23 +264,29 @@ def fetch_san_diego_advisories(client: httpx.Client, resolver: StationResolver) 
     )
     rpt.stations_in_lookup = len(resolver._station_code_lookup.get("San Diego", {}))
     try:
-        resp = client.post(
-            SD_GETDATA,
-            data={"name": "_AdvisoryPartialView"},
-            headers={
-                "User-Agent": UA,
-                "X-Requested-With": "XMLHttpRequest",
-                "Referer": SD_HOMEPAGE,
-            },
-            timeout=30.0,
-        )
-        resp.raise_for_status()
-        html = resp.text
+        html = _sd_fetch_partial(client, "_AdvisoryPartialView")
+        closure_html = _sd_fetch_partial(client, "_ClosurePartialView")
     except Exception as e:
         rpt.error = f"fetch failed: {e}"
         return [], rpt
 
+    # San Diego also lists "Closure: <Shoreline name>" entries that span
+    # multiple stations without a per-station code (Tijuana Slough,
+    # Silver Strand, Imperial Beach). Map each shoreline to the stations
+    # the live page describes (verified from sdbeachinfo.com's Stations
+    # field). These persist as long as the shoreline closure is listed.
+    SD_SHORELINE_CLOSURES = {
+        "Tijuana Slough Shoreline": ["IB-010", "IB-020", "IB-030", "IB-040"],
+        "Silver Strand Shoreline": ["IB-067", "IB-068", "IB-069", "IB-070"],
+        "Imperial Beach Shoreline": [
+            "EH-010", "EH-020", "EH-030", "EH-033", "EH-041",
+            "IB-045", "IB-050", "IB-060", "PL-010",
+        ],
+    }
+
     advisories: list[CountyAdvisory] = []
+
+    # Pass 1: per-station Advisories / Closures / Chronic from _AdvisoryPartialView
     for li in re.findall(r"<li>(.*?)</li>", html, re.DOTALL):
         text = _clean_html_text(li)
         if "Status Since" not in text:
@@ -303,6 +332,50 @@ def fetch_san_diego_advisories(client: httpx.Client, resolver: StationResolver) 
             advisory_website=SD_HOMEPAGE,
             cause=cause,
         ))
+
+    # Pass 2: shoreline-scope closures from _ClosurePartialView. These span
+    # multiple stations without per-station codes (Tijuana Slough since
+    # Oct 2025, Imperial Beach since Dec 2025, etc.). Expand each to all
+    # the affected stations so they show as Closed in the API+UI.
+    for li in re.findall(r"<li>(.*?)</li>", closure_html, re.DOTALL):
+        text = _clean_html_text(li)
+        if "Status Since" not in text:
+            continue
+        if not re.match(r"^Closure\s*:", text):
+            continue
+        # Match shoreline name; allow flexible whitespace because the live
+        # HTML has &nbsp; sprinkled inside (e.g., "Silver Strand Shoreline").
+        matched_codes: list[str] | None = None
+        matched_name: str | None = None
+        for shoreline, codes in SD_SHORELINE_CLOSURES.items():
+            pattern = re.compile(r"\s+".join(re.escape(w) for w in shoreline.split()), re.IGNORECASE)
+            if pattern.search(text):
+                matched_codes = codes
+                matched_name = shoreline
+                break
+        if not matched_codes:
+            continue
+        m_date = re.search(
+            r"Status Since\s*:\s*([A-Za-z]+\s+\d+,?\s*\d{4}|[A-Za-z]+\s+\d{4})",
+            text,
+        )
+        if not m_date:
+            continue
+        started_at = _parse_us_date(m_date.group(1))
+        if started_at is None:
+            continue
+        cause = "Other - Tijuana River Associated" if "tijuana" in text.lower() else "Bacterial Standards Violation"
+        for code in matched_codes:
+            advisories.append(CountyAdvisory(
+                county="San Diego",
+                station_code=code,
+                area=matched_name,
+                advisory_type="Closure",
+                started_at=started_at,
+                advisory_website=SD_HOMEPAGE,
+                cause=cause,
+            ))
+
     rpt.success = True
     rpt.advisories_parsed = len(advisories)
     return advisories, rpt

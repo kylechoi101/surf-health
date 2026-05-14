@@ -90,7 +90,13 @@ def _active_advisory_set(advisories: pd.DataFrame) -> tuple[set[str], dict[str, 
     a = advisories.copy()
     a["started_at"] = pd.to_datetime(a["started_at"], errors="coerce")
     cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=ACTIVE_WINDOW_DAYS)
-    active = a[(a["status"] == "active") & (a["started_at"] >= cutoff)]
+    is_active = a["status"] == "active"
+    # Closures bypass the 14d acute window — they describe ongoing hazards
+    # (Tijuana Slough since Oct 2025, etc.) and persist until the scraper
+    # stops seeing them. Postings still get the 14d gate.
+    advisory_type = a.get("advisory_type", pd.Series("", index=a.index))
+    is_closure = advisory_type.fillna("").str.contains("closure", case=False, na=False)
+    active = a[is_active & (is_closure | (a["started_at"] >= cutoff))]
     ids = {str(b) for b in active["beach_id"].dropna()}
     # Per-beach: first non-null website
     websites: dict[str, str] = {}
