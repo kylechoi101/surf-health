@@ -628,6 +628,236 @@ def fetch_marin_advisories(client: httpx.Client, resolver: StationResolver) -> t
     return advisories, rpt
 
 
+# ---------- Long Beach City ---------- #
+
+
+LB_HOMEPAGE = "https://longbeach.gov/health/inspections-and-reporting/inspections/recreational-water-samples/"
+# Long Beach renders a 4-column status grid per beach: cells colored
+# green (#00cc00 OPEN), blue (#9bc2e6 ADVISORY), yellow (#ffff00 RAIN ADVISORY),
+# red (#ff0000 CLOSED). The active cell contains "●". Beach rows are <tr>'s
+# with first two cells = station code (B-XX) and beach name, then 4 status cells.
+_LB_STATUS_COLORS = {
+    "#00cc00": ("OPEN", None),
+    "#9bc2e6": ("Posting", "Bacterial Standards Violation"),
+    "#ffff00": ("Posting", "Rain Advisory"),
+    "#ff0000": ("Closure", "Significant health risk"),
+}
+
+
+def fetch_long_beach_advisories(
+    client: httpx.Client, resolver: StationResolver
+) -> tuple[list[CountyAdvisory], CountyReport]:
+    rpt = CountyReport(
+        county="Long Beach City",
+        success=False,
+        last_attempted_at=datetime.now(timezone.utc).isoformat(),
+        source_url=LB_HOMEPAGE,
+    )
+    rpt.stations_in_lookup = len(resolver._beach_name_lookup.get("Long Beach City", {}))
+    try:
+        resp = client.get(LB_HOMEPAGE, headers={"User-Agent": _BROWSER_UA}, timeout=30.0)
+        resp.raise_for_status()
+    except Exception as e:
+        rpt.error = f"fetch failed: {e}"
+        return [], rpt
+
+    html = resp.text
+    # Find the page-level "Website Updated: M/D/YYYY" so we have an accurate
+    # `started_at` for each row (LB doesn't show per-row dates).
+    date_match = re.search(r"Website Updated:\s*(\d{1,2}/\d{1,2}/\d{2,4})", html)
+    started_at = _parse_us_date(date_match.group(1)) if date_match else pd.Timestamp.now().normalize()
+
+    # Each row: <tr>...<td>B-XX</td>...<td>name</td>...4× <td style="background-color: ..."> with ● in the active cell.
+    advisories: list[CountyAdvisory] = []
+    for row_match in re.finditer(r"<tr[^>]*>(.+?)</tr>", html, re.DOTALL):
+        row_html = row_match.group(1)
+        # Pull each <td ...>inner</td> as a (opening-tag, inner) pair
+        cells = re.findall(r"(<td[^>]*>)(.*?)</td>", row_html, re.DOTALL)
+        if len(cells) < 6:
+            continue
+        code_clean = re.sub(r"<[^>]+>", "", cells[0][1]).strip().replace("\xa0", "")
+        code_clean = re.sub(r"\s+", " ", code_clean).strip()
+        name_clean = re.sub(r"<[^>]+>", " ", cells[1][1])
+        name_clean = re.sub(r"&nbsp;|\xa0", " ", name_clean)
+        name_clean = re.sub(r"\s+", " ", name_clean).strip()
+        # Must look like "B-NN"
+        m_code = re.match(r"^(B-\d+)", code_clean)
+        if not m_code:
+            continue
+        code_clean = m_code.group(1)
+        # Find which of cells 2..5 has ● and what color the cell is
+        active_status = None
+        active_cause = None
+        for open_tag, inner in cells[2:6]:
+            if "●" not in inner:
+                continue
+            style = open_tag.lower()
+            for color, (status, cause) in _LB_STATUS_COLORS.items():
+                if color in style:
+                    active_status = status
+                    active_cause = cause
+                    break
+            if active_status is not None:
+                break
+        if active_status in (None, "OPEN"):
+            continue
+        advisories.append(CountyAdvisory(
+            county="Long Beach City",
+            station_code=code_clean,
+            area=name_clean,
+            advisory_type=active_status,
+            started_at=started_at,
+            advisory_website=LB_HOMEPAGE,
+            cause=active_cause,
+        ))
+    rpt.success = True
+    rpt.advisories_parsed = len(advisories)
+    return advisories, rpt
+
+
+# ---------- East Bay Regional Park District ---------- #
+
+
+EB_HOMEPAGE = "https://www.ebparks.org/natural-resources/water-quality"
+
+
+def fetch_east_bay_advisories(
+    client: httpx.Client, resolver: StationResolver
+) -> tuple[list[CountyAdvisory], CountyReport]:
+    """East Bay Parks publishes a 3-column table (Alert Level | Park | Description).
+    Each row that is not 'No Advisory Posted' is an active alert. The Description
+    cell starts with the specific beach/lake name."""
+    rpt = CountyReport(
+        county="East Bay Parks District",
+        success=False,
+        last_attempted_at=datetime.now(timezone.utc).isoformat(),
+        source_url=EB_HOMEPAGE,
+    )
+    rpt.stations_in_lookup = len(resolver._beach_name_lookup.get("East Bay Parks District", {}))
+    try:
+        resp = client.get(EB_HOMEPAGE, headers={"User-Agent": _BROWSER_UA}, timeout=30.0)
+        resp.raise_for_status()
+    except Exception as e:
+        rpt.error = f"fetch failed: {e}"
+        return [], rpt
+
+    html = resp.text
+    table_match = re.search(r"<table.*?</table>", html, re.DOTALL)
+    if not table_match:
+        rpt.error = "no <table> found"
+        return [], rpt
+    rows = re.findall(r"<tr[^>]*>(.+?)</tr>", table_match.group(0), re.DOTALL)
+
+    started_at = pd.Timestamp.now().normalize()
+    advisories: list[CountyAdvisory] = []
+    for row in rows:
+        cells = re.findall(r"<t[hd][^>]*>(.*?)</t[hd]>", row, re.DOTALL)
+        if len(cells) < 3:
+            continue
+        alert = re.sub(r"<[^>]+>", " ", cells[0])
+        alert = re.sub(r"\s+", " ", alert).strip()
+        if not alert or "Alert Level" in alert or "No Advisory" in alert:
+            continue
+        descr = re.sub(r"<[^>]+>", " ", cells[2])
+        descr = re.sub(r"&nbsp;", " ", descr)
+        descr = re.sub(r"\s+", " ", descr).strip()
+        # Beach name = everything before "Water Quality Conditions"
+        name_match = re.match(r"(.+?)\s*Water Quality Conditions", descr)
+        beach_name = name_match.group(1).strip() if name_match else descr.split(".")[0][:60]
+        if not beach_name:
+            continue
+        if "Caution" in alert:
+            adv_type = "Posting"
+            cause = "Caution Advisory (Blue-Green Algae)"
+        elif "Danger" in alert:
+            adv_type = "Closure"
+            cause = "Danger Advisory (Blue-Green Algae)"
+        elif "Water Advisory" in alert:
+            adv_type = "Posting"
+            cause = "Water Advisory"
+        else:
+            adv_type = "Posting"
+            cause = alert
+        advisories.append(CountyAdvisory(
+            county="East Bay Parks District",
+            station_code=None,
+            area=beach_name,
+            advisory_type=adv_type,
+            started_at=started_at,
+            advisory_website=EB_HOMEPAGE,
+            cause=cause,
+        ))
+    rpt.success = True
+    rpt.advisories_parsed = len(advisories)
+    return advisories, rpt
+
+
+# ---------- Ventura County ---------- #
+
+
+VT_HOMEPAGE = "https://rma.venturacounty.gov/divisions/environmental-health/ocean-water-quality-sampling-results/"
+
+
+def fetch_ventura_advisories(
+    client: httpx.Client, resolver: StationResolver
+) -> tuple[list[CountyAdvisory], CountyReport]:
+    """Ventura publishes either:
+      - the all-clear sentinel 'no beaches in Ventura County posted with ocean
+        water quality warning signs', OR
+      - a list of currently-posted beaches.
+    We detect the sentinel first (legitimate 0-advisory state) and, if absent,
+    scan for posted-beach mentions."""
+    rpt = CountyReport(
+        county="Ventura",
+        success=False,
+        last_attempted_at=datetime.now(timezone.utc).isoformat(),
+        source_url=VT_HOMEPAGE,
+    )
+    rpt.stations_in_lookup = len(resolver._beach_name_lookup.get("Ventura", {}))
+    try:
+        resp = client.get(VT_HOMEPAGE, headers={"User-Agent": _BROWSER_UA}, timeout=30.0)
+        resp.raise_for_status()
+    except Exception as e:
+        rpt.error = f"fetch failed: {e}"
+        return [], rpt
+
+    text = _clean_html_text(resp.text)
+    # All-clear sentinel
+    if re.search(
+        r"no beaches in Ventura County posted with ocean water quality warning signs",
+        text,
+        re.IGNORECASE,
+    ):
+        rpt.success = True
+        rpt.advisories_parsed = 0
+        return [], rpt
+
+    # Fallback: scan for "is posted" / "Warning is in effect" near beach names.
+    # Ventura uses table rows for posted beaches; conservative scan returns
+    # empty if structure is unrecognized rather than guessing.
+    advisories: list[CountyAdvisory] = []
+    for m in re.finditer(
+        r"([A-Z][A-Za-z'\.\s]{3,40}Beach)[^.]{0,200}?(?:warning|posted|exceeds?\s+state)",
+        text,
+        re.IGNORECASE,
+    ):
+        beach = m.group(1).strip()
+        if len(beach) > 50:
+            continue
+        advisories.append(CountyAdvisory(
+            county="Ventura",
+            station_code=None,
+            area=beach,
+            advisory_type="Posting",
+            started_at=pd.Timestamp.now().normalize(),
+            advisory_website=VT_HOMEPAGE,
+            cause="Bacterial Standards Violation",
+        ))
+    rpt.success = True
+    rpt.advisories_parsed = len(advisories)
+    return advisories, rpt
+
+
 # ---------- Best-effort stubs (try, log, move on) ---------- #
 
 
@@ -781,12 +1011,12 @@ COUNTIES_FIRST_CLASS = [
     ("San Mateo", fetch_san_mateo_advisories),
     ("Los Angeles", fetch_la_county_advisories),
     ("Marin", fetch_marin_advisories),
+    ("Long Beach City", fetch_long_beach_advisories),
+    ("East Bay Parks District", fetch_east_bay_advisories),
+    ("Ventura", fetch_ventura_advisories),
 ]
 
 BEST_EFFORT_COUNTIES: dict[str, list[str]] = {
-    "Ventura": [
-        "https://rma.venturacounty.gov/divisions/environmental-health/ocean-water-quality-sampling-results/",
-    ],
     "Monterey": [
         "https://www.countyofmonterey.gov/government/departments-a-h/health/environmental-health/general/public-beaches-water-quality",
         "https://www.countyofmonterey.gov/Home/Components/News/News/9999/16",
@@ -800,14 +1030,6 @@ BEST_EFFORT_COUNTIES: dict[str, list[str]] = {
         "https://www.sfgov.org/dph/swimming-beaches",
         "https://www.sf.gov/information--checking-ocean-and-beach-water-quality",
         "https://sfpuc.org/water/water-quality/ocean-and-bay-monitoring",
-    ],
-    "East Bay Parks District": [
-        "https://www.ebparks.org/natural-resources/water-quality",
-        "https://www.acgov.org/aceh/index.htm",
-    ],
-    "Long Beach City": [
-        "https://www.longbeach.gov/health/inspections-and-reporting/inspections/water-quality/ocean-water-monitoring/",
-        "https://www.longbeach.gov/beachwaterquality/",
     ],
 }
 
