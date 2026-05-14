@@ -24,7 +24,7 @@ COUNTY_ADVISORY_WEBSITES = {
     "Los Angeles": "http://publichealth.lacounty.gov/phcommon/public/eh/water_quality/beach_grades.cfm",
     "Orange": "https://ocbeachinfo.com/",
     "San Diego": "https://www.sdbeachinfo.com/",
-    "Santa Barbara": "https://countyofsb.org/phd/eh/beach-water.sbc",
+    "Santa Barbara": "https://www.countyofsb.org/2263/Ocean-Water-Monitoring-Program",
     "Marin": "https://www.marincounty.org/depts/eh/services/beachsig",
     "Alameda": "https://acgov.org/aceh/water/swim.htm",
     "Monterey": "https://www.montereycountyhealth.com/183/Beach-Posting",

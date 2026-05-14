@@ -1074,9 +1074,8 @@ BEST_EFFORT_COUNTIES: dict[str, list[str]] = {
         "https://www.countyofmonterey.gov/Home/Components/News/News/9999/16",
     ],
     "Santa Barbara": [
-        "https://countyofsb.org/phd/eh/beach-water.sbc",
-        "https://www.countyofsb.org/phd/eh/Beach-Water-Quality.sbc",
-        "https://publichealthsbc.org/environmentalhealth/beach-water-quality/",
+        # SB redesigned their site; old /phd/eh/beach-water.sbc returns a soft 404.
+        "https://www.countyofsb.org/2263/Ocean-Water-Monitoring-Program",
     ],
     "San Francisco": [
         "https://www.sfgov.org/dph/swimming-beaches",
