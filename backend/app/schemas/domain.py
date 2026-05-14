@@ -92,6 +92,14 @@ class ForecastRecord(BaseModel):
     official_advisory_active: bool = False
     advisory_floor_applied: bool = False
     advisory_website: str | None = None
+    # Parent-aware sibling-advisory signal: true when THIS station has no
+    # active advisory but at least one other station under the same parent
+    # beach (same beach_id prefix) does. The UI uses this to render a soft
+    # "a related station is posted" callout so users aren't confused when
+    # the parent card shows Advisory but the specific station they tapped
+    # is Low.
+    parent_has_active_advisory: bool = False
+    parent_advisory_website: str | None = None
     forecast_label_mode: ForecastLabelMode = "model"
     sample_age_days: int | None = Field(default=None, ge=0)
     sample_recency_band: SampleRecencyBand = "unknown"

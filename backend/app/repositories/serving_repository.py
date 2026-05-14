@@ -5,6 +5,7 @@ import os
 import re
 import sqlite3
 from datetime import UTC, date, datetime
+from functools import cache
 from math import isnan, log10
 from pathlib import Path
 from typing import Any
@@ -205,6 +206,50 @@ class ServingSnapshotRepository(BeachRepository):
                 result[bid] = _coerce_advisory_website(row["advisory_website"] if "advisory_website" in row.keys() else None)
         return result
 
+    @cache
+    def _station_to_parent_members(self) -> dict[str, tuple[str, ...]]:
+        """For each station beach_id, return the list of sibling station ids
+        that share the same parent (via the parent_beaches table's
+        member_beach_ids). Used by the per-station forecast to flag when a
+        sibling is under an active advisory.
+        """
+        result: dict[str, tuple[str, ...]] = {}
+        try:
+            rows = self._fetch_all(
+                "select parent_beach_id, member_beach_ids from parent_beaches"
+            )
+        except sqlite3.OperationalError:
+            return result
+        for row in rows:
+            raw = row["member_beach_ids"] if "member_beach_ids" in row.keys() else None
+            try:
+                members = tuple(str(b) for b in json.loads(raw)) if raw else tuple()
+            except (TypeError, ValueError, json.JSONDecodeError):
+                # Sometimes stored as a python-list-stringified column; fall back to string parsing.
+                if isinstance(raw, str):
+                    members = tuple(s.strip().strip("'\"") for s in raw.strip("[]").split(",") if s.strip())
+                else:
+                    members = tuple()
+            for bid in members:
+                result[bid] = members
+        return result
+
+    def _parent_advisory_signal(self, beach_id: str, active_set: set[str], website_map: dict[str, str | None]) -> tuple[bool, str | None]:
+        """Return (parent_has_active_advisory, parent_advisory_website) for
+        a station that does NOT have its own active advisory. Looks at
+        every sibling under the same parent; if any sibling is under an
+        active advisory, return True + that sibling's URL (so the UI can
+        link to the same county source the parent card uses)."""
+        siblings = self._station_to_parent_members().get(beach_id, ())
+        if not siblings:
+            return False, None
+        for sibling_id in siblings:
+            if sibling_id == beach_id:
+                continue
+            if sibling_id in active_set:
+                return True, website_map.get(sibling_id)
+        return False, None
+
     def _beach_from_row(self, row: sqlite3.Row, model_version: str | None = None) -> BeachSummary:
         support = str(row["support_status"]) if model_version else "unsupported"
         beach_id = str(row["beach_id"])
@@ -330,18 +375,25 @@ class ServingSnapshotRepository(BeachRepository):
                 gen_at = gen_at.replace(tzinfo=UTC)
             age_hours = max(0, int((now_utc - gen_at).total_seconds() / 3600))
 
-        active_advisory = beach_id in self._active_advisory_beach_ids()
+        active_set = self._active_advisory_beach_ids()
+        website_map = self._active_advisory_websites()
+        active_advisory = beach_id in active_set
         base_drivers = [str(item) for item in _parse_json_list(row.get("top_drivers"))]
         raw_p_exceed = _safe_float(row.get("p_exceed_raw"))
         model_risk_band = risk_band(raw_p_exceed) if raw_p_exceed is not None else str(row["risk_band"])
         advisory_website: str | None = None
+        parent_has_advisory = False
+        parent_advisory_url: str | None = None
         if active_advisory:
             drivers = ["Official health advisory is active for this station.", *base_drivers][:5]
             band = "Advisory"  # Authoritative county posting; UI surfaces the source link separately.
-            advisory_website = self._active_advisory_websites().get(beach_id)
+            advisory_website = website_map.get(beach_id)
         else:
             drivers = base_drivers
             band = model_risk_band
+            parent_has_advisory, parent_advisory_url = self._parent_advisory_signal(
+                beach_id, active_set, website_map
+            )
 
         sample_age = _safe_int(row.get("sample_age_days"))
         if sample_age is None:
@@ -353,6 +405,8 @@ class ServingSnapshotRepository(BeachRepository):
             risk_band=band,
             model_risk_band=model_risk_band if active_advisory else None,
             advisory_website=advisory_website,
+            parent_has_active_advisory=parent_has_advisory,
+            parent_advisory_website=parent_advisory_url,
             p_exceed=float(row["p_exceed"]),
             p_exceed_raw=_safe_float(row.get("p_exceed_raw")),
             advisory_floor_applied=_safe_bool(row.get("advisory_floor_applied"), default=False),
