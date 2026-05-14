@@ -7,11 +7,12 @@ on:
   push:
     branches: [main]
     paths:
+      # Auto-fire ONLY when the pipeline code in backend/app/** changes.
+      # Scraper-only or tool-only edits (backend/scripts/**, scripts/**) and
+      # dependency bumps used to auto-fire this 30-min refresh on every push;
+      # those should now run via workflow_dispatch or wait for the daily cron.
       - '.github/workflows/daily-forecast.yml'
       - 'backend/app/**'
-      - 'backend/scripts/**'
-      - 'backend/pyproject.toml'
-      - 'scripts/**'
   workflow_dispatch:
 
 jobs:
