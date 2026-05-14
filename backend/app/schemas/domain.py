@@ -6,7 +6,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
-RiskBand = Literal["Low", "Moderate", "High", "Very High"]
+RiskBand = Literal["Low", "Moderate", "High", "Very High", "Advisory"]
 SupportStatus = Literal["production", "beta", "unsupported"]
 ForecastLabelMode = Literal[
     "model",

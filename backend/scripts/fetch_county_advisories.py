@@ -412,21 +412,48 @@ def fetch_san_mateo_advisories(client: httpx.Client, resolver: StationResolver) 
 
     # Split the FULL page into <br>-separated lines and scan every line that's
     # short enough to be a beach-name entry (not a paragraph of FAQ prose).
+    # Build a combined lookup keyed by NORMALIZED station_code AND beach_name.
+    # The live SM page posts by station_code ("Linda Mar #5", "Pillar Point #7"),
+    # not by parent beach_name ("Pacifica State Beach", "Pillar Point Harbor"),
+    # so station_code is what we need to match. Also normalize the line text
+    # itself so "#5" maps to "5" — without this, "linda mar 5" never substring-
+    # matches "linda mar #5 (at san pedro creek)".
+    sm_lookup: dict[str, str] = {}
+    for norm_name, bid in san_mateo_beaches.items():
+        if len(norm_name) >= 6:
+            sm_lookup[norm_name] = bid
+    for code, bid in resolver._station_code_lookup.get("San Mateo", {}).items():
+        norm_code = _normalize_name(code)
+        if len(norm_code) >= 4:
+            sm_lookup.setdefault(norm_code, bid)
+    # Also honor the static alias CSV — same county-specific keys the
+    # other counties' resolvers use. Catches semantic mismatches like
+    # "Fitzgerald Marine Reserve" → moss-beach station.
+    for (cnty, norm_alias), aid in resolver._alias_lookup.items():
+        if cnty != "San Mateo":
+            continue
+        if not aid or aid == "nan":
+            continue
+        if aid.startswith("ca") and len(norm_alias) >= 4:
+            sm_lookup.setdefault(norm_alias, aid)
+
     lines = re.split(r"<br\s*/?>|</p>|</li>", html, flags=re.IGNORECASE)
     seen = set()
     for raw_line in lines:
         line_text = _clean_html_text(raw_line)
         if not (4 < len(line_text) < 80):
             continue
-        line_lower = line_text.lower()
-        # Discard lines that are clearly FAQ prose: skip if "and", "or", "the" appear too often
-        word_count = len(line_lower.split())
+        # Discard lines that are clearly FAQ prose
+        word_count = len(line_text.split())
         if word_count > 12:
             continue
-        for norm_name, beach_id in san_mateo_beaches.items():
-            if len(norm_name) < 6:
-                continue
-            if norm_name in line_lower and beach_id not in seen:
+        norm_line = _normalize_name(line_text)
+        if not norm_line:
+            continue
+        # Prefer longer matches (catches "linda mar 5" before "linda mar")
+        for lookup_key in sorted(sm_lookup, key=len, reverse=True):
+            beach_id = sm_lookup[lookup_key]
+            if lookup_key in norm_line and beach_id not in seen:
                 seen.add(beach_id)
                 advisories.append(CountyAdvisory(
                     county="San Mateo",
@@ -932,23 +959,45 @@ def merge_and_rebuild(
     county_advisories: list[CountyAdvisory],
     curated_dir: Path,
     rebuild_beach_day: bool = True,
+    authoritative_counties: set[str] | None = None,
 ) -> tuple[int, int]:
     """Overwrite the state-feed's `active` records for county-direct beaches,
     AND rebuild the advisory_active_prev_14d / days_since_advisory_closed
     columns in beach_day.parquet so training features stay consistent.
-    Returns (n_added_to_advisories, n_demoted)."""
-    if not county_advisories:
-        return (0, 0)
 
+    `authoritative_counties` is the set of counties whose scraper succeeded
+    this run (regardless of count). Any active record in those counties that
+    isn't re-affirmed by a freshly-resolved advisory is treated as stale and
+    demoted. This is what nukes leftover state-feed records when a county
+    page reports all-clear (e.g., Ventura's sentinel) or when older records
+    that the county no longer posts have been silently closed.
+
+    Returns (n_added_to_advisories, n_demoted)."""
     advisories = pd.read_parquet(curated_dir / "advisories.parquet")
     beach_ids_covered = {ca.beach_id for ca in county_advisories if ca.beach_id}
-    if not beach_ids_covered:
+    auth_counties = authoritative_counties or set()
+
+    if not county_advisories and not auth_counties:
         return (0, 0)
 
-    keep_mask = ~(
+    # Two demotion lanes:
+    # 1. Beach-level: any active record sharing a beach_id with a freshly
+    #    resolved advisory (the original behavior). Keeps semantics for
+    #    counties without a first-class scraper.
+    # 2. County-level: for counties with an authoritative scraper, demote
+    #    EVERY active record in that county whose beach_id is not in the
+    #    re-resolved set. Closes the "Ventura returns 0 but state-feed has
+    #    44 stale active records from 2018" hole.
+    beach_demote = (
         advisories["beach_id"].isin(beach_ids_covered)
         & (advisories["status"] == "active")
     )
+    county_demote = (
+        advisories["county"].isin(auth_counties)
+        & (advisories["status"] == "active")
+        & ~advisories["beach_id"].isin(beach_ids_covered)
+    )
+    keep_mask = ~(beach_demote | county_demote)
     n_demoted = int((~keep_mask).sum())
     base = advisories.loc[keep_mask].copy()
 
@@ -971,15 +1020,18 @@ def merge_and_rebuild(
             "county": ca.county,
             "advisory_website": ca.advisory_website,
         })
-    if not new_rows:
-        return (0, n_demoted)
-
-    new_df = pd.DataFrame(new_rows)
-    for col in advisories.columns:
-        if col not in new_df.columns:
-            new_df[col] = None
-    new_df = new_df[advisories.columns]
-    combined = pd.concat([base, new_df], ignore_index=True)
+    if new_rows:
+        new_df = pd.DataFrame(new_rows)
+        for col in advisories.columns:
+            if col not in new_df.columns:
+                new_df[col] = None
+        new_df = new_df[advisories.columns]
+        combined = pd.concat([base, new_df], ignore_index=True)
+    else:
+        # All-clear case: authoritative counties returned zero advisories.
+        # Persist the demotion (base only) so stale state-feed records leave
+        # the active set.
+        combined = base
     combined.to_parquet(curated_dir / "advisories.parquet", index=False)
 
     # Rebuild beach_day.parquet advisory features so training matches serving
@@ -1115,14 +1167,25 @@ def main() -> int:
         print(f"\n[dry-run] would merge {len(all_advisories)} advisories; skipping write")
         return 0
 
+    # Counties whose first-class scraper succeeded this run are authoritative:
+    # they speak for ALL active records in that county, including the all-clear
+    # case (Ventura's sentinel) and partial-coverage cases (county no longer
+    # posts an older state-feed record).
+    first_class_names = {name for name, _ in COUNTIES_FIRST_CLASS}
+    authoritative_counties = {
+        r.county for r in reports
+        if r.county in first_class_names and r.success
+    }
     added, demoted = merge_and_rebuild(
         all_advisories,
         args.curated,
         rebuild_beach_day=not args.skip_rebuild_beach_day,
+        authoritative_counties=authoritative_counties,
     )
     print(
         f"\nMerged into {args.curated / 'advisories.parquet'}: "
-        f"added {added}, demoted {demoted} stale state records"
+        f"added {added}, demoted {demoted} stale state records "
+        f"(authoritative counties: {sorted(authoritative_counties)})"
     )
     return 0
 

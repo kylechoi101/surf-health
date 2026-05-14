@@ -439,7 +439,7 @@ class CuratedBeachRepository(BeachRepository):
         if active_advisory:
             row["official_advisory_active"] = True
             row["model_risk_band"] = model_risk_band
-            row["risk_band"] = "Very High"
+            row["risk_band"] = "Advisory"
             row["forecast_label_mode"] = "official_advisory_override"
             row["top_drivers"] = self._advisory_override_drivers(row.get("top_drivers"))
 
@@ -523,7 +523,7 @@ class CuratedBeachRepository(BeachRepository):
         return ForecastRecord(
             beach_id=beach_id,
             forecast_date=forecast_date,
-            risk_band="Very High" if active_advisory else model_risk_band,
+            risk_band="Advisory" if active_advisory else model_risk_band,
             model_risk_band=model_risk_band if active_advisory else None,
             p_exceed=float(p_exceed),
             p_exceed_raw=float(p_exceed),

@@ -245,7 +245,8 @@ RISK_BAND_DESCRIPTIONS: dict[str, str] = {
     "Low": "The model estimates typical conditions for this beach. Not an official advisory or lab result.",
     "Moderate": "The model estimates slightly elevated exceedance probability. Not an official advisory or lab result.",
     "High": "The model estimates elevated exceedance probability, roughly 3x the average beach. Not an official advisory or lab result.",
-    "Very High": "The model estimates a high exceedance probability; displayed risk may also reflect advisory status. Not an official advisory or lab result.",
+    "Very High": "The model estimates a high exceedance probability based on recent samples and conditions. Not an official advisory or lab result.",
+    "Advisory": "Official county health advisory is currently posted for this beach. This is not a model prediction — the county has determined entering the water poses a health risk. See the county source for full details.",
 }
 
 

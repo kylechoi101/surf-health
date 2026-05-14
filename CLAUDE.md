@@ -59,11 +59,15 @@ python -m app.ml.training --curated --spatial-backtests \
   --forecast-date "$(TZ=America/Los_Angeles date +%Y-%m-%d)"
 ```
 
-Evaluation: county GroupKFold CV, 3 folds × 3 seeds = 9 measurements.
-Gate: block bootstrap (per-fold AUCPR, 1000 resamples, 10th percentile) must exceed baseline,
-OR ΔAUCPR ≥ -0.001 AND ΔBrier ≤ -0.0003 (Brier-only lane).
+**Evaluation (as actually implemented in `app/ml/training.py`):**
+1. **Temporal split** (`_blocked_indices`, line 1514): unique sample dates split 70% train / 15% valid / 15% test. Single split, no folds. Produces `temporal_validation_metrics` and `production_metrics`.
+2. **Spatial county holdouts** (`_spatial_backtest_metrics`, line 1183): leave-one-county-out — train on N-1 counties, test on the held-out county, rotate. Capped by `--spatial-county-limit` (CI default 12, rigorous local 30). Produces `spatial_county_<model>` metrics.
+3. **Spatial beach holdouts**: same pattern at the individual-beach level. Capped by `--spatial-beach-limit` (CI default 50, rigorous local 500). Produces `spatial_beach_<model>` metrics.
+4. **Promotion gate** (`_spatially_qualified_production_winner`, line 1815): the persisted hist_gbm winner can be swapped to a variant if it fails spatial gates AND a sibling passes. Both spatial holdout sets must produce non-NaN Brier scores. Result reflected in `public_release_eligible` + `promotion_blockers`.
 
-Current baseline AUCPR ≈ 0.51 @ 21% base rate ≈ AUC 0.74 (comparable to Searcy & Boehm 2021 "Mona" model).
+**Doc/code drift** (deferred future work): the previously-claimed "county GroupKFold 3×3 seeds + 1000-bootstrap 10th-percentile gate" is *not* in the code. Either implement it (real work) or remove the claim. The current temporal-+spatial-holdout stack is what runs and what gates promotion.
+
+Current baseline AUCPR ≈ 0.37 production held-out (hist-gbm-curated-v0). Per-spatial-beach AUCPR ≈ 0.85 in the rigorous 500-fold backtest; sequence-model LSTM hits 0.76 county-level (best of the candidates), worth promoting to a research_winner candidate.
 
 ## Key design decisions
 

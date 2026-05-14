@@ -208,7 +208,7 @@ def test_serving_snapshot_limits_hot_path_rows_and_repository_serves_contract(tm
     assert beach.name == "Main Beach"
 
     forecast = repository.get_forecast(beach_id, date(2026, 4, 20))
-    assert forecast.risk_band == "Very High"
+    assert forecast.risk_band == "Advisory"
     assert forecast.official_advisory_active is True
     assert forecast.model_risk_band == "Low"
     assert forecast.forecast_label_mode == "official_advisory_override"
@@ -228,7 +228,7 @@ def test_serving_snapshot_limits_hot_path_rows_and_repository_serves_contract(tm
     assert observations.advisories[0].advisory_website == "https://www.ocgov.com/beach/advisory"
 
     parents = repository.list_parent_beaches()
-    assert parents[0].risk_band == "Very High"
+    assert parents[0].risk_band == "Advisory"
     assert parents[0].has_active_advisory is True
 
     health = repository.get_system_health()

@@ -254,7 +254,7 @@ class ServingSnapshotRepository(BeachRepository):
 
             has_active = any(beach_id in active_beach_ids for beach_id in member_ids)
             if has_active:
-                worst_band = "Very High"
+                worst_band = "Advisory"
 
             # Pick advisory website from first active member station that has one
             advisory_website: str | None = None
@@ -336,7 +336,7 @@ class ServingSnapshotRepository(BeachRepository):
         model_risk_band = risk_band(raw_p_exceed) if raw_p_exceed is not None else str(row["risk_band"])
         if active_advisory:
             drivers = ["Official health advisory is active for this station.", *base_drivers][:5]
-            band = "Very High"  # Override to Very High when advisory is active
+            band = "Advisory"  # Authoritative county posting; UI surfaces the source link separately.
         else:
             drivers = base_drivers
             band = model_risk_band
@@ -434,7 +434,7 @@ class ServingSnapshotRepository(BeachRepository):
         return ForecastRecord(
             beach_id=beach_id,
             forecast_date=forecast_date,
-            risk_band=("Very High" if active_advisory else risk_band(p_exceed)),
+            risk_band=("Advisory" if active_advisory else risk_band(p_exceed)),
             model_risk_band=(risk_band(p_exceed) if active_advisory else None),
             p_exceed=float(p_exceed),
             p_exceed_raw=float(p_exceed),

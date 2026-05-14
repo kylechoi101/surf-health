@@ -200,7 +200,7 @@ def test_curated_repository_overrides_forecast_when_official_advisory_active(tmp
     forecast = repository.get_forecast(beach_id, date(2026, 4, 20))
 
     assert forecast.official_advisory_active is True
-    assert forecast.risk_band == "Very High"
+    assert forecast.risk_band == "Advisory"
     assert forecast.model_risk_band == "Low"
     assert forecast.forecast_label_mode == "official_advisory_override"
     assert forecast.advisory_floor_applied is True
@@ -248,7 +248,7 @@ def test_curated_repository_overrides_derived_forecast_when_official_advisory_ac
     forecast = repository.get_forecast(beach_id, date(2026, 4, 20))
 
     assert forecast.official_advisory_active is True
-    assert forecast.risk_band == "Very High"
+    assert forecast.risk_band == "Advisory"
     assert forecast.model_risk_band == "High"
     assert forecast.forecast_label_mode == "official_advisory_override"
     assert forecast.top_drivers[0] == "Official health advisory is active for this station."
