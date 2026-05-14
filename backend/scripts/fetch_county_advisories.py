@@ -452,6 +452,11 @@ LA_HOMEPAGE = "http://publichealth.lacounty.gov/phcommon/public/eh/water_quality
 
 
 def fetch_la_county_advisories(client: httpx.Client, resolver: StationResolver) -> tuple[list[CountyAdvisory], CountyReport]:
+    """LA County publishes ocean-water advisories as press releases linked from
+    publichealth.lacounty.gov/.../beach_grades.cfm. Each press release contains
+    a structured 'BEACH AREA WARNINGS:' section with bulleted beach names
+    (using middle-dot '·' as the bullet marker). We follow the most recent
+    press-release link and parse those bullets."""
     rpt = CountyReport(
         county="Los Angeles",
         success=False,
@@ -462,39 +467,104 @@ def fetch_la_county_advisories(client: httpx.Client, resolver: StationResolver) 
     try:
         resp = client.get(LA_HOMEPAGE, headers={"User-Agent": _BROWSER_UA}, timeout=30.0)
         resp.raise_for_status()
-        html = resp.text
+        index_html = resp.text
     except Exception as e:
-        rpt.error = f"fetch failed: {e}"
+        rpt.error = f"index fetch failed: {e}"
         return [], rpt
 
-    # Press-release entries: "<a href='/phcommon/public/media/mediapubhpdetail.cfm?prid=N'>title</a> (M/D/YYYY)"
+    # The index page truncates each press release after "...." then links to a
+    # full detail page at mediapubhpdetail.cfm?prid=N. We need to follow the
+    # link(s) to get the full bulleted list. The date appears in a
+    # <span class="pressTitle"> AFTER the link.
+    #
+    # Index structure per release block:
+    #   <p>...BEACH AREA WARNINGS:</p>
+    #   <p>· Avalon Beach at....<a href="...prid=N">Click here for the complete release.</a>
+    #   <span class="pressTitle">Ocean Water Use Warning ... M/D/YYYY</span>
+
     advisories: list[CountyAdvisory] = []
-    for m in re.finditer(
-        r"<a[^>]*href=\"[^\"]*mediapubhpdetail\.cfm\?prid=[^\"]*\"[^>]*>([^<]+)</a>\s*(?:\([^)]*\))?\s*(\d{1,2}/\d{1,2}/\d{2,4})",
-        html,
-    ):
-        title = _clean_html_text(m.group(1))
-        date_str = m.group(2)
-        started_at = _parse_us_date(date_str)
-        if started_at is None:
+    # Each press release on the index has a <span class="pressTitle"> followed
+    # by truncated content with a `Click here for the complete release` link
+    # to the full release at /phcommon/public/media/mediapubhpdetail.cfm?prid=N.
+    # Capture (title → trailing prid) pairs.
+    release_blocks = list(re.finditer(
+        r"<span class=\"pressTitle\">([^<]*)</span>"
+        r".*?href=\"([^\"]*mediapubhpdetail\.cfm\?prid=\d+)\"",
+        index_html,
+        re.DOTALL | re.IGNORECASE,
+    ))
+    if not release_blocks:
+        rpt.error = "no press-release links found"
+        return [], rpt
+
+    # Only the FIRST press-release block on the index reflects the current state
+    # (earlier releases are historical; their warnings may have been cleared by
+    # a later update). Take just the newest.
+    release_blocks = release_blocks[:1]
+    for m in release_blocks:
+        title = m.group(1)
+        path = m.group(2)
+        # Only follow current "Ocean Water Use Warning" releases (skip Rain Advisory, Archived)
+        if "Warning" not in title or "Archived" in title:
             continue
-        # Title example: "Beach Water Quality Advisory - Avalon Bay - 05/13/2026"
-        # Pull out the beach-area substring after the "-"
-        parts = [p.strip() for p in title.split("-") if p.strip()]
-        area = parts[-2] if len(parts) >= 2 else title
-        advisories.append(CountyAdvisory(
-            county="Los Angeles",
-            station_code=None,
-            area=area,
-            advisory_type="Posting",
-            started_at=started_at,
-            advisory_website=LA_HOMEPAGE,
-            cause="Bacterial Standards Violation",
-        ))
-    rpt.success = len(advisories) > 0 or "beach_grades" in html.lower()
+        date_match = re.search(r"(\d{1,2}/\d{1,2}/\d{2,4})", title)
+        if not date_match:
+            continue
+        pr_date = _parse_us_date(date_match.group(1))
+        if pr_date is None:
+            continue
+        # Skip stale press releases (>14d old — county updates these every few days)
+        if (pd.Timestamp.now().normalize() - pr_date).days > 14:
+            continue
+        full_url = "http://publichealth.lacounty.gov" + path if path.startswith("/") else path
+
+        try:
+            pr_resp = client.get(full_url, headers={"User-Agent": _BROWSER_UA}, timeout=30.0)
+            pr_resp.raise_for_status()
+        except Exception as e:
+            rpt.error = (rpt.error or "") + f"; PR fetch {path} failed: {e}"
+            continue
+
+        pr_text = _clean_html_text(pr_resp.text)
+        # Extract BEACH AREA WARNINGS section (stop at REASON or NOW CLEARED)
+        warn_match = re.search(
+            r"BEACH\s*AREA\s*WARNINGS\s*:?(.+?)"
+            r"(?:REASON\s*FOR\s*WARNING|BEACH\s*AREAS\s*NOW\s*CLEARED|FOR\s*MORE\s*INFORMATION|$)",
+            pr_text,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if not warn_match:
+            continue
+        warnings_text = warn_match.group(1)
+        # Split on bullet markers
+        bullets = re.split(r"\s*[·•‣◦∙]\s*", warnings_text)
+        for bullet in bullets:
+            bullet = bullet.strip(" \t.")
+            if not bullet or len(bullet) < 5:
+                continue
+            if re.match(r"^(the warning|warning|applies|the\s+warning\s+applies)", bullet, re.IGNORECASE):
+                continue
+            # Beach name: everything before the extent qualifier
+            name_match = re.match(
+                r"(.+?)(?:,|\s+(?:100\s+(?:yards|feet)|Entire\s+swim|\d+\s+feet|\d+\s+yards)\b)",
+                bullet,
+            )
+            beach_name = name_match.group(1).strip() if name_match else bullet.split(".")[0].strip()
+            if not beach_name or len(beach_name) > 80:
+                continue
+            advisories.append(CountyAdvisory(
+                county="Los Angeles",
+                station_code=None,
+                area=beach_name,
+                advisory_type="Posting",
+                started_at=pr_date,
+                advisory_website=full_url,
+                cause="Bacterial Standards Violation",
+            ))
+    rpt.success = len(advisories) > 0
+    if not advisories and not rpt.error:
+        rpt.error = "no current Ocean Water Use Warning press releases (within 14d window)"
     rpt.advisories_parsed = len(advisories)
-    if not rpt.success:
-        rpt.error = "page fetched but no press-release entries matched"
     return advisories, rpt
 
 
@@ -502,7 +572,11 @@ def fetch_la_county_advisories(client: httpx.Client, resolver: StationResolver) 
 
 
 MARIN_HOMEPAGE = "https://data.marincounty.gov"
-MARIN_API = "https://data.marincounty.gov/resource/9w3b-b5ib.json"
+# Marin EH publishes weekly beach inspection results to a Socrata dataset.
+# Schema (per /resource/88ua-5nh2.json):
+#   beach_name, inspection_week_date (ISO), inspection_result ("OK" | "AVOID" | "N/A"),
+#   is_latest_inspection ("1" for current week), latitude, longitude, unique_id
+MARIN_API = "https://data.marincounty.gov/resource/88ua-5nh2.json"
 
 
 def fetch_marin_advisories(client: httpx.Client, resolver: StationResolver) -> tuple[list[CountyAdvisory], CountyReport]:
@@ -514,28 +588,36 @@ def fetch_marin_advisories(client: httpx.Client, resolver: StationResolver) -> t
     )
     rpt.stations_in_lookup = len(resolver._beach_name_lookup.get("Marin", {}))
     try:
-        resp = client.get(MARIN_API, headers={"User-Agent": UA}, timeout=30.0)
+        # Only the latest-inspection rows that are AVOID (current advisories).
+        # SoQL: $where=is_latest_inspection='1' AND inspection_result='AVOID'
+        url = (
+            f"{MARIN_API}?$where=is_latest_inspection='1' AND inspection_result='AVOID'"
+            f"&$limit=200"
+        )
+        resp = client.get(url, headers={"User-Agent": UA}, timeout=30.0)
         resp.raise_for_status()
-        rows = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else []
+        rows = resp.json()
     except Exception as e:
         rpt.error = f"fetch failed: {e}"
         return [], rpt
 
     advisories: list[CountyAdvisory] = []
-    # Schema varies; look for status / result columns
     for row in rows if isinstance(rows, list) else []:
-        status = str(row.get("status", "") or row.get("warning_status", "") or "").lower()
-        if not status or status == "ok" or "safe" in status or "no" in status:
+        result = str(row.get("inspection_result", "")).upper().strip()
+        if result != "AVOID":
             continue
-        beach_name = row.get("beach_name") or row.get("location") or row.get("site_name") or ""
-        date_str = row.get("sample_date") or row.get("posted_date") or row.get("date") or ""
-        started_at = _parse_us_date(str(date_str))
+        beach_name = row.get("beach_name") or ""
+        date_str = row.get("inspection_week_date") or ""
+        try:
+            started_at = pd.Timestamp(date_str).normalize()
+        except Exception:
+            started_at = None
         if started_at is None:
             continue
         advisories.append(CountyAdvisory(
             county="Marin",
             station_code=None,
-            area=str(beach_name),
+            area=str(beach_name).title(),
             advisory_type="Posting",
             started_at=started_at,
             advisory_website=MARIN_HOMEPAGE,
