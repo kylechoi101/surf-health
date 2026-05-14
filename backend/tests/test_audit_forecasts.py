@@ -61,18 +61,21 @@ def test_classify_pool_does_not_promote_stale_postings_by_cause_keyword():
 def test_build_active_pool_lookup_picks_strictest_pool_per_beach():
     now = pd.Timestamp("2026-05-06", tz="UTC")
     advisories = pd.DataFrame([
-        # Beach A: 5-year stale Bacterial Standards Violation AND a 5-day-old sewage spill.
-        # The recent sewage spill makes it acute (by duration alone, no cause needed).
+        # Beach A: stale Posting AND a recent acute Posting. Acute wins.
         {"beach_id": "A", "status": "active", "started_at": "2021-01-01", "ended_at": None,
          "advisory_type": "Posting", "cause": "Bacterial Standards Violation"},
         {"beach_id": "A", "status": "active", "started_at": "2026-05-01", "ended_at": None,
-         "advisory_type": "Closure", "cause": "Sewage Spill"},
+         "advisory_type": "Posting", "cause": "Bacterial Standards Violation"},
         # Beach B: a single chronic posting (60 days old).
         {"beach_id": "B", "status": "active", "started_at": "2026-03-01", "ended_at": None,
          "advisory_type": "Posting", "cause": "Bacterial Standards Violation"},
         # Beach C: a stale 4-year posting only.
         {"beach_id": "C", "status": "active", "started_at": "2022-01-01", "ended_at": None,
          "advisory_type": "Posting", "cause": "Other"},
+        # Beach E: a Closure (regardless of age, lands in closure pool — model
+        # isn't expected to predict non-environmental events).
+        {"beach_id": "E", "status": "active", "started_at": "2026-05-01", "ended_at": None,
+         "advisory_type": "Closure", "cause": "Sewage Spill"},
         # Inactive advisories must be ignored.
         {"beach_id": "D", "status": "historical", "started_at": "2026-04-01", "ended_at": "2026-04-15",
          "advisory_type": "Posting", "cause": "Sewage Spill"},
@@ -81,17 +84,20 @@ def test_build_active_pool_lookup_picks_strictest_pool_per_beach():
     lookup = _build_active_pool_lookup(advisories, now=now)
     by_beach = lookup.set_index("beach_id")["pool"].to_dict()
 
-    assert by_beach == {"A": "acute", "B": "chronic", "C": "stale"}
+    assert by_beach == {"A": "acute", "B": "chronic", "C": "stale", "E": "closure"}
 
 
 def test_run_audit_decomposes_pools_and_blocks_when_acute_agreement_low(tmp_path: Path):
     now = pd.Timestamp("2026-05-06", tz="UTC")
     advisories = pd.DataFrame([
-        # 5 acute advisories (recent sewage spills / rain). 1 model-flagged High = 0.20 agreement.
+        # 5 acute Posting-type advisories. 1 model-flagged = 0.20 agreement <
+        # the 0.30 gate threshold → blocks. (Closures get their own pool and
+        # don't gate; this set is intentionally all Posting so it lands in
+        # acute.)
         *[
             {"beach_id": f"acute_{i}", "status": "active",
              "started_at": "2026-05-01", "ended_at": None,
-             "advisory_type": "Closure", "cause": "Sewage Spill"}
+             "advisory_type": "Posting", "cause": "Bacterial Standards Violation"}
             for i in range(5)
         ],
         # 4 chronic advisories: irrelevant for gate. Model flags 0 of them.
@@ -156,7 +162,7 @@ def test_run_audit_decomposes_pools_and_blocks_when_acute_agreement_low(tmp_path
     assert audit["pool_metrics"]["chronic"]["agreement_rate"] == pytest.approx(0.0)
     assert audit["pool_metrics"]["stale"]["advised_beaches"] == 6
     assert audit["false_negatives"]["by_pool"] == {
-        "acute": 4, "chronic": 4, "stale": 6, "unknown_duration": 0,
+        "acute": 4, "closure": 0, "chronic": 4, "stale": 6, "unknown_duration": 0,
     }
     assert audit["false_positives"]["count"] == 1
 
@@ -168,20 +174,23 @@ def test_run_audit_decomposes_pools_and_blocks_when_acute_agreement_low(tmp_path
 
 def test_run_audit_passes_gate_when_acute_agreement_high(tmp_path: Path):
     now = pd.Timestamp("2026-05-06", tz="UTC")
+    # 5 acute Posting beaches (meets the min-sample-size gate); 4 of 5 the
+    # model elevates above the Moderate threshold (0.20) → 0.80 agreement,
+    # gate passes.
     advisories = pd.DataFrame([
         *[
             {"beach_id": f"acute_{i}", "status": "active",
              "started_at": "2026-05-01", "ended_at": None,
-             "advisory_type": "Closure", "cause": "Sewage Spill"}
-            for i in range(4)
+             "advisory_type": "Posting", "cause": "Bacterial Standards Violation"}
+            for i in range(5)
         ],
     ])
-    # 3 of 4 acute beaches model-flagged: 0.75 agreement, gate passes.
     forecasts = pd.DataFrame([
         {"beach_id": "acute_0", "forecast_date": "2026-05-06", "p_exceed": 0.85, "risk_band": "Very High", "model_version": "v"},
         {"beach_id": "acute_1", "forecast_date": "2026-05-06", "p_exceed": 0.42, "risk_band": "High", "model_version": "v"},
         {"beach_id": "acute_2", "forecast_date": "2026-05-06", "p_exceed": 0.55, "risk_band": "High", "model_version": "v"},
-        {"beach_id": "acute_3", "forecast_date": "2026-05-06", "p_exceed": 0.05, "risk_band": "Low", "model_version": "v"},
+        {"beach_id": "acute_3", "forecast_date": "2026-05-06", "p_exceed": 0.25, "risk_band": "Moderate", "model_version": "v"},
+        {"beach_id": "acute_4", "forecast_date": "2026-05-06", "p_exceed": 0.05, "risk_band": "Low", "model_version": "v"},
     ])
     curated = _write_curated(tmp_path, forecasts=forecasts, advisories=advisories)
     audit = run_audit(curated, now=now)
@@ -192,18 +201,18 @@ def test_run_audit_passes_gate_when_acute_agreement_high(tmp_path: Path):
 
 def test_gate_does_not_fail_when_acute_pool_too_small(tmp_path: Path):
     now = pd.Timestamp("2026-05-06", tz="UTC")
-    # Only 2 acute advisories: too few to gate on (we require >=3 acute advised beaches).
+    # Only 4 acute advisories: too few to gate on (the gate requires >=5
+    # acute advised beaches). Even though agreement would be 0, gate passes.
     advisories = pd.DataFrame([
-        {"beach_id": "acute_0", "status": "active",
+        {"beach_id": f"acute_{i}", "status": "active",
          "started_at": "2026-05-04", "ended_at": None,
-         "advisory_type": "Closure", "cause": "Sewage Spill"},
-        {"beach_id": "acute_1", "status": "active",
-         "started_at": "2026-05-04", "ended_at": None,
-         "advisory_type": "Closure", "cause": "Sewage Spill"},
+         "advisory_type": "Posting", "cause": "Bacterial Standards Violation"}
+        for i in range(4)
     ])
     forecasts = pd.DataFrame([
-        {"beach_id": "acute_0", "forecast_date": "2026-05-06", "p_exceed": 0.05, "risk_band": "Low", "model_version": "v"},
-        {"beach_id": "acute_1", "forecast_date": "2026-05-06", "p_exceed": 0.05, "risk_band": "Low", "model_version": "v"},
+        {"beach_id": f"acute_{i}", "forecast_date": "2026-05-06",
+         "p_exceed": 0.05, "risk_band": "Low", "model_version": "v"}
+        for i in range(4)
     ])
     curated = _write_curated(tmp_path, forecasts=forecasts, advisories=advisories)
     audit = run_audit(curated, now=now)
@@ -218,7 +227,7 @@ def test_apply_gate_replaces_old_blockers_and_does_not_duplicate(tmp_path: Path)
         *[
             {"beach_id": f"acute_{i}", "status": "active",
              "started_at": "2026-05-01", "ended_at": None,
-             "advisory_type": "Closure", "cause": "Sewage Spill"}
+             "advisory_type": "Posting", "cause": "Bacterial Standards Violation"}
             for i in range(5)
         ],
     ])
@@ -265,15 +274,16 @@ def test_apply_gate_flips_eligible_when_acute_pool_clears(tmp_path: Path):
         *[
             {"beach_id": f"acute_{i}", "status": "active",
              "started_at": "2026-05-01", "ended_at": None,
-             "advisory_type": "Closure", "cause": "Sewage Spill"}
-            for i in range(4)
+             "advisory_type": "Posting", "cause": "Bacterial Standards Violation"}
+            for i in range(5)
         ],
     ])
     forecasts = pd.DataFrame([
         {"beach_id": "acute_0", "forecast_date": "2026-05-06", "p_exceed": 0.85, "risk_band": "Very High", "model_version": "v"},
         {"beach_id": "acute_1", "forecast_date": "2026-05-06", "p_exceed": 0.42, "risk_band": "High", "model_version": "v"},
         {"beach_id": "acute_2", "forecast_date": "2026-05-06", "p_exceed": 0.55, "risk_band": "High", "model_version": "v"},
-        {"beach_id": "acute_3", "forecast_date": "2026-05-06", "p_exceed": 0.05, "risk_band": "Low", "model_version": "v"},
+        {"beach_id": "acute_3", "forecast_date": "2026-05-06", "p_exceed": 0.25, "risk_band": "Moderate", "model_version": "v"},
+        {"beach_id": "acute_4", "forecast_date": "2026-05-06", "p_exceed": 0.05, "risk_band": "Low", "model_version": "v"},
     ])
     curated = _write_curated(tmp_path, forecasts=forecasts, advisories=advisories)
     health_path = curated / "system_health.json"
