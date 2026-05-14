@@ -91,6 +91,7 @@ class ForecastRecord(BaseModel):
     forecast_age_hours: int | None = None
     official_advisory_active: bool = False
     advisory_floor_applied: bool = False
+    advisory_website: str | None = None
     forecast_label_mode: ForecastLabelMode = "model"
     sample_age_days: int | None = Field(default=None, ge=0)
     sample_recency_band: SampleRecencyBand = "unknown"

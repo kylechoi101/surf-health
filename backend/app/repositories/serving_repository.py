@@ -334,9 +334,11 @@ class ServingSnapshotRepository(BeachRepository):
         base_drivers = [str(item) for item in _parse_json_list(row.get("top_drivers"))]
         raw_p_exceed = _safe_float(row.get("p_exceed_raw"))
         model_risk_band = risk_band(raw_p_exceed) if raw_p_exceed is not None else str(row["risk_band"])
+        advisory_website: str | None = None
         if active_advisory:
             drivers = ["Official health advisory is active for this station.", *base_drivers][:5]
             band = "Advisory"  # Authoritative county posting; UI surfaces the source link separately.
+            advisory_website = self._active_advisory_websites().get(beach_id)
         else:
             drivers = base_drivers
             band = model_risk_band
@@ -350,6 +352,7 @@ class ServingSnapshotRepository(BeachRepository):
             forecast_date=_parse_date(row.get("forecast_date")),
             risk_band=band,
             model_risk_band=model_risk_band if active_advisory else None,
+            advisory_website=advisory_website,
             p_exceed=float(row["p_exceed"]),
             p_exceed_raw=_safe_float(row.get("p_exceed_raw")),
             advisory_floor_applied=_safe_bool(row.get("advisory_floor_applied"), default=False),

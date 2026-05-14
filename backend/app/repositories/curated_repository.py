@@ -454,6 +454,7 @@ class CuratedBeachRepository(BeachRepository):
             row["risk_band"] = "Advisory"
             row["forecast_label_mode"] = "official_advisory_override"
             row["top_drivers"] = self._advisory_override_drivers(row.get("top_drivers"))
+            row["advisory_website"] = self._active_advisory_website(beach_id)
 
         sample_age = _safe_int(row.get("sample_age_days"))
         if sample_age is None:
@@ -492,6 +493,17 @@ class CuratedBeachRepository(BeachRepository):
 
     def _has_active_advisory(self, beach_id: str) -> bool:
         return beach_id in self._active_advisory_beach_ids()
+
+    def _active_advisory_website(self, beach_id: str) -> str | None:
+        active = filter_currently_active(self.advisories_frame)
+        if active.empty or "advisory_website" not in active.columns:
+            return None
+        rows = active.loc[active["beach_id"] == beach_id]
+        rows = rows.loc[rows["advisory_website"].notna()]
+        if rows.empty:
+            return None
+        rows = rows.sort_values("started_at", ascending=False)
+        return _coerce_advisory_website(rows.iloc[0].get("advisory_website"))
 
     def _advisory_override_drivers(self, drivers: object) -> list[str]:
         base_drivers = [
