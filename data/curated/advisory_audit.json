@@ -1,26 +1,26 @@
 {
-  "generated_at": "2026-05-15T00:18:31.732815+00:00",
+  "generated_at": "2026-05-15T06:15:16.507619+00:00",
   "forecast_date": "2026-05-14",
   "model_version": "hist-gbm-curated-v0",
   "risk_threshold": 0.2,
   "total_beaches": 230,
-  "active_advisories": 31,
-  "agreement_rate": 0.387,
+  "active_advisories": 30,
+  "agreement_rate": 0.433,
   "pool_metrics": {
     "acute": {
-      "advised_beaches": 2,
-      "model_flagged": 1,
-      "agreement_rate": 0.5
+      "advised_beaches": 12,
+      "model_flagged": 8,
+      "agreement_rate": 0.667
     },
     "closure": {
-      "advised_beaches": 8,
-      "model_flagged": 6,
-      "agreement_rate": 0.75
+      "advised_beaches": 7,
+      "model_flagged": 5,
+      "agreement_rate": 0.714
     },
     "chronic": {
-      "advised_beaches": 13,
-      "model_flagged": 5,
-      "agreement_rate": 0.385
+      "advised_beaches": 3,
+      "model_flagged": 0,
+      "agreement_rate": 0.0
     },
     "stale": {
       "advised_beaches": 8,
@@ -34,12 +34,12 @@
     }
   },
   "false_negatives": {
-    "count": 19,
+    "count": 17,
     "description": "Active advisory but model says Low/Moderate",
     "by_pool": {
-      "acute": 1,
+      "acute": 4,
       "closure": 2,
-      "chronic": 8,
+      "chronic": 3,
       "stale": 8,
       "unknown_duration": 0
     },
@@ -48,6 +48,27 @@
         "beach_id": "ca316627-san-diego-dog-beach-o-b-fm-010",
         "risk_band": "Low",
         "p_exceed": 0.097,
+        "pool": "acute",
+        "advisory_age_days": 1
+      },
+      {
+        "beach_id": "ca852440-san-mateo-pillar-point-harbor-pillar-point-5",
+        "risk_band": "Low",
+        "p_exceed": 0.165,
+        "pool": "acute",
+        "advisory_age_days": 1
+      },
+      {
+        "beach_id": "ca883945-san-mateo-pescadero-state-beach-pescadero-state-beach",
+        "risk_band": "Low",
+        "p_exceed": 0.184,
+        "pool": "acute",
+        "advisory_age_days": 1
+      },
+      {
+        "beach_id": "ca517375-san-mateo-fitzgerald-marine-moss-beach-fitzgerald-marine-moss-beach",
+        "risk_band": "Low",
+        "p_exceed": 0.19,
         "pool": "acute",
         "advisory_age_days": 1
       }
@@ -68,41 +89,6 @@
         "advisory_age_days": 101
       },
       {
-        "beach_id": "ca465304-san-luis-obispo-olde-port-beach-olde12",
-        "risk_band": "Low",
-        "p_exceed": 0.071,
-        "pool": "chronic",
-        "advisory_age_days": 219
-      },
-      {
-        "beach_id": "ca400333-san-mateo-oyster-point-marina-oyster-point-marina",
-        "risk_band": "Low",
-        "p_exceed": 0.083,
-        "pool": "chronic",
-        "advisory_age_days": 127
-      },
-      {
-        "beach_id": "ca141759-san-mateo-roosevelt-state-beach-roosevelt-state-beach",
-        "risk_band": "Low",
-        "p_exceed": 0.1,
-        "pool": "chronic",
-        "advisory_age_days": 71
-      },
-      {
-        "beach_id": "ca562372-san-mateo-venice-state-beach-venice-beach",
-        "risk_band": "Low",
-        "p_exceed": 0.154,
-        "pool": "chronic",
-        "advisory_age_days": 127
-      },
-      {
-        "beach_id": "ca852440-san-mateo-pillar-point-harbor-pillar-point-5",
-        "risk_band": "Low",
-        "p_exceed": 0.165,
-        "pool": "chronic",
-        "advisory_age_days": 133
-      },
-      {
         "beach_id": "ca218180-santa-barbara-east-beach-wp0000085",
         "risk_band": "Low",
         "p_exceed": 0.184,
@@ -112,7 +98,7 @@
     ]
   },
   "false_positives": {
-    "count": 7,
+    "count": 6,
     "description": "Model says High/VeryHigh but no active advisory",
     "worst": [
       {
@@ -147,13 +133,6 @@
         "beach_id": "ca643858-los-angeles-malibu-lagoon-state-beach-smb-mc-2",
         "risk_band": "Moderate",
         "p_exceed": 0.206,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
-        "beach_id": "ca852440-san-mateo-pillar-point-harbor-pillar-point-7",
-        "risk_band": "Moderate",
-        "p_exceed": 0.204,
         "pool": "none",
         "advisory_age_days": null
       },

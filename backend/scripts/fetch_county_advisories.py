@@ -133,6 +133,29 @@ class CountyAdvisory:
 
 
 @dataclass
+class CountySample:
+    """A single numeric water-quality reading scraped from a county-direct
+    source. Stored to county_direct_samples.parquet so the model + audit
+    can cross-validate against the state BeachWatch feed."""
+    county: str
+    area: str               # beach name as it appears on the source
+    sample_date: pd.Timestamp
+    analyte: str            # ENTEROCOCCUS | FECAL_COLIFORM | E_COLI | TOTAL_COLIFORM
+    value: float            # MPN/100mL or CFU/100mL — units inferred from analyte+county
+    exceeds_limit: bool
+    source_url: str
+    station_code: str | None = None
+    beach_id: str | None = None  # filled in by the resolver, mirrors CountyAdvisory
+
+
+# Module-level collector so adding samples doesn't require changing the
+# fetcher return signature for every county. Fetchers that have sample
+# values (SF, Humboldt, Sonoma) append to this; everyone else ignores it.
+# main() drains it once per run after all fetchers are done.
+_COLLECTED_SAMPLES: list[CountySample] = []
+
+
+@dataclass
 class CountyReport:
     county: str
     success: bool
@@ -145,6 +168,7 @@ class CountyReport:
     matched_via_fuzzy: int = 0
     unmatched_names: list[str] = field(default_factory=list)
     error: str | None = None
+    samples_collected: int = 0  # purely informational counter for the report
 
 
 # ---------- Common parsing utilities ---------- #
@@ -1107,6 +1131,9 @@ def fetch_san_francisco_advisories(
 
     # Reduce to latest sample per (source, analyte) — rows are already
     # sample_date DESC so we keep the first occurrence of each key.
+    # Also emit one CountySample per row so we persist the full sample
+    # feed to county_direct_samples.parquet, not just the exceedances.
+    _SF_ANALYTE_NORMALIZE = {"ENTERO": "ENTEROCOCCUS", "COLI_FECAL": "FECAL_COLIFORM"}
     latest: dict[tuple[str, str], dict] = {}
     for row in rows:
         src = row.get("source")
@@ -1116,6 +1143,23 @@ def fetch_san_francisco_advisories(
         key = (src, anl)
         if key not in latest:
             latest[key] = row
+        value = _sf_parse_value(row.get("data", ""))
+        if value is None:
+            continue
+        try:
+            sample_date = pd.Timestamp(row["sample_date"]).normalize()
+        except Exception:
+            continue
+        _COLLECTED_SAMPLES.append(CountySample(
+            county="San Francisco",
+            area=src,
+            sample_date=sample_date,
+            analyte=_SF_ANALYTE_NORMALIZE.get(anl, anl),
+            value=value,
+            exceeds_limit=value >= _SF_THRESHOLDS[anl],
+            source_url=SF_API,
+            station_code=src,
+        ))
 
     # Emit one advisory per station whose latest sample on ANY tracked
     # analyte exceeds the threshold. Use the highest-priority exceedance
@@ -1189,7 +1233,7 @@ def _fetch_via_ai_extract(
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     try:
         from ai_extract_advisories import (  # type: ignore
-            fetch_page, trim_html, extract_via_github_models,
+            fetch_page, trim_html, extract_via_github_models_full,
         )
     except ImportError as e:
         rpt.error = f"ai_extract_advisories import failed: {e}"
@@ -1214,10 +1258,49 @@ def _fetch_via_ai_extract(
         if len(text) < 200:
             rpt.error = f"page text too short ({len(text)} chars) — likely a 404/block"
             return [], rpt
-        rows = extract_via_github_models(text, county)
+        payload = extract_via_github_models_full(text, county)
+        rows = payload.get("advisories", [])
+        sample_rows = payload.get("samples", [])
     except Exception as e:
         rpt.error = f"extraction failed: {e}"
         return [], rpt
+
+    # Persist numeric sample values to the shared collector. Reject any
+    # sample with sample_date outside the last 90 days — that filters out
+    # the common hallucination where the LLM invents a date for what's
+    # actually a non-sample number on the page (e.g., SLO's dashboard
+    # publishes sample *counts*, not values, and the LLM tries to
+    # convert them with a fabricated 2023 date).
+    recency_cutoff = pd.Timestamp.now().normalize() - pd.Timedelta(days=90)
+    _ALLOWED_ANALYTES = {"ENTEROCOCCUS", "FECAL_COLIFORM", "E_COLI", "TOTAL_COLIFORM"}
+    for s in sample_rows:
+        beach_name = (s.get("beach_name") or "").strip()
+        if not beach_name:
+            continue
+        sample_date_str = str(s.get("sample_date") or "").strip()
+        sample_date = _parse_us_date(sample_date_str) if sample_date_str else None
+        if sample_date is None or sample_date < recency_cutoff:
+            continue
+        analyte = (s.get("analyte") or "").strip().upper()
+        if analyte not in _ALLOWED_ANALYTES:
+            continue
+        # value may be a number or a string like "<5" — coerce
+        raw_value = s.get("value")
+        try:
+            value = float(str(raw_value).lstrip("<").replace(",", "")) if raw_value is not None else None
+        except (ValueError, TypeError):
+            value = None
+        if value is None or value < 0 or value > 1_000_000:
+            continue
+        _COLLECTED_SAMPLES.append(CountySample(
+            county=county,
+            area=beach_name,
+            sample_date=sample_date,
+            analyte=analyte,
+            value=value,
+            exceeds_limit=bool(s.get("exceeds_limit", False)),
+            source_url=url,
+        ))
 
     advisories: list[CountyAdvisory] = []
     for row in rows:
@@ -1334,6 +1417,67 @@ def fetch_best_effort_county(
             continue
     rpt.error = f"all {len(urls)} candidate URLs returned non-200 or unrelated content"
     return [], rpt
+
+
+# ---------- County-direct sample persistence ---------- #
+
+
+_SAMPLES_PARQUET = "county_direct_samples.parquet"
+
+
+def persist_samples(
+    samples: list[CountySample],
+    curated_dir: Path,
+    resolver: StationResolver | None = None,
+) -> tuple[int, int]:
+    """Append fresh county-direct samples to county_direct_samples.parquet,
+    de-duping on (county, area, sample_date, analyte). If a resolver is
+    available we also fill in beach_id for any unresolved sample.
+
+    Returns (n_new, n_total)."""
+    if not samples:
+        return (0, 0)
+
+    if resolver is not None:
+        for s in samples:
+            if s.beach_id:
+                continue
+            if s.station_code:
+                bid, _ = resolver.resolve_by_station_code(s.county, s.station_code)
+                if bid:
+                    s.beach_id = bid
+                    continue
+            bid, _ = resolver.resolve_by_name(s.county, s.area)
+            if bid:
+                s.beach_id = bid
+
+    new_rows = pd.DataFrame([{
+        "county": s.county,
+        "beach_id": s.beach_id,
+        "area": s.area,
+        "station_code": s.station_code,
+        "sample_date": s.sample_date,
+        "analyte": s.analyte,
+        "value": float(s.value),
+        "exceeds_limit": bool(s.exceeds_limit),
+        "source_url": s.source_url,
+    } for s in samples])
+
+    parquet_path = curated_dir / _SAMPLES_PARQUET
+    if parquet_path.exists():
+        existing = pd.read_parquet(parquet_path)
+        combined = pd.concat([existing, new_rows], ignore_index=True)
+    else:
+        combined = new_rows
+
+    # De-dup: keep the most recent row per (county, area, sample_date, analyte).
+    # This lets a re-scrape overwrite values if the county republishes them.
+    combined = combined.drop_duplicates(
+        subset=["county", "area", "sample_date", "analyte"],
+        keep="last",
+    )
+    combined.to_parquet(parquet_path, index=False)
+    return (len(new_rows), len(combined))
 
 
 # ---------- Resolution + merge ---------- #
@@ -1590,8 +1734,20 @@ def main() -> int:
         )
 
     if args.dry_run:
-        print(f"\n[dry-run] would merge {len(all_advisories)} advisories; skipping write")
+        print(
+            f"\n[dry-run] would merge {len(all_advisories)} advisories + "
+            f"{len(_COLLECTED_SAMPLES)} county-direct samples; skipping write"
+        )
         return 0
+
+    # Persist county-direct samples (numeric MPN values) — separate parquet
+    # so they don't entangle with the advisory-status pipeline.
+    if _COLLECTED_SAMPLES:
+        n_new, n_total = persist_samples(_COLLECTED_SAMPLES, args.curated, resolver)
+        print(
+            f"  county_direct_samples.parquet: +{n_new} new rows "
+            f"(de-duped total: {n_total})"
+        )
 
     # Counties whose first-class scraper succeeded this run are authoritative:
     # they speak for ALL active records in that county, including the all-clear
