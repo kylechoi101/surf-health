@@ -78,7 +78,7 @@ print(act.groupby('county').size().sort_values(ascending=False).to_string())
 - East Bay 7 inland lakes (Lake Chabot, Shadow Cliffs, Del Valle, Lago Los Osos, Horseshoe/Niles, Rainbow Lake) — these are freshwater, not in the marine beach roster, would need feature engineering changes (no wave/marine wind covariates apply).
 - Marin "Inkwells" — inland swim hole, same story.
 
-**User action**: send the 8 county outreach emails from `/Users/kylechoi/shorelife-private-backup/outreach/county_advisory_inquiry_drafts/` to get documented feeds long-term.
+**User action**: send the 8 county outreach emails from `<local outreach drafts>` to get documented feeds long-term.
 
 ---
 

@@ -29,7 +29,7 @@ kylechoi101/shorelife-web            ← NEW PRIVATE repo
 kylechoi101/shorelife-mobile         ← NEW PRIVATE repo
 └── (move mobile/ here)
 
-kylechoi101/shorelife-private        ← NEW PRIVATE repo
+<private-repo>        ← NEW PRIVATE repo
 ├── configs/
 │   ├── advisory_url_mapping.json    ← hand-curated county URLs
 │   ├── photo_curation.json          ← curated Wikimedia photos
@@ -69,10 +69,10 @@ The "moat" sits in the private repos. The "credibility" sits in the public repo.
 
 ### Phase 2 — Move sensitive artifacts to private storage (next week, 2-3 hours)
 
-1. Create new private repo `kylechoi101/shorelife-private`
+1. Create new private repo `<private-repo>`
 2. Move via `git mv`:
-   - `data/curated/serving.sqlite` → `shorelife-private/data/`
-   - `data/curated/production_model.json` → `shorelife-private/data/`
+   - `data/curated/serving.sqlite` → `<private-repo>/data/`
+   - `data/curated/production_model.json` → `<private-repo>/data/`
    - `data/curated/model_card.md` — KEEP public (it's marketing)
    - `data/curated/system_health.json` — keep public (transparency)
 3. Update CI/CD: daily-forecast workflow needs read/write access to the private repo (deploy key) instead of committing to itself

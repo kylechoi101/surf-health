@@ -1634,9 +1634,9 @@ COUNTIES_FIRST_CLASS = [
 # Counties whose scraper is *new* and not yet validated. They still run and
 # emit new advisories on success, but they do NOT join the authoritative set
 # — so stale BeachWatch active records in those counties stay until we trust
-# the new path (e.g., after 3 days of manual review per the AI-extraction
-# rollout plan). Once validated, remove from this set.
-COUNTIES_PENDING_VALIDATION = {"Humboldt", "Sonoma", "San Luis Obispo"}
+# the new path. (Empty as of 2026-05-15 — all 12 first-class scrapers are
+# authoritative.)
+COUNTIES_PENDING_VALIDATION: set[str] = set()
 
 BEST_EFFORT_COUNTIES: dict[str, list[str]] = {
     "Monterey": [
