@@ -47,39 +47,57 @@ _BROWSER_UA = (
 )
 
 # GitHub Models endpoint. Auth: Bearer $GITHUB_TOKEN with models:read scope.
-GH_MODELS_ENDPOINT = "https://models.inference.ai.azure.com/chat/completions"
+# Endpoint migrated from models.inference.ai.azure.com → models.github.ai
+# in late 2025.
+GH_MODELS_ENDPOINT = "https://models.github.ai/inference/chat/completions"
 DEFAULT_MODEL = "openai/gpt-4o-mini"  # Cheap, fast, strong at structured extraction
 
-# Known county pages — keeps the CLI ergonomic for the 6 target counties.
+# Known county pages — verified URLs as of 2026-05-14.
+#
+# Each entry: (url, use_playwright)
+# Counties not listed here have their own structured/JSON feed and
+# should be ingested directly, not via LLM extraction:
+#
+#   San Francisco → data.sfgov.org Socrata API (resource v3fv-x3ux)
+#                   Returns ENTERO/COLI_FECAL/COLI_TOTAL/COLI_E samples
+#                   as JSON. Direct ingest is better than scraping.
+#
 KNOWN_COUNTY_URLS = {
+    "Santa Barbara": (
+        # JS-rendered CivicPlus dashboard
+        "https://www.countyofsb.org/2263/Ocean-Water-Monitoring-Program",
+        True,
+    ),
     "Monterey": (
+        # 403 to httpx — needs Playwright to bypass the WAF
         "https://www.countyofmonterey.gov/government/departments-a-h/health/"
         "environmental-health/general/public-beaches-water-quality",
-        False,  # static HTML
-    ),
-    "Santa Barbara": (
-        "https://www.countyofsb.org/2263/Ocean-Water-Monitoring-Program",
-        True,  # JS-rendered (CivicPlus)
-    ),
-    "San Francisco": (
-        "https://www.sf.gov/information--checking-ocean-and-beach-water-quality",
-        True,  # JS-rendered
+        True,
     ),
     "Humboldt": (
-        "https://humboldtgov.org/2330/Beach-Water-Quality",
+        # Static CivicPlus page; enterococcus + MPN values inline
+        "https://humboldtgov.org/1696/Water-Quality-Test-Results",
         False,
     ),
     "San Luis Obispo": (
-        "https://www.slocounty.ca.gov/Departments/Health-Agency/"
-        "Environmental-Health/Forms-Documents/Hot-Topics/Recreational-Water-Sampling.aspx",
-        False,
+        # ArcGIS Online dashboard; underlying feature service not yet
+        # discovered. Playwright needed to render the dashboard, OR
+        # query the AGO item REST API directly (future work).
+        "https://slocounty.maps.arcgis.com/apps/dashboards/0693b6f43f444995afc3f90d29b81432",
+        True,
     ),
     "Sonoma": (
-        "https://sonomacounty.ca.gov/health-and-human-services/health-services/"
-        "divisions/environmental-health-and-safety/water-and-recreation/beach-monitoring",
+        # Static page with enterococcus / coliform / sample-results text
+        "https://sonomacounty.gov/health-and-human-services/health-services/"
+        "divisions/public-health/environmental-health/programs-and-services/"
+        "ocean-water-quality",
         False,
     ),
 }
+
+# San Francisco gets its own first-class path (no LLM):
+# https://data.sfgov.org/resource/v3fv-x3ux.json — enterococcus samples
+SF_SOCRATA_RESOURCE_ID = "v3fv-x3ux"
 
 
 def fetch_page(url: str, use_playwright: bool, timeout: float = 30.0) -> str:
@@ -197,6 +215,13 @@ def main() -> int:
             print(f"Unknown county: {args.county}. Pass --url explicitly.", file=sys.stderr)
             return 1
         url, default_playwright = KNOWN_COUNTY_URLS[args.county]
+        if url is None:
+            print(
+                f"County {args.county!r} has no verified URL yet.\n"
+                f"  Pass --url <verified_url> to test extraction manually.",
+                file=sys.stderr,
+            )
+            return 1
         use_playwright = use_playwright or default_playwright
 
     print(f"Fetching {url} (playwright={use_playwright})...", file=sys.stderr)

@@ -65,11 +65,29 @@ Monterey is the highest-leverage starting point:
 
 | Phase | Scope | Done? |
 |---|---|---|
-| **0** | Script PoC (this commit) | ✓ |
-| 1 | Validate Monterey extraction (3 days manual review) | — |
-| 2 | Add to `main()` as a new fetcher; ship with existing retry + merge logic | — |
-| 3 | Repeat for SB, SF, Humboldt, SLO, Sonoma | — |
-| 4 | Add Playwright for JS-rendered pages (SB + SF) | — |
+| **0** | Script PoC | ✓ |
+| **0.5** | Honest URL audit — drop unverified URLs; mark TBDs | ✓ (2026-05-14) |
+| 1 | **Outreach to Humboldt, SLO, Sonoma EH for canonical URLs** (drafts already exist in <local outreach drafts>) | — |
+| 2 | Install Playwright + verify SB extraction (URL ok, JS-rendered) | — |
+| 3 | Validate Monterey extraction with Playwright + bypass (URL blocked) | — |
+| 4 | Validate San Francisco extraction (URL ok, JS-rendered) | — |
+| 5 | After URL discovery for the 3 unknown counties: validate each (3 days manual review) | — |
+| 6 | Add to `main()` as a new fetcher; ship with existing retry + merge logic | — |
+
+## Honest URL status (2026-05-14)
+
+| County | URL status | Blocker |
+|---|---|---|
+| Santa Barbara | Verified working | Needs Playwright (JS-rendered) |
+| Monterey | URL ok but returns 403 | Needs Playwright + WAF bypass |
+| San Francisco | URL ok but JS-injected content | Needs Playwright |
+| Humboldt | **Unknown** | Sitemap doesn't expose; outreach drafted |
+| San Luis Obispo | **Unknown** | Sitemap doesn't expose; outreach drafted |
+| Sonoma | **Unknown** | Sitemap empty for beach/water topics; outreach drafted |
+
+Until the three "Unknown" rows are resolved, those counties remain on the
+state-feed fallback (60-day lag) in production. The PoC script will
+refuse to run for them rather than silently scraping the wrong page.
 
 ## Phase 0 usage (local test)
 
