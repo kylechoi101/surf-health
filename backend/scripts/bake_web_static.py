@@ -165,6 +165,9 @@ def bake(curated: Path, out: Path) -> None:
         if station_name and station_name != display_name:
             display_name = f"{display_name} ({station_name})" if display_name else station_name
 
+        # water_body_type drives the surf-spot classification in the web's
+        # coverage stats. "Open Coast" → surf-relevant. "Sound, Bay, or
+        # Inlet" / "Lake/Reservoir" / "Stream/Creek" → bay-or-inland.
         beach_rows.append({
             "id": bid,
             "name": display_name,
@@ -174,6 +177,7 @@ def bake(curated: Path, out: Path) -> None:
             "latitude": _safe(b.get("latitude")),
             "longitude": _safe(b.get("longitude")),
             "support_status": _safe(b.get("support_status")) or "unsupported",
+            "water_body_type": _safe(b.get("water_body_type")),
             "latest_official_sample_at": _safe(latest_sample.get(bid)) if not latest_sample.empty else None,
             "has_active_advisory": has_adv,
             "advisory_website": website_map.get(bid),
