@@ -1154,7 +1154,7 @@ def fetch_san_francisco_advisories(
     return advisories, rpt
 
 
-# ---------- Humboldt + Sonoma (LLM extraction from static pages) ---------- #
+# ---------- Humboldt + Sonoma + SLO (LLM extraction) ---------- #
 
 
 HUMBOLDT_HOMEPAGE = "https://humboldtgov.org/1696/Water-Quality-Test-Results"
@@ -1163,6 +1163,7 @@ SONOMA_HOMEPAGE = (
     "divisions/public-health/environmental-health/programs-and-services/"
     "ocean-water-quality"
 )
+SLO_HOMEPAGE = "https://slocounty.maps.arcgis.com/apps/dashboards/0693b6f43f444995afc3f90d29b81432"
 
 
 def _fetch_via_ai_extract(
@@ -1170,6 +1171,8 @@ def _fetch_via_ai_extract(
     county: str,
     url: str,
     homepage: str | None = None,
+    use_playwright: bool = False,
+    wait_for_text: str | None = None,
 ) -> tuple[list[CountyAdvisory], CountyReport]:
     """Shared LLM-extraction path for counties without a structured feed.
     Loads the AI extraction helpers from scripts/ai_extract_advisories.py
@@ -1201,7 +1204,12 @@ def _fetch_via_ai_extract(
         # client is the RetryingClient — but fetch_page uses its own httpx
         # client because Playwright path needs different setup. The plain
         # httpx fetch inside fetch_page() handles retries via its own UA.
-        html = fetch_page(url, use_playwright=False, timeout=30.0)
+        html = fetch_page(
+            url,
+            use_playwright=use_playwright,
+            timeout=45.0 if use_playwright else 30.0,
+            wait_for_text=wait_for_text,
+        )
         text = trim_html(html)
         if len(text) < 200:
             rpt.error = f"page text too short ({len(text)} chars) — likely a 404/block"
@@ -1269,6 +1277,26 @@ def fetch_sonoma_advisories(
         client, "Sonoma", SONOMA_HOMEPAGE, homepage=SONOMA_HOMEPAGE
     )
     rpt.stations_in_lookup = len(resolver._beach_name_lookup.get("Sonoma", {}))
+    return advs, rpt
+
+
+def fetch_slo_advisories(
+    client: httpx.Client, resolver: StationResolver
+) -> tuple[list[CountyAdvisory], CountyReport]:
+    """SLO publishes via an ArcGIS Online dashboard (SurfSafeSLO). The
+    page is JS-rendered, so we use Playwright to wait for the widgets
+    to populate before extracting. Counts of "Health Advisory / Rain
+    Advisory / Beach Closed / Other Advisory" appear in the rendered
+    page text and the LLM extractor picks up any listed beaches."""
+    advs, rpt = _fetch_via_ai_extract(
+        client,
+        "San Luis Obispo",
+        SLO_HOMEPAGE,
+        homepage=SLO_HOMEPAGE,
+        use_playwright=True,
+        wait_for_text="beach",
+    )
+    rpt.stations_in_lookup = len(resolver._beach_name_lookup.get("San Luis Obispo", {}))
     return advs, rpt
 
 
@@ -1456,6 +1484,7 @@ COUNTIES_FIRST_CLASS = [
     ("San Francisco", fetch_san_francisco_advisories),
     ("Humboldt", fetch_humboldt_advisories),
     ("Sonoma", fetch_sonoma_advisories),
+    ("San Luis Obispo", fetch_slo_advisories),
 ]
 
 # Counties whose scraper is *new* and not yet validated. They still run and
@@ -1463,15 +1492,21 @@ COUNTIES_FIRST_CLASS = [
 # — so stale BeachWatch active records in those counties stay until we trust
 # the new path (e.g., after 3 days of manual review per the AI-extraction
 # rollout plan). Once validated, remove from this set.
-COUNTIES_PENDING_VALIDATION = {"Humboldt", "Sonoma"}
+COUNTIES_PENDING_VALIDATION = {"Humboldt", "Sonoma", "San Luis Obispo"}
 
 BEST_EFFORT_COUNTIES: dict[str, list[str]] = {
     "Monterey": [
+        # Both URLs return 403 even via headless Playwright (datacenter-IP WAF).
+        # Resolving this requires either a residential proxy, undetected
+        # chromedriver, or county outreach for an alternate data path.
         "https://www.countyofmonterey.gov/government/departments-a-h/health/environmental-health/general/public-beaches-water-quality",
         "https://www.countyofmonterey.gov/Home/Components/News/News/9999/16",
     ],
     "Santa Barbara": [
-        # SB redesigned their site; old /phd/eh/beach-water.sbc returns a soft 404.
+        # The Ocean Water Monitoring Program page only lists *sampling sites*,
+        # not current advisory status. SB does not appear to publish current
+        # postings on the public web — outreach to SB Public Health required
+        # for either a live status URL or an API.
         "https://www.countyofsb.org/2263/Ocean-Water-Monitoring-Program",
     ],
 }

@@ -100,17 +100,48 @@ KNOWN_COUNTY_URLS = {
 SF_SOCRATA_RESOURCE_ID = "v3fv-x3ux"
 
 
-def fetch_page(url: str, use_playwright: bool, timeout: float = 30.0) -> str:
-    """Fetch raw HTML. Playwright path waits for network-idle so JS content
-    finishes loading. Static path is a single GET with browser UA."""
+def fetch_page(
+    url: str,
+    use_playwright: bool,
+    timeout: float = 45.0,
+    wait_for_text: str | None = None,
+    extra_wait_seconds: float = 6.0,
+) -> str:
+    """Fetch raw HTML. Playwright path:
+      1. Wait for DOM content + networkidle.
+      2. Optionally wait for `wait_for_text` to appear (page-specific token
+         like 'Enterococcus' for sample tables) — only fails open after
+         a short additional wait.
+      3. Pause `extra_wait_seconds` after that so SPA widgets that lazy-load
+         from XHR (ArcGIS dashboards, CivicPlus iframes) get a chance to
+         populate before we capture page.content().
+    Static path is a single GET with browser UA.
+    """
     if use_playwright:
         if not HAS_PLAYWRIGHT:
             raise RuntimeError("Playwright required for JS-rendered pages. Install with: pip install playwright && playwright install chromium")
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
-            ctx = browser.new_context(user_agent=_BROWSER_UA)
+            ctx = browser.new_context(
+                user_agent=_BROWSER_UA,
+                viewport={"width": 1280, "height": 900},
+            )
             page = ctx.new_page()
-            page.goto(url, wait_until="networkidle", timeout=int(timeout * 1000))
+            page.goto(url, wait_until="domcontentloaded", timeout=int(timeout * 1000))
+            try:
+                page.wait_for_load_state("networkidle", timeout=int(timeout * 1000))
+            except Exception:
+                pass  # networkidle is best-effort; some SPAs never reach it
+            if wait_for_text:
+                try:
+                    page.wait_for_function(
+                        f"document.body.innerText.toLowerCase().includes({wait_for_text.lower()!r})",
+                        timeout=int(timeout * 1000),
+                    )
+                except Exception:
+                    pass
+            if extra_wait_seconds > 0:
+                page.wait_for_timeout(int(extra_wait_seconds * 1000))
             html = page.content()
             browser.close()
             return html

@@ -67,27 +67,29 @@ Monterey is the highest-leverage starting point:
 |---|---|---|
 | **0** | Script PoC | ✓ |
 | **0.5** | Honest URL audit — drop unverified URLs; mark TBDs | ✓ (2026-05-14) |
-| 1 | **Outreach to Humboldt, SLO, Sonoma EH for canonical URLs** (drafts already exist in <local outreach drafts>) | — |
-| 2 | Install Playwright + verify SB extraction (URL ok, JS-rendered) | — |
-| 3 | Validate Monterey extraction with Playwright + bypass (URL blocked) | — |
-| 4 | Validate San Francisco extraction (URL ok, JS-rendered) | — |
-| 5 | After URL discovery for the 3 unknown counties: validate each (3 days manual review) | — |
-| 6 | Add to `main()` as a new fetcher; ship with existing retry + merge logic | — |
+| **1** | URL discovery for all 6 counties (Google search) | ✓ (2026-05-14) |
+| **2** | Install Playwright + verify each JS-rendered page | ✓ (2026-05-15) |
+| **3** | Promote SF (direct Socrata) + Humboldt/Sonoma (static LLM) + SLO (Playwright LLM) into `fetch_county_advisories.py` as first-class scrapers | ✓ (2026-05-15) |
+| 4 | 3 days of hand-validated runs for the 3 LLM counties → remove from `COUNTIES_PENDING_VALIDATION` | — |
+| 5 | Monterey — WAF still blocks Playwright (datacenter IP). Needs residential proxy / undetected-chromedriver / county outreach | — |
+| 6 | Santa Barbara — `/2263/...` is a sampling-site directory only, not a live-status page. SB does not appear to publish current postings on the public web. County outreach required for an API or alternate URL | — |
+| 7 | Extract numeric MPN sample values, not just advisory status (gives us a second authoritative sample source independent of BeachWatch) | — |
 
-## Honest URL status (2026-05-14)
+## Final URL status (2026-05-15)
 
-| County | URL status | Blocker |
-|---|---|---|
-| Santa Barbara | Verified working | Needs Playwright (JS-rendered) |
-| Monterey | URL ok but returns 403 | Needs Playwright + WAF bypass |
-| San Francisco | URL ok but JS-injected content | Needs Playwright |
-| Humboldt | **Unknown** | Sitemap doesn't expose; outreach drafted |
-| San Luis Obispo | **Unknown** | Sitemap doesn't expose; outreach drafted |
-| Sonoma | **Unknown** | Sitemap empty for beach/water topics; outreach drafted |
+| County | Wired in? | How | Authoritative? |
+|---|---|---|---|
+| San Francisco | ✓ | Direct Socrata API (`v3fv-x3ux`), AB411 single-sample threshold logic, no LLM | yes (immediate — clean station_code match against roster, 17/17) |
+| Humboldt | ✓ | Static page + GPT-4o-mini extraction | not yet — pending 3-day validation |
+| Sonoma | ✓ | Static page + GPT-4o-mini extraction | not yet — pending 3-day validation |
+| San Luis Obispo | ✓ | Playwright (ArcGIS dashboard) + GPT-4o-mini extraction | not yet — pending 3-day validation |
+| Monterey | partial | Best-effort only — WAF blocks both static and Playwright fetches | — |
+| Santa Barbara | partial | Best-effort only — page lacks current advisory data | — |
 
-Until the three "Unknown" rows are resolved, those counties remain on the
-state-feed fallback (60-day lag) in production. The PoC script will
-refuse to run for them rather than silently scraping the wrong page.
+Net coverage improvement: **8 → 12 first-class scrapers** (with three on
+pending-validation status). The 2 stragglers (Monterey, SB) still fall
+back to the state BeachWatch feed for advisory status; everything else
+in the model + training stack is unchanged.
 
 ## Phase 0 usage (local test)
 
