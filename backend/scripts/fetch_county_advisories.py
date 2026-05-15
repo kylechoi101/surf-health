@@ -44,6 +44,78 @@ _BROWSER_UA = (
 )
 
 
+# ---------- Retry-with-backoff for transient county-site failures ---------- #
+# County sites flake (smchealth.org hit a 403 after 4-5 rapid scrapes today).
+# Wrap every county fetch so a transient 403/429/5xx/timeout doesn't silently
+# zero-out the county for the whole day.
+
+import random as _rand  # noqa: E402
+import time as _time  # noqa: E402
+
+_RETRY_STATUS = {403, 408, 425, 429, 500, 502, 503, 504}
+_RETRY_DELAYS_S = (5, 15, 45)
+
+
+def _do_with_retry(raw_client: httpx.Client, method: str, url: str, *,
+                   headers: dict[str, str] | None = None,
+                   data: dict[str, str] | None = None,
+                   timeout: float = 30.0) -> httpx.Response:
+    """Retry GET/POST on 403/429/5xx/timeout with exponential backoff +
+    jitter. After the first attempt, fall back to a browser UA in case
+    the original UA was being filtered."""
+    last_exc: Exception | None = None
+    for attempt, delay in enumerate((0, *_RETRY_DELAYS_S)):
+        if delay:
+            _time.sleep(delay + _rand.uniform(0, 2.0))
+        try:
+            req_headers = dict(headers or {})
+            if attempt >= 1 and "User-Agent" in req_headers and not req_headers["User-Agent"].startswith("Mozilla"):
+                req_headers["User-Agent"] = _BROWSER_UA
+            if method == "GET":
+                resp = raw_client.get(url, headers=req_headers, timeout=timeout)
+            else:
+                resp = raw_client.post(url, headers=req_headers, data=data or {}, timeout=timeout)
+            if resp.status_code in _RETRY_STATUS and attempt < len(_RETRY_DELAYS_S):
+                last_exc = httpx.HTTPStatusError(
+                    f"transient {resp.status_code}", request=resp.request, response=resp
+                )
+                continue
+            return resp
+        except (httpx.TimeoutException, httpx.NetworkError) as exc:
+            last_exc = exc
+            if attempt >= len(_RETRY_DELAYS_S):
+                break
+            continue
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code not in _RETRY_STATUS:
+                raise
+            last_exc = exc
+            continue
+    assert last_exc is not None
+    raise last_exc
+
+
+class RetryingClient:
+    """httpx.Client-compatible wrapper. Call sites use it like the raw
+    client (get/post with headers, data, timeout) and get free retry on
+    transient failures. No per-county code changes needed."""
+
+    def __init__(self, **kwargs):
+        self._raw = httpx.Client(**kwargs)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        self._raw.close()
+
+    def get(self, url, *, headers=None, timeout=30.0):
+        return _do_with_retry(self._raw, "GET", url, headers=headers, timeout=timeout)
+
+    def post(self, url, *, data=None, headers=None, timeout=30.0):
+        return _do_with_retry(self._raw, "POST", url, headers=headers, data=data, timeout=timeout)
+
+
 # ---------- Data classes ---------- #
 
 
@@ -1180,7 +1252,7 @@ def main() -> int:
     all_advisories: list[CountyAdvisory] = []
     reports: list[CountyReport] = []
 
-    with httpx.Client(follow_redirects=True) as client:
+    with RetryingClient(follow_redirects=True) as client:
         for county_name, fetcher in COUNTIES_FIRST_CLASS:
             if args.only and args.only.lower() not in county_name.lower():
                 continue
