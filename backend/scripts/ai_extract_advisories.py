@@ -166,26 +166,51 @@ def trim_html(html: str, max_chars: int = 50000) -> str:
 
 
 SCHEMA_INSTRUCTION = """\
-Extract the list of beach advisories / closures CURRENTLY POSTED on this
-California county environmental-health page. For each currently-posted
-beach, return:
-  - beach_name (string, as listed on the page)
-  - station_code (string or null) — any per-station ID like "EH-050" or "B-5"
-  - advisory_type (one of "Posting", "Closure", "Rain Advisory", "Chronic Posting")
-  - started_at (ISO date "YYYY-MM-DD" or null if not shown)
-  - cause (string or null, e.g., "Bacterial Standards Violation", "Sewage Spill", "Rain")
+Extract two lists from this California county environmental-health page:
 
-CRITICAL: Only include beaches that are CURRENTLY POSTED. Do NOT include
-historical postings, FAQ examples, or all-clear sentinels. If the page says
-"no current advisories" or similar, return an empty list.
+(1) advisories: beaches CURRENTLY POSTED with an advisory / closure.
+    Each entry:
+      - beach_name (string, as listed on the page)
+      - station_code (string or null) — any per-station ID like "EH-050" or "B-5"
+      - advisory_type (one of "Posting", "Closure", "Rain Advisory", "Chronic Posting")
+      - started_at (ISO date "YYYY-MM-DD" or null if not shown)
+      - cause (string or null, e.g., "Bacterial Standards Violation", "Sewage Spill", "Rain")
 
-Output strictly as JSON: {"advisories": [...]}. No prose, no markdown.
+    CRITICAL: Only include beaches that are CURRENTLY POSTED. Do NOT include
+    historical postings, FAQ examples, or all-clear sentinels. If the page
+    says "no current advisories" or similar, return advisories: [].
+
+(2) samples: numeric water-quality results visible on the page. Each entry:
+      - beach_name (string)
+      - sample_date (ISO date "YYYY-MM-DD")
+      - analyte (one of "ENTEROCOCCUS", "FECAL_COLIFORM", "E_COLI", "TOTAL_COLIFORM")
+      - value (number — the MPN/100mL or CFU/100mL reading; treat "<5" as 5)
+      - exceeds_limit (true/false — based on visible page markers like
+        "exceeds limit", red highlighting, or an explicit comparison column)
+
+    Include ALL visible numeric sample results, not just exceedances. If
+    the page does not publish numeric sample values, return samples: [].
+
+Output strictly as JSON: {"advisories": [...], "samples": [...]}. No prose, no markdown.
 """
 
 
-def extract_via_github_models(text: str, county: str, model: str = DEFAULT_MODEL) -> list[dict]:
-    """Call GitHub Models with a structured-output prompt; return the
-    parsed list of advisory dicts."""
+def extract_via_github_models(
+    text: str, county: str, model: str = DEFAULT_MODEL
+) -> list[dict]:
+    """Call GitHub Models with a structured-output prompt. Returns just
+    the advisories list — call extract_via_github_models_full() if you
+    also want the numeric sample-value list."""
+    payload = extract_via_github_models_full(text, county, model)
+    return payload.get("advisories", [])
+
+
+def extract_via_github_models_full(
+    text: str, county: str, model: str = DEFAULT_MODEL
+) -> dict:
+    """Same call as extract_via_github_models, but returns the full
+    parsed payload — {"advisories": [...], "samples": [...]}.
+    Callers that want numeric MPN values use this one."""
     token = os.environ.get("GITHUB_TOKEN")
     if not token:
         raise RuntimeError("GITHUB_TOKEN env var required (PAT with models:read or GH Actions default token)")
@@ -226,7 +251,12 @@ def extract_via_github_models(text: str, county: str, model: str = DEFAULT_MODEL
     except json.JSONDecodeError:
         raise RuntimeError(f"LLM returned non-JSON content:\n{content[:500]}")
 
-    return parsed.get("advisories", [])
+    # Normalize: always return both keys so callers don't have to defend
+    # against missing fields. Empty lists are valid "no current data" signals.
+    return {
+        "advisories": parsed.get("advisories", []),
+        "samples": parsed.get("samples", []),
+    }
 
 
 def main() -> int:
