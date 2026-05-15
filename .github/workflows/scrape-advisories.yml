@@ -1,0 +1,116 @@
+name: Scrape advisories
+
+# Lightweight workflow that just refreshes the county-direct advisory
+# scrape and the serving snapshot, on a much faster cadence than the
+# heavy daily-forecast pipeline (which also retrains the model and pulls
+# fresh BeachWatch + hydrology data). Runs every 3 hours so live
+# closures (Tijuana shoreline, Imperial Beach, Long Beach status flips,
+# San Mateo new postings) show up on the API + map within ~3-4 hours
+# instead of waiting for the daily 16:00 UTC cron.
+#
+# The model itself doesn't retrain here — only advisories.parquet,
+# beach_day.parquet (advisory features rebuild), serving.sqlite, and
+# county_advisories_report.json change. Render auto-redeploys on push,
+# so the public API picks up changes within ~3 min of the commit.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Every 3 hours at minute 7 (offset from the daily-forecast 16:00 cron
+    # so they don't race for a runner). 8 runs/day.
+    - cron: '7 */3 * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: scrape-advisories
+  cancel-in-progress: false
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # We commit back to main; use a token that can push.
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: backend/pyproject.toml
+
+      - name: Install backend (minimal — no training extras)
+        run: |
+          cd backend
+          pip install -e .
+
+      - name: Run county-direct advisory scraper (with retry)
+        working-directory: backend
+        run: |
+          python scripts/fetch_county_advisories.py --curated ../data/curated
+
+      - name: Rebuild serving snapshot
+        working-directory: backend
+        run: |
+          python -m app.data.pipeline.serving_snapshot --curated ../data/curated
+
+      - name: Re-audit advisory agreement
+        working-directory: backend
+        # Best-effort: a stale advisory_audit.json beats no audit. Don't
+        # fail the workflow if the audit script errors out.
+        continue-on-error: true
+        run: |
+          python -m scripts.audit_forecasts_vs_advisories --curated ../data/curated
+
+      - name: Detect changes
+        id: diff
+        run: |
+          if git diff --quiet -- data/curated/; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Emit county-coverage summary (telemetry)
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          python -c "
+          import json
+          r = json.load(open('data/curated/county_advisories_report.json'))
+          print(f'== Scrape @ {r[\"generated_at\"]}')
+          print(f'   Resolved total: {r[\"total_resolved_advisories\"]}')
+          failures = [c for c in r['counties'] if not c['success']]
+          if failures:
+              print('   FAILURES:')
+              for c in failures:
+                  print(f'   - {c[\"county\"]}: {c.get(\"error\",\"unknown\")}')
+          zero_count = [c for c in r['counties'] if c['success'] and c['advisories_parsed']==0]
+          if zero_count:
+              print('   Success with 0 parsed (review):')
+              for c in zero_count:
+                  print(f'   - {c[\"county\"]}')
+          " | tee -a $GITHUB_STEP_SUMMARY
+
+      - name: Commit and push if changed
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/curated/advisories.parquet \
+                  data/curated/beach_day.parquet \
+                  data/curated/serving.sqlite \
+                  data/curated/county_advisories_report.json \
+                  data/curated/advisory_audit.json \
+                  data/curated/system_health.json
+          git commit -m "chore(scrape): advisory refresh $(date -u +%Y-%m-%dT%H:%M)"
+          git push origin main
+
+      - name: Skip — no changes
+        if: steps.diff.outputs.changed == 'false'
+        run: echo "No advisory changes since last scrape."
