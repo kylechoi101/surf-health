@@ -1030,6 +1030,248 @@ def fetch_ventura_advisories(
     return advisories, rpt
 
 
+# ---------- San Francisco (data.sfgov.org Socrata API) ---------- #
+
+
+SF_HOMEPAGE = "https://www.sf.gov/information--checking-ocean-and-beach-water-quality"
+SF_API = "https://data.sfgov.org/resource/v3fv-x3ux.json"
+
+# CA AB411 single-sample exceedance thresholds (Title 17 CCR §7958)
+_SF_THRESHOLDS = {
+    "ENTERO": 104.0,       # MPN/100mL — primary marine indicator
+    "COLI_FECAL": 400.0,   # MPN/100mL — fecal coliform (used for SF Bay)
+    # Total coliform threshold (10,000) intentionally omitted: it's the
+    # weakest signal of the three, and the AB411 trigger condition for
+    # total coliform also requires the fecal-to-total ratio to exceed 0.1
+    # — we'd need to pair them, and the FECAL threshold catches the same
+    # high-risk samples directly.
+}
+
+
+def _sf_parse_value(raw: str) -> float | None:
+    """SF reports values as text: '<5', '<10', '110', '1,100'. The '<N'
+    form means below detection limit, so the *true* value is bounded
+    above by N — safe to treat as N (still well below thresholds for
+    the small-N cases we see here)."""
+    s = str(raw).strip().replace(",", "")
+    if not s:
+        return None
+    if s.startswith("<"):
+        s = s[1:].strip()
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def fetch_san_francisco_advisories(
+    client: httpx.Client, resolver: StationResolver
+) -> tuple[list[CountyAdvisory], CountyReport]:
+    """San Francisco DPH publishes beach sample results to a Socrata
+    dataset (no separate advisory feed). We apply AB411 single-sample
+    thresholds to the *latest* sample per (station, analyte) and emit
+    an advisory wherever ENTERO ≥104 or COLI_FECAL ≥400 MPN/100mL.
+
+    This is the same single-sample post-trigger logic BeachWatch uses,
+    so SF's results stay consistent with the rest of the pipeline."""
+    rpt = CountyReport(
+        county="San Francisco",
+        success=False,
+        last_attempted_at=datetime.now(timezone.utc).isoformat(),
+        source_url=SF_API,
+    )
+    rpt.stations_in_lookup = len(resolver._station_code_lookup.get("San Francisco", {}))
+
+    # Pull last 30 days of ENTERO + COLI_FECAL samples. The 30-day window
+    # is wider than the 14-day acute advisory window so we don't miss a
+    # station that only got sampled once recently.
+    cutoff = (pd.Timestamp.now(tz="UTC").tz_localize(None).normalize() - pd.Timedelta(days=30)).strftime("%Y-%m-%dT00:00:00")
+    analytes = "(" + ",".join(f"'{a}'" for a in _SF_THRESHOLDS) + ")"
+    url = (
+        f"{SF_API}"
+        f"?$where=sample_date >= '{cutoff}' AND analyte IN {analytes}"
+        f"&$order=sample_date DESC"
+        f"&$limit=2000"
+    )
+    try:
+        resp = client.get(url, headers={"User-Agent": UA}, timeout=30.0)
+        resp.raise_for_status()
+        rows = resp.json()
+    except Exception as e:
+        rpt.error = f"fetch failed: {e}"
+        return [], rpt
+
+    if not isinstance(rows, list):
+        rpt.error = "unexpected response shape (not a list)"
+        return [], rpt
+
+    # Reduce to latest sample per (source, analyte) — rows are already
+    # sample_date DESC so we keep the first occurrence of each key.
+    latest: dict[tuple[str, str], dict] = {}
+    for row in rows:
+        src = row.get("source")
+        anl = row.get("analyte")
+        if not src or anl not in _SF_THRESHOLDS:
+            continue
+        key = (src, anl)
+        if key not in latest:
+            latest[key] = row
+
+    # Emit one advisory per station whose latest sample on ANY tracked
+    # analyte exceeds the threshold. Use the highest-priority exceedance
+    # (ENTERO before COLI_FECAL) for the started_at + cause text.
+    advisories: list[CountyAdvisory] = []
+    seen_stations: set[str] = set()
+    for analyte in ("ENTERO", "COLI_FECAL"):
+        threshold = _SF_THRESHOLDS[analyte]
+        for (src, anl), row in latest.items():
+            if anl != analyte or src in seen_stations:
+                continue
+            value = _sf_parse_value(row.get("data", ""))
+            if value is None or value < threshold:
+                continue
+            try:
+                started_at = pd.Timestamp(row["sample_date"]).normalize()
+            except Exception:
+                continue
+            cause = (
+                f"{analyte} {value:.0f} MPN/100mL exceeds AB411 single-sample "
+                f"threshold ({threshold:.0f})"
+            )
+            advisories.append(CountyAdvisory(
+                county="San Francisco",
+                station_code=src,
+                area=src,  # resolver will lift the real beach name from station_code
+                advisory_type="Posting",
+                started_at=started_at,
+                advisory_website=SF_HOMEPAGE,
+                cause=cause,
+            ))
+            seen_stations.add(src)
+
+    rpt.success = True
+    rpt.advisories_parsed = len(advisories)
+    return advisories, rpt
+
+
+# ---------- Humboldt + Sonoma (LLM extraction from static pages) ---------- #
+
+
+HUMBOLDT_HOMEPAGE = "https://humboldtgov.org/1696/Water-Quality-Test-Results"
+SONOMA_HOMEPAGE = (
+    "https://sonomacounty.gov/health-and-human-services/health-services/"
+    "divisions/public-health/environmental-health/programs-and-services/"
+    "ocean-water-quality"
+)
+
+
+def _fetch_via_ai_extract(
+    client: httpx.Client,
+    county: str,
+    url: str,
+    homepage: str | None = None,
+) -> tuple[list[CountyAdvisory], CountyReport]:
+    """Shared LLM-extraction path for counties without a structured feed.
+    Loads the AI extraction helpers from scripts/ai_extract_advisories.py
+    so we don't duplicate the prompt + GitHub Models plumbing."""
+    rpt = CountyReport(
+        county=county,
+        success=False,
+        last_attempted_at=datetime.now(timezone.utc).isoformat(),
+        source_url=url,
+    )
+
+    # Lazy import — keeps the static scrapers usable even if the AI module
+    # has its own optional deps in the future.
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    try:
+        from ai_extract_advisories import (  # type: ignore
+            fetch_page, trim_html, extract_via_github_models,
+        )
+    except ImportError as e:
+        rpt.error = f"ai_extract_advisories import failed: {e}"
+        return [], rpt
+
+    import os as _os
+    if not _os.environ.get("GITHUB_TOKEN"):
+        rpt.error = "GITHUB_TOKEN not set; skipping LLM extraction"
+        return [], rpt
+
+    try:
+        # client is the RetryingClient — but fetch_page uses its own httpx
+        # client because Playwright path needs different setup. The plain
+        # httpx fetch inside fetch_page() handles retries via its own UA.
+        html = fetch_page(url, use_playwright=False, timeout=30.0)
+        text = trim_html(html)
+        if len(text) < 200:
+            rpt.error = f"page text too short ({len(text)} chars) — likely a 404/block"
+            return [], rpt
+        rows = extract_via_github_models(text, county)
+    except Exception as e:
+        rpt.error = f"extraction failed: {e}"
+        return [], rpt
+
+    advisories: list[CountyAdvisory] = []
+    for row in rows:
+        beach_name = (row.get("beach_name") or "").strip()
+        if not beach_name:
+            continue
+        adv_type = (row.get("advisory_type") or "Posting").strip()
+        if adv_type.lower() in ("rain advisory", "rain"):
+            adv_type = "Posting"
+        elif adv_type.lower().startswith("clos"):
+            adv_type = "Closure"
+        elif adv_type.lower().startswith("chronic"):
+            adv_type = "Chronic Posting"
+        else:
+            adv_type = "Posting"
+
+        started_at = None
+        if row.get("started_at"):
+            started_at = _parse_us_date(str(row["started_at"]))
+        if started_at is None:
+            started_at = pd.Timestamp.now().normalize()
+
+        cause = row.get("cause") or "Bacterial Standards Violation"
+
+        advisories.append(CountyAdvisory(
+            county=county,
+            station_code=(row.get("station_code") or None),
+            area=beach_name,
+            advisory_type=adv_type,
+            started_at=started_at,
+            advisory_website=homepage or url,
+            cause=cause,
+        ))
+
+    # Empty list = legitimate all-clear (no current postings). Mark success
+    # so the authoritative-county demotion logic still fires for any stale
+    # state-feed records in this county.
+    rpt.success = True
+    rpt.advisories_parsed = len(advisories)
+    return advisories, rpt
+
+
+def fetch_humboldt_advisories(
+    client: httpx.Client, resolver: StationResolver
+) -> tuple[list[CountyAdvisory], CountyReport]:
+    advs, rpt = _fetch_via_ai_extract(
+        client, "Humboldt", HUMBOLDT_HOMEPAGE, homepage=HUMBOLDT_HOMEPAGE
+    )
+    rpt.stations_in_lookup = len(resolver._beach_name_lookup.get("Humboldt", {}))
+    return advs, rpt
+
+
+def fetch_sonoma_advisories(
+    client: httpx.Client, resolver: StationResolver
+) -> tuple[list[CountyAdvisory], CountyReport]:
+    advs, rpt = _fetch_via_ai_extract(
+        client, "Sonoma", SONOMA_HOMEPAGE, homepage=SONOMA_HOMEPAGE
+    )
+    rpt.stations_in_lookup = len(resolver._beach_name_lookup.get("Sonoma", {}))
+    return advs, rpt
+
+
 # ---------- Best-effort stubs (try, log, move on) ---------- #
 
 
@@ -1211,7 +1453,17 @@ COUNTIES_FIRST_CLASS = [
     ("Long Beach City", fetch_long_beach_advisories),
     ("East Bay Parks District", fetch_east_bay_advisories),
     ("Ventura", fetch_ventura_advisories),
+    ("San Francisco", fetch_san_francisco_advisories),
+    ("Humboldt", fetch_humboldt_advisories),
+    ("Sonoma", fetch_sonoma_advisories),
 ]
+
+# Counties whose scraper is *new* and not yet validated. They still run and
+# emit new advisories on success, but they do NOT join the authoritative set
+# — so stale BeachWatch active records in those counties stay until we trust
+# the new path (e.g., after 3 days of manual review per the AI-extraction
+# rollout plan). Once validated, remove from this set.
+COUNTIES_PENDING_VALIDATION = {"Humboldt", "Sonoma"}
 
 BEST_EFFORT_COUNTIES: dict[str, list[str]] = {
     "Monterey": [
@@ -1221,11 +1473,6 @@ BEST_EFFORT_COUNTIES: dict[str, list[str]] = {
     "Santa Barbara": [
         # SB redesigned their site; old /phd/eh/beach-water.sbc returns a soft 404.
         "https://www.countyofsb.org/2263/Ocean-Water-Monitoring-Program",
-    ],
-    "San Francisco": [
-        "https://www.sfgov.org/dph/swimming-beaches",
-        "https://www.sf.gov/information--checking-ocean-and-beach-water-quality",
-        "https://sfpuc.org/water/water-quality/ocean-and-bay-monitoring",
     ],
 }
 
@@ -1318,7 +1565,9 @@ def main() -> int:
     first_class_names = {name for name, _ in COUNTIES_FIRST_CLASS}
     authoritative_counties = {
         r.county for r in reports
-        if r.county in first_class_names and r.success
+        if r.county in first_class_names
+        and r.success
+        and r.county not in COUNTIES_PENDING_VALIDATION
     }
     added, demoted = merge_and_rebuild(
         all_advisories,
