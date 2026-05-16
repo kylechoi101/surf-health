@@ -328,3 +328,55 @@ system has fresh labels or a validated stale-sample model that beats the prior.
 4. Add router evaluation that fails closed to persistence/prior when a beach/county route does not beat its local baseline.
 5. Tune or learn alpha with nested spatial validation instead of relying on a fixed cap.
 6. Keep public framing as beta decision support until the routed system passes aggregate and local validation checks.
+
+## 2026-05-16 — Persistence Guard Promotion Re-Assessment
+
+Re-running `_promotion_assessment` against the latest `system_health.json` (post
+advisory-cleanup retrain of 2026-05-14) on the persistence-guard variant
+reveals the guard now **fails the spatial county calibration-slope floor**:
+
+```text
+Source: data/curated/system_health.json
+Cleaned-data retrain, 365-day window, 30-county / 500-beach spatial limits
+
+variant                                county_aucpr  county_brier  county_cal_slope  beach_aucpr  beach_brier   gates_clear
+─────────────────────────────────────  ────────────  ────────────  ────────────────  ───────────  ────────────  ───────────
+persistence (baseline)                 0.5705        0.1397        —                 0.7186       0.2025        —
+hist_gbm                               0.6975        0.1218        1.151             0.8952       0.1089        ✅ all clear
+hist_gbm_persistence_blend             0.7552        0.1020        0.843             0.8883       0.1270        ✅ all clear
+hist_gbm_positive_persistence_guard    0.6551        0.1271        0.193             0.7750       0.1618        ❌ county cal_slope 0.193 < 0.4
+hist_gbm_no_bacteria_weather_delta     0.1912        0.2212       −0.768             0.8188       0.1433        ❌ county AUCPR/Brier worse than persistence
+```
+
+Interpretation:
+
+- The guard still beats persistence on both AUCPR and Brier at county + beach
+  levels (consistent with the original 2026-05-08 finding above).
+- **But** the cleaned-data retrain shrank the calibration slope on held-out
+  counties from a previously-acceptable value to **0.193**, well below the
+  `_promotion_assessment` floor of `0.4`. The guard's emitted probabilities are
+  therefore untrustworthy on counties not seen in training — they're
+  systematically under-confident and not safe to surface to users.
+- The same retrain leaves `hist_gbm` and `hist_gbm_persistence_blend` clearing
+  every gate (calibration slopes 1.151 and 0.843 respectively).
+- The `no_bacteria_weather_delta` ablation remains catastrophic at the county
+  level (negative calibration slope, well below persistence on AUCPR).
+
+**Decision: keep `hist_gbm` as the production winner.** The blend variant has
+marginally better spatial Brier on county holdouts (0.102 vs 0.122) and
+qualifies as the preferred fallback if `hist_gbm` ever fails its gates. The
+persistence guard cannot be promoted in its current form — its conservative
+floor inflates the high-prevalence tail and depresses model variance enough to
+collapse the calibration slope on held-out counties.
+
+**Follow-up if we want to keep the guard idea**:
+
+1. Move from a hard `p=1` floor when prior persistence is `1` to a soft floor
+   (e.g. `max(p_hist_gbm, 0.7)`) that preserves model variance.
+2. Recompute the spatial calibration slope after the softer guard — the
+   AUCPR/Brier wins should mostly survive while restoring slope ≥ 0.4.
+3. If a soft guard still fails, retire the guard route entirely; the blend has
+   the same "fail closed on recent positive" effect at lower variance cost.
+
+No serving change is required from this assessment: `hist_gbm` remains in
+production via `production_model.json`.

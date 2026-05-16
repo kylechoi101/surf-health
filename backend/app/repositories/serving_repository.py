@@ -251,7 +251,18 @@ class ServingSnapshotRepository(BeachRepository):
         return False, None
 
     def _beach_from_row(self, row: sqlite3.Row, model_version: str | None = None) -> BeachSummary:
-        support = str(row["support_status"]) if model_version else "unsupported"
+        # Trust the curated `support_status` as the source of truth for whether
+        # the model covers this beach. A missing daily forecast does NOT mean
+        # the beach is unsupported — it may just be a same-day data gap. The
+        # apps surface "no current forecast" separately from "no model
+        # coverage at all".
+        curated_support = str(row["support_status"]) if row["support_status"] else "unsupported"
+        if curated_support == "unsupported":
+            support = "unsupported"
+        elif model_version:
+            support = curated_support
+        else:
+            support = curated_support  # production/beta beach with a same-day forecast gap
         beach_id = str(row["beach_id"])
         parent_name = self._parent_name_lookup().get(beach_id)
         return BeachSummary(
@@ -310,13 +321,19 @@ class ServingSnapshotRepository(BeachRepository):
                         advisory_website = url
                         break
 
+            # Trust curated `support_status` (set by derive_parent_beaches) as
+            # the authoritative coverage label. A missing same-day forecast on
+            # an otherwise-supported parent surfaces in the apps via a null
+            # risk_band ("no current forecast"), not by relabeling the parent
+            # as Not Supported.
+            curated_support = str(row["support_status"]) if row["support_status"] else "unsupported"
             parents.append(
                 ParentBeachSummary(
                     id=str(row["parent_beach_id"]),
                     name=str(row["name"]),
                     county=str(row["county"]),
                     region=str(row["region"]),
-                    support_status=str(row["support_status"]) if worst_model_v else "unsupported",
+                    support_status=curated_support,
                     model_version=worst_model_v,
                     station_count=int(row["station_count"]),
                     member_beach_ids=member_ids,

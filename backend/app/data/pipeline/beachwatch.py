@@ -257,9 +257,57 @@ def derive_parent_beaches(stations: pd.DataFrame) -> pd.DataFrame:
 
     _DIRECTION_LABELS = ["North", "South", "East", "West", "Central"]
 
+    def _parent_support_status(sub: pd.DataFrame) -> str:
+        statuses = set(sub["support_status"].dropna().astype(str).unique())
+        if "production" in statuses:
+            return "production"
+        if "beta" in statuses:
+            return "beta"
+        return "unsupported"
+
     rows = []
-    for usepa_id, group in stations.groupby("usepa_id"):
-        if not usepa_id:
+    # dropna=False so stations with NaN usepa_id (typically inland lakes /
+    # non-coastal monitoring sites that aren't in the EPA database) still
+    # surface as singleton parents below instead of being silently dropped.
+    for usepa_id, group in stations.groupby("usepa_id", dropna=False):
+        usepa_id_str = "" if pd.isna(usepa_id) else str(usepa_id)
+        if not usepa_id_str:
+            # Stations without a EPA id (typically inland lakes / non-coastal
+            # monitoring sites) still need to be reachable in the apps. Emit a
+            # singleton parent per station so they appear in the parent feed
+            # — they'll render with the gray "Not Supported" badge when no
+            # forecast model covers them.
+            for _, station in group.iterrows():
+                beach_id = str(station["beach_id"])
+                # County-wide aggregate placeholder stations (used internally
+                # by the county-direct advisory scraper) aren't individual
+                # beaches and shouldn't appear as separate cards in the apps.
+                if "all-" in beach_id and "-county-" in beach_id and station.get("station_code", "").startswith("All_"):
+                    continue
+                # Prefer the display-friendly `name` field; fall back to
+                # `beach_name` (often the BeachWatch raw name) only if name
+                # is missing.
+                display_name = (
+                    str(station["name"]) if pd.notna(station.get("name")) and str(station["name"]).strip()
+                    else str(station.get("beach_name") or beach_id)
+                )
+                rows.append({
+                    "parent_beach_id": f"parent-{beach_id.lower()}",
+                    "usepa_id": "",
+                    "name": display_name,
+                    "county": station["county"],
+                    "region": station["region"],
+                    "support_status": str(station.get("support_status") or "unsupported"),
+                    "latitude": float(station["latitude"]) if pd.notna(station.get("latitude")) else None,
+                    "longitude": float(station["longitude"]) if pd.notna(station.get("longitude")) else None,
+                    "station_count": 1,
+                    "member_beach_ids": [beach_id],
+                    "latest_official_sample_at": (
+                        station["latest_official_sample_at"]
+                        if pd.notna(station.get("latest_official_sample_at"))
+                        else None
+                    ),
+                })
             continue
 
         base_name = _canonical_name(group)
@@ -286,9 +334,7 @@ def derive_parent_beaches(stations: pd.DataFrame) -> pd.DataFrame:
                 "name": name,
                 "county": sub["county"].iloc[0],
                 "region": sub["region"].iloc[0],
-                "support_status": (
-                    "production" if (sub["support_status"] == "production").any() else "beta"
-                ),
+                "support_status": _parent_support_status(sub),
                 "latitude": float(sub["latitude"].dropna().mean()) if sub["latitude"].notna().any() else None,
                 "longitude": float(sub["longitude"].dropna().mean()) if sub["longitude"].notna().any() else None,
                 "station_count": len(member_ids),

@@ -5,6 +5,8 @@ import pandas as pd
 
 from app.data.pipeline.features import (
     REGULATORY_GEOMEAN_COLUMNS,
+    SD_BOUNDARY_FLAG_COLUMNS,
+    SD_BOUNDARY_INTERACTION_COLUMNS,
     _regulatory_geomean_features,
     add_temporal_features,
     build_inference_features,
@@ -384,4 +386,153 @@ def test_regulatory_geomean_columns_appear_in_sliding_window_dataset():
     dataset = build_sliding_windows(frame)
     feature_columns = set(dataset.feature_frame.columns)
     for column in REGULATORY_GEOMEAN_COLUMNS:
+        assert column in feature_columns, f"{column} missing from sliding-window feature frame"
+
+
+# ---------------------------------------------------------------------------
+# San Diego boundary-condition cohort flags + physical interactions.
+# Research lineage: docs/superpowers/plans/2026-05-09-unstable-beaches-action-plan.md
+# Implementation lineage: docs/superpowers/plans/2026-05-10-san-diego-boundary-features.md
+# ---------------------------------------------------------------------------
+
+
+def _boundary_row(beach_id: str, **overrides) -> pd.DataFrame:
+    base = {
+        "beach_id": beach_id,
+        "sample_date": "2026-07-15",  # mid-summer (south-swell season)
+        "sample_time": "2026-07-15T08:00:00-07:00",
+        "enterococcus_value": 12.0,
+        "exceeds_stv": 0,
+        "wave_height_m": 1.0,
+        "dominant_period_s": 10.0,
+        "wave_direction_deg": 200.0,
+        "water_temperature_c": 18.0,
+        "salinity_psu": 33.0,
+        "uv_index": 7.0,
+        "wind_speed_mps": 3.0,
+        "precip_mm_24h": 0.0,
+        "precip_mm_72h": 0.0,
+    }
+    base.update(overrides)
+    return pd.DataFrame([base])
+
+
+SOUTH_SD_BEACH_IDS = [
+    "ca068221-san-diego-imperial-beach-municipal-beach-other-ib-050",
+    "ca432983-san-diego-imperial-beach-pier-area-eh-030",
+    "ca134387-san-diego-north-imperial-beach-ib-060",
+    "ca204955-san-diego-coronado-city-beaches-ib-079",
+    "ca604254-san-diego-coronado-north-beach-eh-062",
+    "ca801475-san-diego-silver-strand-state-beach-ib-069",
+]
+
+OCEANSIDE_BEACH_IDS = [
+    "ca333308-san-diego-oceanside-municipal-beach-other-oc-040",
+    "ca976061-san-diego-buccaneer-beach-oc-022",
+]
+
+CARDIFF_BEACH_IDS = [
+    "ca152716-san-diego-cardiff-state-beach-se-050",
+]
+
+
+def test_south_sd_beaches_get_transboundary_and_south_swell_flags():
+    """Imperial Beach / Coronado / Silver Strand are subject to the Tijuana sewage
+    plume, the seasonal south-swell northward transport, and chronic dry-weather
+    contamination. The cohort flags must all fire for these beach IDs."""
+    for beach_id in SOUTH_SD_BEACH_IDS:
+        enriched = add_temporal_features(_boundary_row(beach_id))
+        assert enriched.iloc[0]["transboundary_sewage_exposure_flag"] == 1, beach_id
+        assert enriched.iloc[0]["south_swell_sensitive_flag"] == 1, beach_id
+        assert enriched.iloc[0]["dry_weather_contamination_zone_flag"] == 1, beach_id
+
+
+def test_oceanside_beaches_get_engineered_protection_flags():
+    """Oceanside / Buccaneer enjoy the Loma Alta Creek UV treatment facility plus
+    the deep-ocean outfall, so they get the engineered-runoff protection flag."""
+    for beach_id in OCEANSIDE_BEACH_IDS:
+        enriched = add_temporal_features(_boundary_row(beach_id))
+        assert enriched.iloc[0]["engineered_runoff_protection_flag"] == 1, beach_id
+        assert enriched.iloc[0]["uv_treatment_protected_flag"] == 1, beach_id
+
+
+def test_cardiff_state_beach_gets_lagoon_barrier_flag():
+    """Cardiff State Beach is barricaded by the San Elijo Lagoon inlet, which
+    frequently closes due to sand accumulation."""
+    for beach_id in CARDIFF_BEACH_IDS:
+        enriched = add_temporal_features(_boundary_row(beach_id))
+        assert enriched.iloc[0]["lagoon_mouth_barrier_flag"] == 1, beach_id
+
+
+def test_non_sd_beaches_get_zero_boundary_flags():
+    """Beaches outside the named SD cohorts should have all boundary flags == 0."""
+    out_of_cohort_ids = [
+        "ca-other-malibu-pl-100",
+        "ca068221-san-diego-imperial-beach-municipal-beach-other-eh-010",  # is south, sanity check below
+        "ca789152-san-diego-carlsbad-municipal-beach-eh-470",
+    ]
+    # Carlsbad and a non-existent beach should have all zeros.
+    for beach_id in ["ca-other-malibu-pl-100", "ca789152-san-diego-carlsbad-municipal-beach-eh-470"]:
+        enriched = add_temporal_features(_boundary_row(beach_id))
+        for flag in SD_BOUNDARY_FLAG_COLUMNS:
+            assert enriched.iloc[0][flag] == 0, f"{beach_id} should not have {flag}=1"
+    # And confirm a south-SD beach in the cohort does fire (positive control).
+    enriched = add_temporal_features(_boundary_row(out_of_cohort_ids[1]))
+    assert enriched.iloc[0]["transboundary_sewage_exposure_flag"] == 1
+
+
+def test_south_sewage_dry_weather_interaction_is_high_when_dry():
+    """transboundary_sewage_exposure_flag * (1 - precip/max_precip) — dry days
+    at south-SD should produce a high interaction value."""
+    row_dry = add_temporal_features(
+        _boundary_row(SOUTH_SD_BEACH_IDS[0], precip_mm_24h=0.0, precip_mm_72h=0.0)
+    )
+    row_wet = add_temporal_features(
+        _boundary_row(SOUTH_SD_BEACH_IDS[0], precip_mm_24h=40.0, precip_mm_72h=80.0)
+    )
+    assert (
+        row_dry.iloc[0]["south_sewage_dry_weather_interaction"]
+        > row_wet.iloc[0]["south_sewage_dry_weather_interaction"]
+    )
+    # Non-SD beaches should always have 0 for this column.
+    non_sd = add_temporal_features(_boundary_row("ca-other-malibu-pl-100", precip_mm_24h=0.0))
+    assert non_sd.iloc[0]["south_sewage_dry_weather_interaction"] == 0.0
+
+
+def test_south_swell_season_interaction_lights_in_summer_only():
+    """transboundary_sewage_exposure_flag * is_summer. Mid-July is summer; mid-Jan is not."""
+    summer = add_temporal_features(_boundary_row(SOUTH_SD_BEACH_IDS[0], sample_date="2026-07-15"))
+    winter = add_temporal_features(_boundary_row(SOUTH_SD_BEACH_IDS[0], sample_date="2026-01-15"))
+    assert summer.iloc[0]["south_swell_season_interaction"] == 1
+    assert winter.iloc[0]["south_swell_season_interaction"] == 0
+    non_sd = add_temporal_features(_boundary_row("ca-other-malibu-pl-100", sample_date="2026-07-15"))
+    assert non_sd.iloc[0]["south_swell_season_interaction"] == 0
+
+
+def test_protected_north_rain_interaction_lights_only_for_oceanside_in_rain():
+    """engineered_runoff_protection_flag * precip_mm_24h. Should be > 0 only for
+    Oceanside/Buccaneer on a wet day."""
+    wet = add_temporal_features(_boundary_row(OCEANSIDE_BEACH_IDS[0], precip_mm_24h=20.0))
+    dry = add_temporal_features(_boundary_row(OCEANSIDE_BEACH_IDS[0], precip_mm_24h=0.0))
+    south_wet = add_temporal_features(_boundary_row(SOUTH_SD_BEACH_IDS[0], precip_mm_24h=20.0))
+    assert wet.iloc[0]["protected_north_rain_interaction"] == 20.0
+    assert dry.iloc[0]["protected_north_rain_interaction"] == 0.0
+    assert south_wet.iloc[0]["protected_north_rain_interaction"] == 0.0
+
+
+def test_cardiff_lagoon_rain_interaction_lights_only_for_cardiff_in_rain():
+    """lagoon_mouth_barrier_flag * precip_mm_24h. Only Cardiff in rain should fire."""
+    wet = add_temporal_features(_boundary_row(CARDIFF_BEACH_IDS[0], precip_mm_24h=15.0))
+    south_wet = add_temporal_features(_boundary_row(SOUTH_SD_BEACH_IDS[0], precip_mm_24h=15.0))
+    assert wet.iloc[0]["cardiff_lagoon_rain_interaction"] == 15.0
+    assert south_wet.iloc[0]["cardiff_lagoon_rain_interaction"] == 0.0
+
+
+def test_boundary_flag_and_interaction_columns_appear_in_sliding_window_dataset():
+    """All boundary columns must reach the model feature matrix."""
+    values = [25.0 + 10.0 * (i % 3) for i in range(40)]
+    frame = _make_history(SOUTH_SD_BEACH_IDS[0], "2026-04-01", values)
+    dataset = build_sliding_windows(frame)
+    feature_columns = set(dataset.feature_frame.columns)
+    for column in SD_BOUNDARY_FLAG_COLUMNS + SD_BOUNDARY_INTERACTION_COLUMNS:
         assert column in feature_columns, f"{column} missing from sliding-window feature frame"

@@ -103,6 +103,125 @@ _GEOMEAN_THRESHOLD_LOG10 = {
 }
 
 
+# ---------------------------------------------------------------------------
+# San Diego boundary-condition cohort flags.
+#
+# Research lineage:
+#   docs/superpowers/plans/2026-05-09-unstable-beaches-action-plan.md
+#   docs/superpowers/plans/2026-05-10-san-diego-boundary-features.md
+#
+# Static, explicit beach-id mapping. We intentionally avoid loose name-matching
+# because the model is allowed to learn a per-cohort prior and we must not
+# accidentally flag beaches outside the documented research footprint.
+#
+# Cohort definitions:
+#   SOUTH_SD: Imperial Beach, Coronado, Silver Strand — chronic Tijuana River /
+#     Punta Bandera transboundary sewage exposure; northward summer transport
+#     from south swells; daily-testing surveillance bias; dry-weather dominant
+#     contamination. (IBWC + SCCOOS, ref: 2026-05-09 unstable-beaches plan §1.A.)
+#   OCEANSIDE_PROTECTED: Oceanside municipal + Buccaneer — Loma Alta Creek UV
+#     treatment facility (~700 gpm dry-weather sterilization) + 4.5-mile deep
+#     ocean outfall. (Ref: 2026-05-09 unstable-beaches plan §1.B Oceanside.)
+#   CARDIFF_LAGOON_BARRIER: Cardiff State Beach — San Elijo Lagoon inlet
+#     frequently closes from sand accumulation, severing the rain → coast
+#     pollution chain. (Ref: 2026-05-09 unstable-beaches plan §1.B Cardiff.)
+# ---------------------------------------------------------------------------
+_SOUTH_SD_BEACH_ID_PREFIXES: tuple[str, ...] = (
+    "ca068221-san-diego-imperial-beach",          # Imperial Beach municipal beach
+    "ca432983-san-diego-imperial-beach-pier-area",
+    "ca134387-san-diego-north-imperial-beach",
+    "ca204955-san-diego-coronado-city-beaches",
+    "ca604254-san-diego-coronado-north-beach",
+    "ca125172-san-diego-coronado-cays",
+    "ca801475-san-diego-silver-strand-state-beach",
+)
+
+_OCEANSIDE_PROTECTED_BEACH_ID_PREFIXES: tuple[str, ...] = (
+    "ca333308-san-diego-oceanside-municipal-beach",
+    "ca976061-san-diego-buccaneer-beach",
+)
+
+_CARDIFF_LAGOON_BEACH_ID_PREFIXES: tuple[str, ...] = (
+    "ca152716-san-diego-cardiff-state-beach",
+)
+
+SD_BOUNDARY_FLAG_COLUMNS: list[str] = [
+    # Group A — south SD, Tijuana plume cohort.
+    "transboundary_sewage_exposure_flag",   # IBWC transboundary sewage exposure
+    "south_swell_sensitive_flag",            # SCCOOS south-swell northward transport
+    "dry_weather_contamination_zone_flag",   # chronic Punta Bandera dry-weather flow
+    # Group B — engineered north-county protection cohort.
+    "engineered_runoff_protection_flag",     # Loma Alta UV facility + deep outfall
+    "uv_treatment_protected_flag",           # Loma Alta Creek UV plant
+    "lagoon_mouth_barrier_flag",             # San Elijo Lagoon inlet closure
+]
+
+SD_BOUNDARY_INTERACTION_COLUMNS: list[str] = [
+    # Dry-weather sewage dominance: high when sewage exposure is on AND it has
+    # NOT rained. Captures the Punta Bandera continuous-discharge regime.
+    "south_sewage_dry_weather_interaction",
+    # Diagnostic proxy: month is a transparent stand-in for true south-swell
+    # direction telemetry. May–Oct (NH summer) tags the peak south-swell window
+    # documented by SCCOOS HFR. Not a physical observation.
+    "south_swell_season_interaction",
+    # Softens rain-driven risk inflation at engineered/UV-protected beaches.
+    "protected_north_rain_interaction",
+    # Decouples Cardiff from rain when the inlet is closed. True inlet telemetry
+    # is not available, so this is a proxy keyed off the static cohort flag.
+    "cardiff_lagoon_rain_interaction",
+]
+
+
+def _starts_with_any(value: str, prefixes: tuple[str, ...]) -> bool:
+    if not isinstance(value, str) or not value:
+        return False
+    return value.startswith(prefixes)
+
+
+def _sd_boundary_features(enriched: pd.DataFrame) -> pd.DataFrame:
+    """Apply the static SD boundary-cohort flags and the documented physical
+    interactions. Returns a frame indexed like ``enriched``.
+    """
+    beach_ids = enriched["beach_id"].astype("string").fillna("")
+    is_south = beach_ids.map(lambda v: _starts_with_any(v, _SOUTH_SD_BEACH_ID_PREFIXES))
+    is_oceanside_protected = beach_ids.map(
+        lambda v: _starts_with_any(v, _OCEANSIDE_PROTECTED_BEACH_ID_PREFIXES)
+    )
+    is_cardiff = beach_ids.map(lambda v: _starts_with_any(v, _CARDIFF_LAGOON_BEACH_ID_PREFIXES))
+
+    south_flag = is_south.astype(int)
+    protected_flag = is_oceanside_protected.astype(int)
+    cardiff_flag = is_cardiff.astype(int)
+
+    # Dry-weather normalization: 1 - clip(precip_24h / 50mm, 0, 1). A 50mm/24h
+    # day is treated as the "definitely a storm" anchor; lower-than-50mm rainfall
+    # still has some dry-weather residual. Tuning is intentionally coarse — the
+    # signal is "is this a dry day or not?" rather than a fine-grained dose.
+    precip_24h = pd.to_numeric(enriched.get("precip_mm_24h"), errors="coerce").fillna(0.0).clip(lower=0.0)
+    dryness = (1.0 - (precip_24h / 50.0)).clip(lower=0.0, upper=1.0)
+
+    sample_dates = pd.to_datetime(enriched["sample_date"], errors="coerce")
+    month = sample_dates.dt.month.fillna(0).astype(int)
+    is_summer = month.between(5, 10).astype(int)
+
+    frame = pd.DataFrame(
+        {
+            "transboundary_sewage_exposure_flag": south_flag,
+            "south_swell_sensitive_flag": south_flag,
+            "dry_weather_contamination_zone_flag": south_flag,
+            "engineered_runoff_protection_flag": protected_flag,
+            "uv_treatment_protected_flag": protected_flag,
+            "lagoon_mouth_barrier_flag": cardiff_flag,
+            "south_sewage_dry_weather_interaction": (south_flag.astype(float) * dryness).astype(float),
+            "south_swell_season_interaction": (south_flag * is_summer).astype(int),
+            "protected_north_rain_interaction": (protected_flag.astype(float) * precip_24h).astype(float),
+            "cardiff_lagoon_rain_interaction": (cardiff_flag.astype(float) * precip_24h).astype(float),
+        },
+        index=enriched.index,
+    )
+    return frame
+
+
 @dataclass
 class SlidingWindowDataset:
     feature_frame: pd.DataFrame
@@ -367,6 +486,7 @@ def add_temporal_features(frame: pd.DataFrame) -> pd.DataFrame:
     rolling_features = _rolling_and_spacing_features(enriched)
     distributed_lag_features = _distributed_lag_hydrology_features(enriched)
     regulatory_geomean_features = _regulatory_geomean_features(enriched)
+    sd_boundary_features = _sd_boundary_features(enriched)
 
     missing_indicators = pd.DataFrame(
         {f"{column}_missing": enriched[column].isna().astype(int) for column in BASE_NUMERIC_COLUMNS},
@@ -383,6 +503,7 @@ def add_temporal_features(frame: pd.DataFrame) -> pd.DataFrame:
             rolling_features,
             distributed_lag_features,
             regulatory_geomean_features,
+            sd_boundary_features,
             missing_indicators,
         ],
         axis=1,
