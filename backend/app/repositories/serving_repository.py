@@ -265,9 +265,16 @@ class ServingSnapshotRepository(BeachRepository):
             support = curated_support  # production/beta beach with a same-day forecast gap
         beach_id = str(row["beach_id"])
         parent_name = self._parent_name_lookup().get(beach_id)
+        station_nickname_raw = str(row["name"] or "").strip()
+        # Some upstream rows arrive with literally-escaped apostrophes
+        # (e.g. "Black\\'s Beach") because the source CSV/JSON was double-
+        # escaped. Strip the spurious backslashes for display.
+        station_nickname = station_nickname_raw.replace("\\'", "'").replace("\\\\", "") or None
+        friendly = _derive_friendly_name(row)
         return BeachSummary(
             id=beach_id,
-            name=parent_name or _derive_friendly_name(row),
+            name=parent_name or friendly,
+            station_name=station_nickname,
             county=str(row["county"]),
             region=str(row["region"]),
             support_status=support,
@@ -295,10 +302,23 @@ class ServingSnapshotRepository(BeachRepository):
         }
         active_beach_ids = self._active_advisory_beach_ids()
         advisory_websites = self._active_advisory_websites()
+        # member_id -> local nickname (e.g. "Black's Beach"), so the apps can
+        # match search queries against the actual names users know stations by.
+        # Some upstream rows ship with double-escaped apostrophes; clean them
+        # for display so the apps don't render backslashes in the UI.
+        def _clean_nickname(raw: object) -> str:
+            return str(raw or "").strip().replace("\\'", "'").replace("\\\\", "")
+
+        member_name_lookup = {
+            str(row["beach_id"]): _clean_nickname(row["name"])
+            for row in self._fetch_all("select beach_id, name from beaches")
+        }
 
         parents: list[ParentBeachSummary] = []
         for row in rows:
             member_ids = [str(member_id) for member_id in _parse_json_list(row["member_beach_ids"])]
+            member_names = [member_name_lookup.get(mid, "") for mid in member_ids]
+            member_names = [n for n in member_names if n]
             member_forecasts = [
                 forecast_lookup[beach_id] for beach_id in member_ids if beach_id in forecast_lookup
             ]
@@ -337,6 +357,7 @@ class ServingSnapshotRepository(BeachRepository):
                     model_version=worst_model_v,
                     station_count=int(row["station_count"]),
                     member_beach_ids=member_ids,
+                    member_beach_names=member_names,
                     latest_official_sample_at=_parse_datetime(row["latest_official_sample_at"]),
                     geometry=Point(
                         latitude=float(row["latitude"]),

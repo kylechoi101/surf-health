@@ -46,7 +46,13 @@ class EnvironmentalSummary(BaseModel):
 
 class BeachSummary(BaseModel):
     id: str
+    # Display name — typically the parent's name when this station rolls up
+    # into a parent group, otherwise the local station name.
     name: str
+    # Local station nickname (e.g. "Black's Beach" for the FM-090 station
+    # under "Torrey Pines State Beach"). Apps match search queries against
+    # this so users can find a station by the name they know it by.
+    station_name: str | None = None
     county: str
     region: str
     support_status: SupportStatus
@@ -64,6 +70,11 @@ class ParentBeachSummary(BaseModel):
     model_version: str | None = None
     station_count: int
     member_beach_ids: list[str]
+    # Local nicknames for each member station (e.g. "Black's Beach" for the
+    # FM-090 station under the "Torrey Pines State Beach" parent). Apps
+    # match search queries against these so users can find a parent by the
+    # name they actually know it by, not just the official BeachWatch label.
+    member_beach_names: list[str] = Field(default_factory=list)
     latest_official_sample_at: datetime | None = None
     geometry: Point
     risk_band: RiskBand | None = None

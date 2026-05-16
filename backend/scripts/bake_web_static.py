@@ -160,8 +160,16 @@ def bake(curated: Path, out: Path) -> None:
         if bid in env_by_bid:
             env_block = {k: _safe(v) for k, v in env_by_bid[bid].items() if k != "beach_id"}
 
-        station_name = str(b.get("station_code") or b.get("beach_name") or b.get("name") or "")
-        display_name = str(b.get("beach_name") or b.get("name") or "")
+        # Prefer the friendly local `name` (e.g. "Black's Beach" for the
+        # FM-090 station under "Torrey Pines State Beach") so app search
+        # can match the name users actually know stations by. Fall back to
+        # station_code only if no friendly name is set.
+        local_name_raw = str(b.get("name") or "")
+        local_name = local_name_raw.replace("\\'", "'").replace("\\\\", "")
+        station_code = str(b.get("station_code") or "")
+        station_name = local_name or station_code or str(b.get("beach_name") or "")
+        beach_name = str(b.get("beach_name") or "")
+        display_name = beach_name or local_name
         if station_name and station_name != display_name:
             display_name = f"{display_name} ({station_name})" if display_name else station_name
 
