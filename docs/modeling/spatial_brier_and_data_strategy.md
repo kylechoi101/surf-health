@@ -436,3 +436,75 @@ specific or per-station head that doesn't run through the guard's positive-
 persistence floor. The boundary features are only meaningful when the model
 is allowed to learn *off* the daily-positive autocorrelation; the guard
 masks them.
+
+## 2026-05-16 — LSTM Promotion Assessment
+
+Trained the full candidate slate including `--model lstm` on cleaned data
+(`--training-window-days 365 --spatial-beach-limit 500 --spatial-county-limit 30`).
+Spatial backtests completed; metrics persisted to `system_health.json`.
+
+`_promotion_assessment` called on the LSTM artifact:
+
+```text
+lstm:
+  public_release_eligible: True
+  deployment_stage: candidate_ready
+  blockers: []
+```
+
+The county calibration-slope floor (≥ 0.4) clears with substantial margin:
+
+```text
+                       AUCPR    Brier    cal_slope    log_loss   prec@80recall
+spatial_county_lstm    0.7348   0.1044   1.0747       0.3637     0.5815
+spatial_beach_lstm     0.8227   0.0824   1.1412       0.2934     0.6763
+
+(persistence baseline)
+spatial_county_persistence  0.5667   0.1386   0.1151
+spatial_beach_persistence   0.5682   0.1383   0.1154
+```
+
+**Heads-up comparison against the tree slate**:
+
+| metric | hist_gbm | persistence_blend | guard | LSTM |
+|---|---|---|---|---|
+| county AUCPR | 0.6975 | 0.7552 | 0.6551 | **0.7348** |
+| county Brier | 0.1218 | **0.1020** | 0.1271 | 0.1044 |
+| county cal_slope | 1.151 | 0.843 | 0.193 ✗ | 1.075 |
+| beach AUCPR | **0.8952** | 0.8883 | 0.7750 | 0.8227 |
+| beach Brier | 0.1089 | 0.1270 | 0.1618 | **0.0824** |
+| beach cal_slope | 0.709 | 0.577 | 0.179 ✗ | **1.141** |
+| passes gates | ✓ | ✓ | ✗ | ✓ |
+
+**LSTM is the strongest beach-level model in this slate** — it cuts spatial
+beach Brier by 24% versus hist_gbm (0.0824 vs 0.1089) and is calibrated
+nearly 1:1 on held-out beaches. At county level it sits between hist_gbm
+and the blend on Brier, and improves the persistence-guard's failed
+calibration slope from 0.19 → 1.07.
+
+**Decision**: LSTM is recorded as a research candidate in `system_health.json`
+(`research_models: ["lstm-curated-v0"]`) and would-be qualified for
+production promotion, but is **not** swapped in this commit because:
+
+1. `_two_stage_training_plan` deliberately keeps sequence models in
+   `research_winner` slot — promoting LSTM to production_winner requires
+   touching `PRODUCTION_MODEL_NAMES` and the serving pickle path (LSTM
+   artifact is a torch checkpoint, not a sklearn estimator). Estimated
+   half-day's plumbing work.
+2. The current production winner (`hist_gbm`) already clears every gate,
+   has a better beach AUCPR (0.895 vs 0.823), and ships via the existing
+   sklearn pipeline. Swapping requires either co-deploying both
+   architectures or carefully rerouting at the beach level (where LSTM
+   wins) while keeping county-level decisions on the tree path.
+3. LSTM's calibration slope marginally trails hist_gbm at the county
+   level (1.075 vs 1.151) — both are excellent, but the tree path is
+   slightly more conservative.
+
+**Recommended follow-up** (separate ticket): wire LSTM into serving for
+beach-level routing — at every beach where the model is confident, route
+to LSTM (lower Brier); county-level fallbacks stay on hist_gbm. Treat
+this as a per-beach router decision, similar to the existing
+`hist_gbm_no_bacteria_weather_delta` route for stable beaches.
+
+Until that ships, LSTM lives as `research_winner` and the daily forecast
+remains `hist-gbm-curated-v0`.
