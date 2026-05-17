@@ -380,3 +380,59 @@ collapse the calibration slope on held-out counties.
 
 No serving change is required from this assessment: `hist_gbm` remains in
 production via `production_model.json`.
+
+## 2026-05-16 — SD Boundary Features Diagnostic vs Persistence Guard
+
+Following implementation of the [San Diego boundary cohort
+flags](../superpowers/plans/2026-05-10-san-diego-boundary-features.md) —
+`transboundary_sewage_exposure_flag`, `south_swell_sensitive_flag`,
+`dry_weather_contamination_zone_flag`, `engineered_runoff_protection_flag`,
+`uv_treatment_protected_flag`, `lagoon_mouth_barrier_flag` and 4 physical
+interaction terms — re-ran the 365-day / 12-county / 50-beach diagnostic
+against the persistence guard:
+
+```text
+Run: 2026-05-16
+Command: backend/.venv/bin/python scripts/diagnose_spatial_brier.py \
+  --model hist_gbm_positive_persistence_guard \
+  --group-columns county beach_id \
+  --training-window-days 365 --max-county-groups 12 --max-beach-groups 50 \
+  --output-dir /tmp/sd-boundary-guard-365
+
+                          model       persistence    delta     this vs prior baseline
+county      Brier        0.127138    0.139614       −0.0125   +0.0002 (essentially flat)
+beach       Brier        0.160363    0.202661       −0.0423   +0.0007 (essentially flat)
+blend       best alpha   1.00 (pure guard wins; no blending helps)
+worst-group analysis     no county or beach group is worse than persistence
+```
+
+Prior baseline (pre-SD-boundary, recorded in plan §3): county Brier 0.126892,
+beach Brier 0.159621.
+
+**Verdict: features land as a standalone artifact, no production promotion.**
+
+- The cohort flags + interactions are mathematically present in
+  `_sd_boundary_features` (features.py) and pass 18 unit tests, but they do
+  not move the spatial Brier needle on the persistence-guard wrapper. The
+  guard's bottleneck is its calibration slope on held-out counties (0.193;
+  see prior section), not the feature space.
+- No group regression: every county and beach is no-worse than persistence
+  under the augmented feature set. Safe to keep the flag columns active so
+  future experiments (per-station or per-cohort heads, rerouting via
+  hist_gbm directly instead of the guard wrapper) can inherit them.
+- San Diego county itself: 5,624 rows, model Brier 0.1349 vs persistence
+  0.1511, delta −0.0162. Improvement is real but small relative to the
+  base-rate (0.585 positive rate at SD beaches — daily testing bias still
+  dominates). Group A (Imperial/Coronado/Silver Strand) members all show
+  0.0 / 0.0 Brier on holdout — they are perfect-persistence groups,
+  mathematically unsavable by any model without breaking the persistence
+  prior.
+- The feature columns join `SD_BOUNDARY_FLAG_COLUMNS` and
+  `SD_BOUNDARY_INTERACTION_COLUMNS` in features.py. They will be picked up
+  automatically by the next training run.
+
+**Next step if pursuing further**: route SD-cohort beaches to a county-
+specific or per-station head that doesn't run through the guard's positive-
+persistence floor. The boundary features are only meaningful when the model
+is allowed to learn *off* the daily-positive autocorrelation; the guard
+masks them.
