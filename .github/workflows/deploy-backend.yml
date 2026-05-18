@@ -12,6 +12,10 @@ on:
       - ".github/workflows/deploy-backend.yml"
   workflow_dispatch:
 
+permissions:
+  contents: read
+  deployments: write
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -19,7 +23,30 @@ jobs:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
+      - name: Create GitHub deployment record
+        id: deployment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          DEPLOYMENT_ID=$(gh api \
+            -X POST \
+            "repos/$REPO/deployments" \
+            -f ref="$SHA" \
+            -f environment="main - surf-health-api" \
+            -f description="Render deploy webhook triggered by GH Actions" \
+            -F auto_merge=false \
+            -F production_environment=true \
+            -f "required_contexts[]" \
+            --jq '.id')
+          echo "deployment_id=$DEPLOYMENT_ID" >> "$GITHUB_OUTPUT"
+          gh api -X POST "repos/$REPO/deployments/$DEPLOYMENT_ID/statuses" \
+            -f state=in_progress \
+            -f description="Posting to Render deploy hook"
+
       - name: Trigger Render deploy
+        id: trigger
         env:
           RENDER_DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
         run: |
@@ -29,3 +56,26 @@ jobs:
           fi
           curl -fsSL -X POST "$RENDER_DEPLOY_HOOK"
           echo "Render deploy triggered."
+
+      - name: Mark deployment success
+        if: success() && steps.deployment.outputs.deployment_id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DEPLOYMENT_ID: ${{ steps.deployment.outputs.deployment_id }}
+        run: |
+          gh api -X POST "repos/$REPO/deployments/$DEPLOYMENT_ID/statuses" \
+            -f state=success \
+            -f environment_url=https://surf-health-api-aabr.onrender.com \
+            -f description="Render webhook accepted; Render is rebuilding"
+
+      - name: Mark deployment failure
+        if: failure() && steps.deployment.outputs.deployment_id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DEPLOYMENT_ID: ${{ steps.deployment.outputs.deployment_id }}
+        run: |
+          gh api -X POST "repos/$REPO/deployments/$DEPLOYMENT_ID/statuses" \
+            -f state=failure \
+            -f description="Render webhook POST failed (curl error)"
