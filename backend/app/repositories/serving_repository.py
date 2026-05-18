@@ -183,11 +183,22 @@ class ServingSnapshotRepository(BeachRepository):
     # is bureaucratic, not operational.
     _ACTIVE_ADVISORY_WINDOW_DAYS = 14
 
+    # Closure-class advisories (e.g. the chronic Tijuana Slough closure
+    # active since 2025-10-13) describe ongoing hazards that the county
+    # never explicitly lifts, so they bypass the 14-day acute window and
+    # remain visible until the source feed stops listing them. Postings
+    # still get the 14-day gate. Mirrors `bake_web_static._active_advisory_set`
+    # so the web's baked JSON and the API agree.
+    _CLOSURE_EXEMPT_FILTER = (
+        "(lower(coalesce(advisory_type, '')) like '%closure%' "
+        f"or started_at >= datetime('now', '-{_ACTIVE_ADVISORY_WINDOW_DAYS} days'))"
+    )
+
     def _active_advisory_beach_ids(self) -> set[str]:
         rows = self._fetch_all(
             "select distinct beach_id from advisories_recent "
             "where status = 'active' "
-            f"and started_at >= datetime('now', '-{self._ACTIVE_ADVISORY_WINDOW_DAYS} days')"
+            f"and {self._CLOSURE_EXEMPT_FILTER}"
         )
         return {str(row["beach_id"]) for row in rows}
 
@@ -196,7 +207,7 @@ class ServingSnapshotRepository(BeachRepository):
         rows = self._fetch_all(
             "select beach_id, advisory_website from advisories_recent "
             "where status = 'active' "
-            f"and started_at >= datetime('now', '-{self._ACTIVE_ADVISORY_WINDOW_DAYS} days') "
+            f"and {self._CLOSURE_EXEMPT_FILTER} "
             "order by started_at desc"
         )
         result: dict[str, str | None] = {}
