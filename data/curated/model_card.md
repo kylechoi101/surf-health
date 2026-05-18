@@ -1,7 +1,7 @@
-# Model Card: Shorelife `hist-gbm-persistence-blend-curated-v0`
+# Model Card: Shorelife `hist-gbm-curated-v0`
 
 ## Deployment Status
-- **Generated at**: 2026-05-17T17:28:57.777979+00:00
+- **Generated at**: 2026-05-18T18:34:57.299134+00:00
 - **Deployment stage**: candidate_ready
 - **Public release eligible**: true
 - **Promotion blocker (latest)**: None
@@ -9,22 +9,22 @@
 ## Headline Metrics (from `system_health.json`)
 
 ### Temporal (held-out time slice)
-- **AUCPR**: 0.338
-- **Brier**: 0.081
-- **Log loss**: 0.283
-- **Calibration slope**: 0.763
+- **AUCPR**: 0.350
+- **Brier**: 0.080
+- **Log loss**: 0.280
+- **Calibration slope**: 0.785
 
 ### Deployment (active stations only; recency-filtered roster)
-- **AUCPR**: 0.350
-- **Brier**: 0.089
-- **n_samples**: 1256
+- **AUCPR**: 0.363
+- **Brier**: 0.088
+- **n_samples**: 1253
 
 ### Validation (calibration/training-time slice; not a public headline)
-- **AUCPR**: 0.834
-- **Brier**: 0.100
+- **AUCPR**: 0.829
+- **Brier**: 0.102
 
 ### Spatial (holdouts)
-- **Spatial county AUCPR**: 0.707
+- **Spatial county AUCPR**: 0.640
 - **Spatial county persistence AUCPR**: 0.570
 
 ## Operational Agreement Check
@@ -34,7 +34,7 @@ Active advisories are decomposed into three pools by age. The overall agreement 
 - **Chronic** (15-365 d, geomean postings): agreement —
 - **Stale** (>365 d, admin zombies the model is not expected to flag): agreement —
 
-- **Active-advisory agreement rate** (legacy overall metric, dominated by stale pool): 0.500
+- **Active-advisory agreement rate** (legacy overall metric, dominated by stale pool): 0.438
 
 ## Notes
 - Forecasts are decision support and are not official lab results.
