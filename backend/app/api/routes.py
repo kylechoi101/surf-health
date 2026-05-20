@@ -80,6 +80,26 @@ async def get_hourly(
     return {"beach_id": beach_id, **payload}
 
 
+@router.get("/beaches/{beach_id}/tides")
+def get_tides(
+    beach_id: str,
+    response: Response,
+    service: BeachService = Depends(get_service),
+):
+    """48 h of hourly tide predictions for the nearest NOAA CO-OPS station.
+    Returns predictions, derived high/low extrema, and the nearest-station
+    metadata. Cached server-side for 24 h per station (predictions are
+    deterministic harmonic outputs)."""
+    from app.services.tides import fetch_tides
+
+    beach = service.repository.get_beach(beach_id)
+    payload = fetch_tides(beach.geometry.latitude, beach.geometry.longitude)
+    if payload is None:
+        raise HTTPException(status_code=502, detail="upstream tide service unavailable")
+    response.headers["Cache-Control"] = "public, max-age=21600, stale-while-revalidate=3600"
+    return {"beach_id": beach_id, **payload}
+
+
 @router.get("/system/health")
 def system_health(service: BeachService = Depends(get_service)):
     health = service.get_system_health()

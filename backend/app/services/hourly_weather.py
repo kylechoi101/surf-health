@@ -47,20 +47,29 @@ async def _fetch_open_meteo(
     forecast_params = {
         "latitude": round(lat, 2),
         "longitude": round(lon, 2),
-        "hourly": "temperature_2m,wind_speed_10m,wind_direction_10m,uv_index,shortwave_radiation",
+        "hourly": (
+            "temperature_2m,wind_speed_10m,wind_direction_10m,uv_index,"
+            "shortwave_radiation,weathercode"
+        ),
         "wind_speed_unit": "ms",
         "temperature_unit": "celsius",
         "timezone": "auto",
         "past_days": 1,
-        "forecast_days": 2,
+        "forecast_days": 7,
     }
     marine_params = {
         "latitude": round(lat, 2),
         "longitude": round(lon, 2),
-        "hourly": "wave_height,wave_period,wave_direction,sea_surface_temperature",
+        "hourly": (
+            "wave_height,wave_period,wave_direction,sea_surface_temperature,"
+            "wind_wave_height,wind_wave_period,wind_wave_direction,"
+            "swell_wave_height,swell_wave_period,swell_wave_direction,"
+            "secondary_swell_wave_height,secondary_swell_wave_period,"
+            "secondary_swell_wave_direction"
+        ),
         "timezone": "auto",
         "past_days": 1,
-        "forecast_days": 2,
+        "forecast_days": 7,
     }
     try:
         forecast_resp, marine_resp = await asyncio.gather(
@@ -90,10 +99,20 @@ async def _fetch_open_meteo(
         "wind_direction_deg": forecast.get("wind_direction_10m", []),
         "uv_index": forecast.get("uv_index", []),
         "shortwave_w_m2": forecast.get("shortwave_radiation", []),
+        "weather_code": forecast.get("weathercode", []),
         "wave_height_m": marine.get("wave_height", []),
         "wave_period_s": marine.get("wave_period", []),
         "wave_direction_deg": marine.get("wave_direction", []),
         "water_temperature_c": marine.get("sea_surface_temperature", []),
+        "wind_wave_height_m": marine.get("wind_wave_height", []),
+        "wind_wave_period_s": marine.get("wind_wave_period", []),
+        "wind_wave_direction_deg": marine.get("wind_wave_direction", []),
+        "primary_swell_height_m": marine.get("swell_wave_height", []),
+        "primary_swell_period_s": marine.get("swell_wave_period", []),
+        "primary_swell_direction_deg": marine.get("swell_wave_direction", []),
+        "secondary_swell_height_m": marine.get("secondary_swell_wave_height", []),
+        "secondary_swell_period_s": marine.get("secondary_swell_wave_period", []),
+        "secondary_swell_direction_deg": marine.get("secondary_swell_wave_direction", []),
     }
 
 
