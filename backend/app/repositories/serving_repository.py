@@ -304,10 +304,19 @@ class ServingSnapshotRepository(BeachRepository):
         # escaped. Strip the spurious backslashes for display.
         station_nickname = station_nickname_raw.replace("\\'", "'").replace("\\\\", "") or None
         friendly = _derive_friendly_name(row)
+        # `beach_name` is the human-readable roster name (e.g. "Huntington
+        # State Beach") and may be absent on older serving snapshots — fall
+        # back to None and clients can use the existing `name` instead.
+        beach_name_raw = _row_get(row, "beach_name")
+        beach_name = None
+        if beach_name_raw is not None:
+            cleaned = str(beach_name_raw).strip().replace("\\'", "'").replace("\\\\", "")
+            beach_name = cleaned or None
         return BeachSummary(
             id=beach_id,
             name=parent_name or friendly,
             station_name=station_nickname,
+            beach_name=beach_name,
             county=str(row["county"]),
             region=str(row["region"]),
             support_status=support,

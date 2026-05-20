@@ -53,6 +53,12 @@ class BeachSummary(BaseModel):
     # under "Torrey Pines State Beach"). Apps match search queries against
     # this so users can find a station by the name they know it by.
     station_name: str | None = None
+    # Human-readable beach name from the curated roster (e.g. "Huntington
+    # State Beach"). Sits alongside `name` (which is typically the cryptic
+    # sampling-station label like "50' N of Santa Ana River"). Apps prefer
+    # this for display when available. Optional because legacy serving
+    # snapshots and fixtures may not carry the column.
+    beach_name: str | None = None
     county: str
     region: str
     support_status: SupportStatus

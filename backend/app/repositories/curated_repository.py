@@ -140,6 +140,24 @@ def _coerce_advisory_website(raw: object) -> str | None:
     return text
 
 
+def _coerce_beach_name(raw: object) -> str | None:
+    """Return a clean beach_name string, or None if missing/blank/NaN.
+
+    Some rows arrive with double-escaped apostrophes (e.g. ``Black\\'s
+    Beach``) because the source CSV was double-encoded; strip the spurious
+    backslashes for display.
+    """
+    if raw is None:
+        return None
+    try:
+        if pd.isna(raw):
+            return None
+    except (TypeError, ValueError):
+        pass
+    text = str(raw).strip().replace("\\'", "'").replace("\\\\", "")
+    return text or None
+
+
 def _safe_bool(value: object, *, default: bool = True) -> bool:
     """Parse a boolean that may have been stored as string/int in parquet/SQLite."""
     if value is None:
@@ -374,6 +392,7 @@ class CuratedBeachRepository(BeachRepository):
                 BeachSummary(
                     id=bid,
                     name=_derive_friendly_name(row),
+                    beach_name=_coerce_beach_name(row.get("beach_name")),
                     county=row["county"],
                     region=row["region"],
                     support_status=support,
@@ -406,6 +425,7 @@ class CuratedBeachRepository(BeachRepository):
         return BeachSummary(
             id=row["beach_id"],
             name=_derive_friendly_name(row),
+            beach_name=_coerce_beach_name(row.get("beach_name")),
             county=row["county"],
             region=row["region"],
             support_status=support,
