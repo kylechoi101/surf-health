@@ -10,9 +10,11 @@ Both are free, no auth required, hourly resolution. The 5 AM PT cutoff
 applied to the model isn't relevant here — these are forward-looking
 forecasts intended to inform "should I go in the water today?" so the
 window we expose is yesterday-noon through 48h ahead. Process-level
-LRU cache holds results for 1 hour to keep our Open-Meteo footprint
-small (~330 beaches × 5 mins = 4K calls/day max, well under the 10K
-free-tier limit).
+TTL cache holds results for 3 hours, matching Open-Meteo's marine model
+which rebuilds 4× daily (00/06/12/18 UTC). At 3 h TTL each beach hits
+upstream at most 8×/day; 330 beaches × 8 = 2,640 calls/day, ~26% of the
+10K free-tier limit. This is the cheapest lever for concurrent-user
+capacity: see docs/superpowers/research/2026-05-19-concurrent-capacity-debate.md.
 """
 from __future__ import annotations
 
@@ -24,7 +26,7 @@ import httpx
 
 _OPEN_METEO_FORECAST = "https://api.open-meteo.com/v1/forecast"
 _OPEN_METEO_MARINE = "https://marine-api.open-meteo.com/v1/marine"
-_CACHE_TTL_SECONDS = 60 * 60  # 1 hour
+_CACHE_TTL_SECONDS = 60 * 60 * 3  # 3 hours
 
 
 @dataclass

@@ -65,6 +65,22 @@ artifacts/
 mobile/build-*.ipa
 mobile/build_and_submit*.log
 mobile/build_and_submit*.txt
+# Don't track the stray mobile/ subtree inside the public surf_health repo at
+# all — the real mobile app lives in the sibling shorelife-mobile (private)
+# repo. This is leftover scratch that was never meant to be public.
+mobile/
+# Harness / agent runtime — never commit conversation state to a public repo.
+.claude/
+.superpowers/
+# Scratch HTML/data sources downloaded during research — large and not part
+# of the source code. Re-download from the original URLs if needed.
+data/source_metadata/
+# Curated dataset backups created before retrains / data migrations. Real
+# parquets are tracked under data/curated/ — *.bak-* are local-only safety
+# snapshots and bloat the public repo if committed.
+data/curated/*.bak-*
+# One-off / phase scripts.
+run_codex_*.sh
 order.txt
 human.txt
 backend/app/ml/feature_agent/agent_logs/

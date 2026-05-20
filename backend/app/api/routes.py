@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime, timezone, timedelta
 from functools import lru_cache
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 
 from app.core.config import get_settings
 from app.repositories.base import BeachRepository
@@ -36,8 +36,17 @@ def list_beaches(service: BeachService = Depends(get_service)):
 
 
 @router.get("/beaches/{beach_id}/forecast")
-def get_forecast(beach_id: str, date: date, service: BeachService = Depends(get_service)):
-    return service.get_forecast(beach_id, date)
+def get_forecast(
+    beach_id: str,
+    date: date,
+    response: Response,
+    service: BeachService = Depends(get_service),
+):
+    payload = service.get_forecast(beach_id, date)
+    # Forecast snapshot is baked into the image at deploy time; safe to cache
+    # aggressively. Sets up Cloudflare edge caching with no further code.
+    response.headers["Cache-Control"] = "public, max-age=86400"
+    return payload
 
 
 @router.get("/beaches/{beach_id}/observations")
@@ -51,11 +60,15 @@ def explain_forecast(beach_id: str, date: date, service: BeachService = Depends(
 
 
 @router.get("/beaches/{beach_id}/hourly")
-async def get_hourly(beach_id: str, service: BeachService = Depends(get_service)):
+async def get_hourly(
+    beach_id: str,
+    response: Response,
+    service: BeachService = Depends(get_service),
+):
     """Hourly intra-day series for Surfline-style charts on the client.
     Returns wind, UV, temperature, wave height/period/direction at hourly
     resolution from yesterday-noon through ~48h ahead. Cached server-side
-    for 1 hour per 0.1° lat/lon grid cell."""
+    for 3 hours per 0.1° lat/lon grid cell."""
     from app.services.hourly_weather import fetch_hourly
 
     # Look up the beach to get coordinates. get_beach raises 404 if unknown.
@@ -63,6 +76,7 @@ async def get_hourly(beach_id: str, service: BeachService = Depends(get_service)
     payload = await fetch_hourly(beach.geometry.latitude, beach.geometry.longitude)
     if payload is None:
         raise HTTPException(status_code=502, detail="upstream weather service unavailable")
+    response.headers["Cache-Control"] = "public, max-age=10800, stale-while-revalidate=3600"
     return {"beach_id": beach_id, **payload}
 
 
