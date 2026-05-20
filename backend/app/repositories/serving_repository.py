@@ -14,6 +14,7 @@ from fastapi import HTTPException
 
 from app.ml.calibration import risk_band
 from app.repositories.base import BeachRepository
+from app.services.shore_normal import compute_shore_normal_deg
 from app.schemas.domain import (
     AdvisoryRecord,
     BeachSummary,
@@ -132,6 +133,7 @@ class ServingSnapshotRepository(BeachRepository):
         self.snapshot_path = Path(snapshot_path)
         self.stv_threshold = stv_threshold
         self._parent_name_by_member_id: dict[str, str] | None = None
+        self._cached_beach_geometry: list[tuple[str, float, float]] | None = None
 
     def _connect(self) -> sqlite3.Connection:
         uri = f"file:{self.snapshot_path}?mode=ro"
@@ -261,6 +263,26 @@ class ServingSnapshotRepository(BeachRepository):
                 return True, website_map.get(sibling_id)
         return False, None
 
+    def _beach_geometry_population(self) -> list[tuple[str, float, float]]:
+        """Flat list of (beach_id, lat, lon) for shore-normal SVD search.
+
+        Cached on the instance so a /beaches request doesn't re-hit SQLite
+        once per beach when populating shore_normal_deg.
+        """
+        if self._cached_beach_geometry is not None:
+            return self._cached_beach_geometry
+        rows = self._fetch_all("select beach_id, latitude, longitude from beaches")
+        population: list[tuple[str, float, float]] = []
+        for row in rows:
+            try:
+                lat = float(row["latitude"])
+                lon = float(row["longitude"])
+            except (TypeError, ValueError):
+                continue
+            population.append((str(row["beach_id"]), lat, lon))
+        self._cached_beach_geometry = population
+        return population
+
     def _beach_from_row(self, row: sqlite3.Row, model_version: str | None = None) -> BeachSummary:
         # Trust the curated `support_status` as the source of truth for whether
         # the model covers this beach. A missing daily forecast does NOT mean
@@ -294,6 +316,9 @@ class ServingSnapshotRepository(BeachRepository):
             geometry=Point(
                 latitude=float(row["latitude"]),
                 longitude=float(row["longitude"]),
+            ),
+            shore_normal_deg=compute_shore_normal_deg(
+                beach_id, self._beach_geometry_population(),
             ),
         )
 

@@ -48,8 +48,8 @@ async def _fetch_open_meteo(
         "latitude": round(lat, 2),
         "longitude": round(lon, 2),
         "hourly": (
-            "temperature_2m,wind_speed_10m,wind_direction_10m,uv_index,"
-            "shortwave_radiation,weathercode"
+            "temperature_2m,wind_speed_10m,wind_direction_10m,wind_gusts_10m,"
+            "uv_index,shortwave_radiation,weathercode"
         ),
         "wind_speed_unit": "ms",
         "temperature_unit": "celsius",
@@ -97,6 +97,7 @@ async def _fetch_open_meteo(
         "air_temperature_c": forecast.get("temperature_2m", []),
         "wind_speed_mps": forecast.get("wind_speed_10m", []),
         "wind_direction_deg": forecast.get("wind_direction_10m", []),
+        "wind_gusts_mps": forecast.get("wind_gusts_10m", []),
         "uv_index": forecast.get("uv_index", []),
         "shortwave_w_m2": forecast.get("shortwave_radiation", []),
         "weather_code": forecast.get("weathercode", []),

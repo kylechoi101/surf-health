@@ -17,6 +17,7 @@ from fastapi import HTTPException
 
 from app.ml.calibration import risk_band
 from app.repositories.base import BeachRepository
+from app.services.shore_normal import compute_shore_normal_deg
 from app.schemas.domain import (
     AdvisoryRecord,
     BeachSummary,
@@ -344,12 +345,26 @@ class CuratedBeachRepository(BeachRepository):
             ))
         return parents
 
+    def _beach_geometry_population(self) -> list[tuple[str, float, float]]:
+        """Flat list of (beach_id, lat, lon) for the shore-normal SVD search."""
+        if self.beaches_frame.empty:
+            return []
+        rows: list[tuple[str, float, float]] = []
+        for _, row in self.beaches_frame.iterrows():
+            lat = row.get("latitude")
+            lon = row.get("longitude")
+            if pd.isna(lat) or pd.isna(lon):
+                continue
+            rows.append((str(row["beach_id"]), float(lat), float(lon)))
+        return rows
+
     def list_beaches(self) -> list[BeachSummary]:
         forecast_models: dict[str, str] = {}
         if not self.forecasts_frame.empty:
             for _, row in self.forecasts_frame.iterrows():
                 forecast_models[row["beach_id"]] = str(row.get("model_version", "unknown"))
 
+        population = self._beach_geometry_population()
         beaches: list[BeachSummary] = []
         for _, row in self.beaches_frame.iterrows():
             bid = row["beach_id"]
@@ -369,6 +384,7 @@ class CuratedBeachRepository(BeachRepository):
                         else None
                     ),
                     geometry=Point(latitude=float(row["latitude"]), longitude=float(row["longitude"])),
+                    shore_normal_deg=compute_shore_normal_deg(str(bid), population),
                 )
             )
         return beaches
@@ -384,7 +400,7 @@ class CuratedBeachRepository(BeachRepository):
             f_match = self.forecasts_frame.loc[self.forecasts_frame["beach_id"] == beach_id]
             if not f_match.empty:
                 model_v = str(f_match.iloc[0].get("model_version", "unknown"))
-        
+
         support = row["support_status"] if model_v else "unsupported"
 
         return BeachSummary(
@@ -400,6 +416,10 @@ class CuratedBeachRepository(BeachRepository):
                 else None
             ),
             geometry=Point(latitude=float(row["latitude"]), longitude=float(row["longitude"])),
+            shore_normal_deg=compute_shore_normal_deg(
+                str(row["beach_id"]),
+                self._beach_geometry_population(),
+            ),
         )
 
     def get_forecast(self, beach_id: str, forecast_date: date) -> ForecastRecord:

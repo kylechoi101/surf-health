@@ -59,6 +59,11 @@ class BeachSummary(BaseModel):
     model_version: str | None = None
     latest_official_sample_at: datetime | None = None
     geometry: Point
+    # Compass bearing (deg, 0=N, clockwise) pointing FROM the beach OUT TO SEA.
+    # Used by the apps to tag the current wind as onshore / offshore / cross-
+    # shore. Optional because fixture payloads and legacy clients may not
+    # populate it.
+    shore_normal_deg: float | None = None
 
 
 class ParentBeachSummary(BaseModel):
