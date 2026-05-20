@@ -25,6 +25,11 @@ import httpx
 _NOAA_DATAGETTER = "https://api.tidesandcurrents.noaa.gov/api/prod/datagetter"
 _CACHE_TTL_SECONDS = 60 * 60 * 24  # 24 hours — harmonic predictions are deterministic
 _PREDICTION_HOURS = 48
+# How many hours BEFORE now to include in the response. The clients render
+# a ±8h window centered on now, so without past-hour data the left half of
+# the tide chart is empty. Backend pulls 8h of past + 48h of future for a
+# total ~56h response per station per request (still cached for 24h).
+_PAST_PREDICTION_HOURS = 10
 
 
 # California NOAA CO-OPS tide stations, ordered roughly N→S along the coast.
@@ -143,8 +148,9 @@ def fetch_tides(lat: float, lon: float, *, _client: httpx.Client | None = None) 
     # NOAA CO-OPS wants YYYYMMDD HH:MM for begin_date/end_date. Use UTC->local
     # is not strictly required when we ask for time_zone=lst_ldt — but begin/end
     # are interpreted in the requested time_zone, so naive UTC dates work fine.
-    begin = datetime.now(timezone.utc).replace(tzinfo=None)
-    end = begin + timedelta(hours=_PREDICTION_HOURS)
+    nowUtc = datetime.now(timezone.utc).replace(tzinfo=None)
+    begin = nowUtc - timedelta(hours=_PAST_PREDICTION_HOURS)
+    end = nowUtc + timedelta(hours=_PREDICTION_HOURS)
     params = {
         "product": "predictions",
         "application": "Shorelife",
