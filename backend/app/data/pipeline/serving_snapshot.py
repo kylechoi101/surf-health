@@ -100,6 +100,44 @@ def _recent_by_beach(
     return recent[columns]
 
 
+ADVISORY_AUTO_EXPIRE_DAYS = 14
+
+
+def auto_expire_zombie_advisories(advisories: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+    """Demote 'active' rows older than 14d (last_seen_at, else started_at)
+    to 'historical' — unless they're Chronic Postings that counties leave
+    open intentionally (e.g. Sonoma chronic sites).
+
+    The audit script has been flagging these zombies for months; this is
+    the actual action. Returns (frame, n_expired)."""
+    if advisories.empty or "status" not in advisories.columns:
+        return advisories, 0
+
+    frame = advisories.copy()
+    active_mask = frame["status"] == "active"
+    if not active_mask.any():
+        return frame, 0
+
+    advisory_type = frame.get("advisory_type", pd.Series("", index=frame.index))
+    is_chronic = advisory_type.fillna("").str.contains("chronic", case=False, na=False)
+
+    # Prefer last_seen_at when present; otherwise fall back to started_at.
+    started = pd.to_datetime(frame.get("started_at"), errors="coerce", utc=True)
+    if "last_seen_at" in frame.columns:
+        last_seen = pd.to_datetime(frame["last_seen_at"], errors="coerce", utc=True)
+        reference = last_seen.fillna(started)
+    else:
+        reference = started
+
+    cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=ADVISORY_AUTO_EXPIRE_DAYS)
+    too_old = reference.notna() & (reference < cutoff)
+    expire_mask = active_mask & too_old & ~is_chronic
+    n_expired = int(expire_mask.sum())
+    if n_expired:
+        frame.loc[expire_mask, "status"] = "historical"
+    return frame, n_expired
+
+
 def _recent_advisories(advisories: pd.DataFrame) -> pd.DataFrame:
     columns = [
         "beach_id",
@@ -202,7 +240,21 @@ def build_serving_snapshot(curated_dir: Path, output_path: Path | None = None) -
         ENVIRONMENT_LIMIT,
         RECENT_ENVIRONMENT_COLUMNS,
     )
-    advisories = _recent_advisories(_load_parquet(curated_dir, "advisories"))
+    # Auto-expire zombie 'active' advisories (>14d, non-Chronic) before any
+    # downstream consumer sees them. Persist back to advisories.parquet so
+    # the API repositories, audit script, and serving snapshot all agree on
+    # the same active set.
+    advisories_raw = _load_parquet(curated_dir, "advisories")
+    advisories_raw, n_expired = auto_expire_zombie_advisories(advisories_raw)
+    if n_expired:
+        print(
+            f"[serving_snapshot] auto-expired {n_expired} zombie active "
+            f"advisories (>{ADVISORY_AUTO_EXPIRE_DAYS}d old, non-Chronic)"
+        )
+        advisories_path = curated_dir / "advisories.parquet"
+        if advisories_path.exists():
+            advisories_raw.to_parquet(advisories_path, index=False)
+    advisories = _recent_advisories(advisories_raw)
 
     with sqlite3.connect(tmp_path) as conn:
         conn.execute("pragma journal_mode=off")

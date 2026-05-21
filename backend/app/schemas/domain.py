@@ -92,6 +92,18 @@ class ParentBeachSummary(BaseModel):
     p_exceed: float | None = None
     has_active_advisory: bool = False
     advisory_website: str | None = None
+    # Number of member stations under this parent that have an active
+    # advisory (e.g. "2 of 5 stations are posted"). The UI uses this to
+    # explain at-a-glance why a parent card shows Advisory when only some
+    # of its members are actually flagged. 0 when has_active_advisory is
+    # false. Computed by the repositories per /beaches request.
+    flagged_station_count: int = 0
+    # Display names of the flagged member stations. Populated alongside
+    # flagged_station_count so the future "station naming" spec can render
+    # "Posted: Black's Beach, North Stairs" without another API round-trip.
+    # Clients should NOT render this yet — it ships behind a future feature
+    # flag once the naming polish (spec I) lands.
+    flagged_station_names: list[str] = Field(default_factory=list)
 
 
 class ForecastRecord(BaseModel):

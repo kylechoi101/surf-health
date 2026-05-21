@@ -1483,8 +1483,19 @@ def persist_samples(
 # ---------- Resolution + merge ---------- #
 
 
-def resolve_advisories(advisories: list[CountyAdvisory], resolver: StationResolver, report: CountyReport) -> list[CountyAdvisory]:
-    """Resolve each CountyAdvisory.beach_id via the hybrid resolver."""
+def resolve_advisories(
+    advisories: list[CountyAdvisory],
+    resolver: StationResolver,
+    report: CountyReport,
+    unresolved_sink: list[dict] | None = None,
+) -> list[CountyAdvisory]:
+    """Resolve each CountyAdvisory.beach_id via the hybrid resolver.
+
+    G.1: any advisory we can't resolve to a known beach_id is appended
+    to `unresolved_sink` so main() can persist it to
+    unresolved_advisories.parquet and fail the workflow when the drop
+    rate is too high. Without this, scraper bugs (e.g. ocbeachinfo.com
+    schema drift) silently vanished from the active set."""
     resolved: list[CountyAdvisory] = []
     for ca in advisories:
         if ca.beach_id:
@@ -1511,7 +1522,59 @@ def resolve_advisories(advisories: list[CountyAdvisory], resolver: StationResolv
             resolved.append(ca)
         else:
             report.unmatched_names.append(ca.area)
+            if unresolved_sink is not None:
+                started_naive = (
+                    ca.started_at.tz_localize(None)
+                    if (ca.started_at is not None and ca.started_at.tzinfo is not None)
+                    else ca.started_at
+                )
+                unresolved_sink.append({
+                    "source_county": ca.county,
+                    "scraped_name": ca.area,
+                    "scraped_date": started_naive,
+                    "scraped_at": pd.Timestamp.now(tz="UTC").tz_localize(None),
+                })
     return resolved
+
+
+# ---------- Unresolved-advisory observability (G.1) ---------- #
+
+
+_UNRESOLVED_PARQUET = "unresolved_advisories.parquet"
+
+# Hard floor (G.1): if more than this many advisories failed to resolve this
+# run, fail the workflow regardless of percentage. Tracks the absolute pain
+# threshold ("OC's whole schema changed and we silently dropped 12 entries").
+_UNRESOLVED_ABSOLUTE_FLOOR = 5
+
+# Relative threshold (G.1): if more than 10% of scraped advisories failed
+# to resolve, fail the workflow. Tracks proportional regressions for
+# counties that publish a small number per day.
+_UNRESOLVED_RATIO_THRESHOLD = 0.10
+
+
+def persist_unresolved(
+    rows: list[dict],
+    curated_dir: Path,
+) -> int:
+    """Append unresolved advisories to unresolved_advisories.parquet so
+    operators can see what got dropped. Returns the row count written
+    THIS run (not historical), which the gate compares against the
+    absolute floor + ratio threshold."""
+    if not rows:
+        return 0
+    new_df = pd.DataFrame(rows)
+    parquet_path = curated_dir / _UNRESOLVED_PARQUET
+    if parquet_path.exists():
+        try:
+            existing = pd.read_parquet(parquet_path)
+            combined = pd.concat([existing, new_df], ignore_index=True)
+        except Exception:
+            combined = new_df
+    else:
+        combined = new_df
+    combined.to_parquet(parquet_path, index=False)
+    return len(new_df)
 
 
 def merge_and_rebuild(
@@ -1531,6 +1594,15 @@ def merge_and_rebuild(
     page reports all-clear (e.g., Ventura's sentinel) or when older records
     that the county no longer posts have been silently closed.
 
+    PRECEDENCE (G.3): when a per-county scraper ran successfully AND a
+    beach_id appears in the scraper's resolved output, the SCRAPER WINS
+    over any state-CSV record for that beach_id. The state CSV is only
+    authoritative for beaches the scraper didn't cover at all (either the
+    county has no first-class scraper, or the scraper failed this run).
+    This flip lives in `beach_demote` (nuke state-CSV active rows for any
+    scraped beach_id) + the unconditional re-add of every county_advisory
+    that resolved to a beach_id.
+
     Returns (n_added_to_advisories, n_demoted)."""
     advisories = pd.read_parquet(curated_dir / "advisories.parquet")
     beach_ids_covered = {ca.beach_id for ca in county_advisories if ca.beach_id}
@@ -1540,9 +1612,9 @@ def merge_and_rebuild(
         return (0, 0)
 
     # Two demotion lanes:
-    # 1. Beach-level: any active record sharing a beach_id with a freshly
-    #    resolved advisory (the original behavior). Keeps semantics for
-    #    counties without a first-class scraper.
+    # 1. Beach-level (G.3 scraper-wins): any active state-CSV record sharing
+    #    a beach_id with a freshly resolved scraper advisory. The scraper's
+    #    fresh row replaces it via the re-add below.
     # 2. County-level: for counties with an authoritative scraper, demote
     #    EVERY active record in that county whose beach_id is not in the
     #    re-resolved set. Closes the "Ventura returns 0 but state-feed has
@@ -1677,6 +1749,8 @@ def main() -> int:
 
     all_advisories: list[CountyAdvisory] = []
     reports: list[CountyReport] = []
+    unresolved_rows: list[dict] = []
+    total_scraped = 0
 
     with RetryingClient(follow_redirects=True) as client:
         for county_name, fetcher in COUNTIES_FIRST_CLASS:
@@ -1695,7 +1769,8 @@ def main() -> int:
                     error=str(e),
                 )
                 advs = []
-            resolved = resolve_advisories(advs, resolver, rpt)
+            total_scraped += len(advs)
+            resolved = resolve_advisories(advs, resolver, rpt, unresolved_sink=unresolved_rows)
             print(
                 f"  {len(advs)} parsed → {len(resolved)} resolved "
                 f"(live_list={rpt.matched_via_live_list}, csv={rpt.matched_via_csv}, "
@@ -1771,6 +1846,49 @@ def main() -> int:
         f"added {added}, demoted {demoted} stale state records "
         f"(authoritative counties: {sorted(authoritative_counties)})"
     )
+
+    # G.1: persist unresolved advisories + fail loudly if too many got
+    # dropped this run. A silent "Salt Creek vanished" is the failure mode
+    # we're trying to eliminate — make it a workflow-stopping signal so the
+    # operator sees it before the bad data ships to prod.
+    unresolved_count = persist_unresolved(unresolved_rows, args.curated)
+    ratio = (unresolved_count / total_scraped) if total_scraped else 0.0
+    by_county: dict[str, int] = {}
+    for row in unresolved_rows:
+        by_county[row["source_county"]] = by_county.get(row["source_county"], 0) + 1
+
+    print("\n--- Unresolved advisories (G.1) ---")
+    print(
+        f"  scraped={total_scraped}  unresolved={unresolved_count}  "
+        f"ratio={ratio:.1%}  floor={_UNRESOLVED_ABSOLUTE_FLOOR}  "
+        f"max_ratio={_UNRESOLVED_RATIO_THRESHOLD:.0%}"
+    )
+    if by_county:
+        for county_name in sorted(by_county):
+            print(f"    {county_name:24s} {by_county[county_name]:3d}")
+    if unresolved_rows:
+        sample = unresolved_rows[: min(10, len(unresolved_rows))]
+        for row in sample:
+            print(
+                f"    [dropped] {row['source_county']:20s} "
+                f"{str(row['scraped_name'])[:60]}"
+            )
+
+    over_floor = unresolved_count > _UNRESOLVED_ABSOLUTE_FLOOR
+    over_ratio = total_scraped > 0 and ratio > _UNRESOLVED_RATIO_THRESHOLD
+    if over_floor or over_ratio:
+        print(
+            f"\nFAIL: scraper observability gate tripped — "
+            f"{unresolved_count} advisories failed name resolution "
+            f"(absolute floor {_UNRESOLVED_ABSOLUTE_FLOOR}, "
+            f"ratio threshold {_UNRESOLVED_RATIO_THRESHOLD:.0%}). "
+            f"See {args.curated / _UNRESOLVED_PARQUET} for the full list. "
+            f"Likely cause: a county source changed its naming convention "
+            f"and the resolver lookup needs a new alias or station-code mapping.",
+            file=sys.stderr,
+        )
+        return 1
+
     return 0
 
 

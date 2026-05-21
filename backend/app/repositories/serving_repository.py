@@ -358,6 +358,22 @@ class ServingSnapshotRepository(BeachRepository):
             str(row["beach_id"]): _clean_nickname(row["name"])
             for row in self._fetch_all("select beach_id, name from beaches")
         }
+        # Separate lookup for the flagged-station display name. Prefer
+        # `station_name` when present (it's the local nickname users know,
+        # e.g. "Black's Beach"); fall back to the canonical `name`.
+        flagged_display_lookup: dict[str, str] = {}
+        try:
+            rows_for_flag = self._fetch_all("select beach_id, name, station_name from beaches")
+            for r in rows_for_flag:
+                bid = str(r["beach_id"])
+                station_name = _clean_nickname(r["station_name"]) if "station_name" in r.keys() else ""
+                fallback = _clean_nickname(r["name"])
+                display = station_name or fallback
+                if display:
+                    flagged_display_lookup[bid] = display
+        except sqlite3.OperationalError:
+            # Legacy snapshots without a station_name column — fall back to `name`.
+            flagged_display_lookup = dict(member_name_lookup)
 
         parents: list[ParentBeachSummary] = []
         for row in rows:
@@ -373,14 +389,21 @@ class ServingSnapshotRepository(BeachRepository):
             if member_forecasts:
                 worst_band, worst_p, worst_model_v = max(member_forecasts, key=lambda item: item[1])
 
-            has_active = any(beach_id in active_beach_ids for beach_id in member_ids)
+            # Flagged-member rollup: which distinct member stations under
+            # this parent are currently posted? Counted once each (dedup on
+            # member_id) so multi-advisory stations don't double-count.
+            flagged_ids = [bid for bid in dict.fromkeys(member_ids) if bid in active_beach_ids]
+            flagged_names = [
+                flagged_display_lookup[bid] for bid in flagged_ids if bid in flagged_display_lookup
+            ]
+            has_active = bool(flagged_ids)
             if has_active:
                 worst_band = "Advisory"
 
             # Pick advisory website from first active member station that has one
             advisory_website: str | None = None
             if has_active:
-                for bid in member_ids:
+                for bid in flagged_ids:
                     url = advisory_websites.get(bid)
                     if url:
                         advisory_website = url
@@ -412,6 +435,8 @@ class ServingSnapshotRepository(BeachRepository):
                     p_exceed=worst_p,
                     has_active_advisory=has_active,
                     advisory_website=advisory_website,
+                    flagged_station_count=len(flagged_ids),
+                    flagged_station_names=flagged_names,
                 )
             )
         return parents

@@ -5,7 +5,10 @@ from types import SimpleNamespace
 
 import pandas as pd
 
-from app.data.pipeline.serving_snapshot import build_serving_snapshot
+from app.data.pipeline.serving_snapshot import (
+    auto_expire_zombie_advisories,
+    build_serving_snapshot,
+)
 from app.repositories.factory import build_repository
 from app.repositories.serving_repository import ServingSnapshotRepository, _safe_bool
 
@@ -237,6 +240,96 @@ def test_serving_snapshot_limits_hot_path_rows_and_repository_serves_contract(tm
     assert health.repository_mode == "sqlite"
 
 
+class TestAutoExpireZombieAdvisories:
+    """G.2: 14-day auto-expire of stuck 'active' advisories."""
+
+    def _frame(self, rows):
+        return pd.DataFrame(rows)
+
+    def test_expires_active_older_than_14_days(self):
+        df = self._frame([
+            {
+                "beach_id": "ca-zombie",
+                "advisory_type": "Posting",
+                "status": "active",
+                "started_at": pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=30),
+            }
+        ])
+        out, n = auto_expire_zombie_advisories(df)
+        assert n == 1
+        assert (out["status"] == "historical").all()
+
+    def test_keeps_fresh_active(self):
+        df = self._frame([
+            {
+                "beach_id": "ca-fresh",
+                "advisory_type": "Posting",
+                "status": "active",
+                "started_at": pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=2),
+            }
+        ])
+        out, n = auto_expire_zombie_advisories(df)
+        assert n == 0
+        assert (out["status"] == "active").all()
+
+    def test_keeps_chronic_posting_even_when_stale(self):
+        """Chronic Postings (Sonoma's documented chronic sites etc) are
+        intentionally left open by counties — must NOT be auto-expired."""
+        df = self._frame([
+            {
+                "beach_id": "ca-chronic",
+                "advisory_type": "Chronic Posting",
+                "status": "active",
+                "started_at": pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=500),
+            }
+        ])
+        out, n = auto_expire_zombie_advisories(df)
+        assert n == 0
+        assert (out["status"] == "active").all()
+
+    def test_prefers_last_seen_at_over_started_at(self):
+        """If we have a last_seen_at (e.g. county scraper saw it yesterday)
+        the auto-expire must use that fresher timestamp instead of the
+        stale started_at."""
+        df = self._frame([
+            {
+                "beach_id": "ca-recently-seen",
+                "advisory_type": "Posting",
+                "status": "active",
+                "started_at": pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=200),
+                "last_seen_at": pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=3),
+            }
+        ])
+        out, n = auto_expire_zombie_advisories(df)
+        assert n == 0
+        assert (out["status"] == "active").all()
+
+    def test_mixed_input(self):
+        now = pd.Timestamp.now(tz="UTC")
+        df = self._frame([
+            {"beach_id": "ca-1", "advisory_type": "Posting", "status": "active",
+             "started_at": now - pd.Timedelta(days=2)},
+            {"beach_id": "ca-2", "advisory_type": "Posting", "status": "active",
+             "started_at": now - pd.Timedelta(days=60)},
+            {"beach_id": "ca-3", "advisory_type": "Chronic Posting", "status": "active",
+             "started_at": now - pd.Timedelta(days=60)},
+            {"beach_id": "ca-4", "advisory_type": "Posting", "status": "historical",
+             "started_at": now - pd.Timedelta(days=400)},
+        ])
+        out, n = auto_expire_zombie_advisories(df)
+        assert n == 1  # only ca-2 should flip; chronic and historical are skipped
+        statuses = dict(zip(out["beach_id"], out["status"]))
+        assert statuses["ca-1"] == "active"
+        assert statuses["ca-2"] == "historical"
+        assert statuses["ca-3"] == "active"  # chronic untouched
+        assert statuses["ca-4"] == "historical"  # already historical, unchanged
+
+    def test_handles_empty_frame(self):
+        out, n = auto_expire_zombie_advisories(pd.DataFrame())
+        assert n == 0
+        assert out.empty
+
+
 def test_repository_factory_prefers_serving_snapshot_when_present(tmp_path):
     curated_dir = tmp_path / "curated"
     _write_curated_inputs(curated_dir)
@@ -254,3 +347,144 @@ def test_repository_factory_prefers_serving_snapshot_when_present(tmp_path):
     repository = build_repository(settings)
 
     assert isinstance(repository, ServingSnapshotRepository)
+
+
+def _write_multi_member_parent(curated_dir):
+    """Build a parent with 4 member stations; 2 are posted, 2 aren't.
+    Used to pin down the H spec — ParentBeachSummary.flagged_station_count.
+    """
+    curated_dir.mkdir()
+    beach_ids = [
+        "ca100-orange-multi-member-station-1",
+        "ca101-orange-multi-member-station-2",
+        "ca102-orange-multi-member-station-3",
+        "ca103-orange-multi-member-station-4",
+    ]
+    nicknames = ["Black's Beach", "North Stairs", "South Stairs", "Pier Cove"]
+    rows = []
+    for bid, nick in zip(beach_ids, nicknames):
+        rows.append({
+            "beach_id": bid,
+            "name": nick,
+            "county": "Orange",
+            "region": "Santa Ana",
+            "support_status": "production",
+            "latest_official_sample_at": "2026-05-18T08:00:00",
+            "latitude": 33.5,
+            "longitude": -117.8,
+        })
+    pd.DataFrame(rows).to_parquet(curated_dir / "beaches.parquet", index=False)
+
+    pd.DataFrame(
+        [
+            {
+                "parent_beach_id": "parent-ca100",
+                "name": "Torrey Pines State Beach",
+                "county": "Orange",
+                "region": "Santa Ana",
+                "support_status": "production",
+                "latitude": 33.5,
+                "longitude": -117.8,
+                "station_count": 4,
+                "member_beach_ids": beach_ids,
+                "latest_official_sample_at": "2026-05-18T08:00:00",
+            }
+        ]
+    ).to_parquet(curated_dir / "parent_beaches.parquet", index=False)
+
+    pd.DataFrame(
+        [
+            {
+                "beach_id": beach_ids[0],
+                "forecast_date": "2026-05-18",
+                "risk_band": "Low",
+                "p_exceed": 0.10,
+                "model_version": "hist-gbm-v0",
+                "forecast_generated_at": "2026-05-18T13:00:00+00:00",
+            }
+        ]
+    ).to_parquet(curated_dir / "forecasts.parquet", index=False)
+
+    pd.DataFrame(columns=["beach_id"]).to_parquet(curated_dir / "latest_env.parquet", index=False)
+    pd.DataFrame(columns=["beach_id", "sample_time"]).to_parquet(curated_dir / "observations.parquet", index=False)
+    pd.DataFrame(columns=["beach_id", "sample_date"]).to_parquet(curated_dir / "beach_day.parquet", index=False)
+
+    now_iso = (datetime.utcnow() - timedelta(days=2)).isoformat()
+    pd.DataFrame(
+        [
+            {
+                "beach_id": beach_ids[0],
+                "advisory_type": "Posting",
+                "started_at": now_iso,
+                "ended_at": None,
+                "status": "active",
+                "cause": "Bacterial Standards Violation",
+                "county": "Orange",
+                "advisory_website": "https://ocbeachinfo.com",
+            },
+            {
+                "beach_id": beach_ids[2],
+                "advisory_type": "Closure",
+                "started_at": now_iso,
+                "ended_at": None,
+                "status": "active",
+                "cause": "Sewage Spill",
+                "county": "Orange",
+                "advisory_website": "https://ocbeachinfo.com",
+            },
+        ]
+    ).to_parquet(curated_dir / "advisories.parquet", index=False)
+
+    (curated_dir / "system_health.json").write_text(
+        json.dumps(
+            {
+                "pipeline_freshness": "2026-05-18T05:00:00Z",
+                "source_freshness": {"observations": "2026-05-18T05:00:00Z"},
+                "model_registry": {
+                    "production_model": "hist-gbm-v0",
+                    "candidate_models": [],
+                    "metrics": {},
+                },
+            }
+        )
+    )
+    return beach_ids, nicknames
+
+
+def test_serving_parent_beach_flags_member_stations(tmp_path):
+    """H: a parent with 4 members and 2 active advisories must report
+    flagged_station_count=2 and the two correct names."""
+    curated_dir = tmp_path / "curated"
+    beach_ids, nicknames = _write_multi_member_parent(curated_dir)
+    snapshot_path = build_serving_snapshot(curated_dir)
+
+    repository = ServingSnapshotRepository(snapshot_path, stv_threshold=104.0)
+    parents = repository.list_parent_beaches()
+    assert len(parents) == 1
+    p = parents[0]
+    assert p.station_count == 4
+    assert p.has_active_advisory is True
+    assert p.flagged_station_count == 2
+    # The two posted members are index 0 (Black's Beach) and index 2 (South Stairs).
+    assert set(p.flagged_station_names) == {nicknames[0], nicknames[2]}
+
+
+def test_serving_parent_with_no_advisories_reports_zero_flagged(tmp_path):
+    curated_dir = tmp_path / "curated"
+    _write_curated_inputs(curated_dir)
+    # Drop the advisory so this parent has none.
+    pd.DataFrame(
+        columns=[
+            "beach_id", "advisory_type", "started_at", "ended_at",
+            "status", "cause", "county", "advisory_website",
+        ]
+    ).to_parquet(curated_dir / "advisories.parquet", index=False)
+
+    snapshot_path = build_serving_snapshot(curated_dir)
+    repository = ServingSnapshotRepository(snapshot_path, stv_threshold=104.0)
+    parents = repository.list_parent_beaches()
+    assert len(parents) == 1
+    p = parents[0]
+    assert p.has_active_advisory is False
+    assert p.flagged_station_count == 0
+    assert p.flagged_station_names == []

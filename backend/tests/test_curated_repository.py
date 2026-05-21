@@ -493,3 +493,110 @@ def test_curated_repository_coalesces_concurrent_per_beach_observation_reads(
 
     assert [len(result.observations) for result in results] == [1, 1]
     assert calls == ["observations.parquet", "beach_day.parquet"]
+
+
+def test_curated_repository_parent_flagged_station_count(tmp_path):
+    """H: ParentBeachSummary.flagged_station_count counts distinct member
+    stations under an active advisory (not advisory rows). Tests the
+    curated (parquet-backed) repository path.
+    """
+    curated_dir = tmp_path / "curated"
+    curated_dir.mkdir()
+
+    beach_ids = [
+        "ca-h1-station-a",
+        "ca-h2-station-b",
+        "ca-h3-station-c",
+    ]
+    nicknames = ["Black's Beach", "North Stairs", "Pier Cove"]
+    rows = []
+    for bid, nick in zip(beach_ids, nicknames):
+        rows.append({
+            "beach_id": bid,
+            "name": nick,
+            "beach_name": "Torrey Pines State Beach",
+            "county": "San Diego",
+            "region": "South",
+            "station_code": bid.upper(),
+            "support_status": "production",
+            "latitude": 32.9,
+            "longitude": -117.25,
+            "latest_official_sample_at": "2026-05-18T08:00:00",
+        })
+    pd.DataFrame(rows).to_parquet(curated_dir / "beaches.parquet", index=False)
+
+    pd.DataFrame(
+        [
+            {
+                "parent_beach_id": "parent-h",
+                "name": "Torrey Pines State Beach",
+                "county": "San Diego",
+                "region": "South",
+                "support_status": "production",
+                "latitude": 32.9,
+                "longitude": -117.25,
+                "station_count": 3,
+                "member_beach_ids": beach_ids,
+                "latest_official_sample_at": "2026-05-18T08:00:00",
+            }
+        ]
+    ).to_parquet(curated_dir / "parent_beaches.parquet", index=False)
+
+    pd.DataFrame(
+        [
+            {
+                "beach_id": beach_ids[0],
+                "forecast_date": "2026-05-18",
+                "risk_band": "Low",
+                "p_exceed": 0.10,
+                "model_version": "hist-gbm-v0",
+                "forecast_generated_at": "2026-05-18T13:00:00+00:00",
+            }
+        ]
+    ).to_parquet(curated_dir / "forecasts.parquet", index=False)
+
+    # Two advisories on member 0 (must NOT double-count); one on member 2.
+    fresh = (datetime.utcnow() - timedelta(days=2)).isoformat()
+    pd.DataFrame(
+        [
+            {
+                "beach_id": beach_ids[0],
+                "advisory_type": "Posting",
+                "started_at": fresh,
+                "ended_at": None,
+                "status": "active",
+                "cause": "X",
+                "county": "San Diego",
+                "advisory_website": "https://sdbeachinfo.com",
+            },
+            {
+                "beach_id": beach_ids[0],
+                "advisory_type": "Closure",
+                "started_at": fresh,
+                "ended_at": None,
+                "status": "active",
+                "cause": "Y",
+                "county": "San Diego",
+                "advisory_website": "https://sdbeachinfo.com",
+            },
+            {
+                "beach_id": beach_ids[2],
+                "advisory_type": "Posting",
+                "started_at": fresh,
+                "ended_at": None,
+                "status": "active",
+                "cause": "Z",
+                "county": "San Diego",
+                "advisory_website": "https://sdbeachinfo.com",
+            },
+        ]
+    ).to_parquet(curated_dir / "advisories.parquet", index=False)
+
+    repository = CuratedBeachRepository(curated_dir, stv_threshold=104.0)
+    parents = repository.list_parent_beaches()
+    assert len(parents) == 1
+    p = parents[0]
+    assert p.has_active_advisory is True
+    # Two DISTINCT flagged stations (member 0 has 2 advisories but only counts once).
+    assert p.flagged_station_count == 2
+    assert set(p.flagged_station_names) == {nicknames[0], nicknames[2]}

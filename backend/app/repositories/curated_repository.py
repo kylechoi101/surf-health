@@ -313,6 +313,26 @@ class CuratedBeachRepository(BeachRepository):
                         sorted_grp.iloc[0].get("advisory_website")
                     )
 
+        # member_id -> display name lookup so flagged_station_names can be
+        # rendered without an extra parquet read per parent. Prefer
+        # `station_name` (the local nickname) and fall back to the cryptic
+        # station label `name` when no nickname is set.
+        member_name_lookup: dict[str, str] = {}
+        if not self.beaches_frame.empty:
+            for _, brow in self.beaches_frame.iterrows():
+                bid = str(brow.get("beach_id") or "")
+                if not bid:
+                    continue
+                station_name = brow.get("station_name") if "station_name" in self.beaches_frame.columns else None
+                fallback_name = brow.get("name")
+                display = (
+                    str(station_name).strip()
+                    if station_name and not pd.isna(station_name)
+                    else str(fallback_name or "").strip()
+                )
+                if display:
+                    member_name_lookup[bid] = display
+
         parents: list[ParentBeachSummary] = []
         for _, row in self.parent_beaches_frame.iterrows():
             member_ids: list[str] = list(row["member_beach_ids"])
@@ -331,11 +351,18 @@ class CuratedBeachRepository(BeachRepository):
             
             support = row.get("support_status", "unsupported") if worst_model_v else "unsupported"
 
-            has_active = any(bid in active_stations for bid in member_ids)
+            # Flagged-member rollup: which distinct member stations under
+            # this parent are currently posted? Counted once each (set), so
+            # a station with multiple active advisories doesn't double-count.
+            flagged_ids = [bid for bid in dict.fromkeys(member_ids) if bid in active_stations]
+            flagged_names = [
+                member_name_lookup[bid] for bid in flagged_ids if bid in member_name_lookup
+            ]
+            has_active = bool(flagged_ids)
             # Pick advisory website from first active member station that has one
             advisory_website: str | None = None
             if has_active:
-                for bid in member_ids:
+                for bid in flagged_ids:
                     url = advisory_website_lookup.get(bid)
                     if url:
                         advisory_website = url
@@ -360,6 +387,8 @@ class CuratedBeachRepository(BeachRepository):
                 p_exceed=worst_p,
                 has_active_advisory=has_active,
                 advisory_website=advisory_website,
+                flagged_station_count=len(flagged_ids),
+                flagged_station_names=flagged_names,
             ))
         return parents
 
