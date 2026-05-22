@@ -1,7 +1,7 @@
 # Model Card: Shorelife `hist-gbm-curated-v0`
 
 ## Deployment Status
-- **Generated at**: 2026-05-22T01:06:19.147531+00:00
+- **Generated at**: 2026-05-22T01:08:13.916874+00:00
 - **Deployment stage**: candidate_ready
 - **Public release eligible**: true
 - **Promotion blocker (latest)**: None
@@ -9,22 +9,22 @@
 ## Headline Metrics (from `system_health.json`)
 
 ### Temporal (held-out time slice)
-- **AUCPR**: 0.397
-- **Brier**: 0.072
-- **Log loss**: 0.252
-- **Calibration slope**: 0.883
+- **AUCPR**: 0.369
+- **Brier**: 0.077
+- **Log loss**: 0.266
+- **Calibration slope**: 0.836
 
 ### Deployment (active stations only; recency-filtered roster)
-- **AUCPR**: 0.405
-- **Brier**: 0.079
+- **AUCPR**: 0.375
+- **Brier**: 0.084
 - **n_samples**: 1164
 
 ### Validation (calibration/training-time slice; not a public headline)
-- **AUCPR**: 0.812
-- **Brier**: 0.104
+- **AUCPR**: 0.814
+- **Brier**: 0.103
 
 ### Spatial (holdouts)
-- **Spatial county AUCPR**: 0.677
+- **Spatial county AUCPR**: 0.679
 - **Spatial county persistence AUCPR**: 0.568
 
 ## Operational Agreement Check
