@@ -75,8 +75,11 @@ def test_detect_extrema_finds_expected_highs_and_lows():
     lows = [e for e in extrema if e["type"] == "L"]
     assert len(highs) == 2
     assert len(lows) == 1
-    assert highs[0]["t"] == "2026-05-20 02:00"
-    assert lows[0]["t"] == "2026-05-20 04:00"
+    # _parse_noaa_predictions normalizes to ISO-8601 UTC ("...Z") so JS
+    # frontends parse the timestamps unambiguously instead of treating them
+    # as local time. detect_extrema preserves the same format.
+    assert highs[0]["t"] == "2026-05-20T02:00:00Z"
+    assert lows[0]["t"] == "2026-05-20T04:00:00Z"
 
 
 def test_detect_extrema_on_synthetic_sin_wave_returns_expected_count():
@@ -118,7 +121,7 @@ def test_fetch_tides_returns_standardized_payload(monkeypatch):
     assert "La Jolla" in payload["station_name"]
     assert payload["station_distance_km"] >= 0
     assert len(payload["predictions"]) == 8
-    assert payload["predictions"][0] == {"t": "2026-05-20 00:00", "v": 1.20}
+    assert payload["predictions"][0] == {"t": "2026-05-20T00:00:00Z", "v": 1.20}
     assert len(payload["extrema"]) == 3  # 2 H + 1 L
 
     # Verify the NOAA URL + key params were used
@@ -127,7 +130,7 @@ def test_fetch_tides_returns_standardized_payload(monkeypatch):
     params = call.kwargs["params"]
     assert params["product"] == "predictions"
     assert params["datum"] == "MLLW"
-    assert params["time_zone"] == "lst_ldt"
+    assert params["time_zone"] == "gmt"  # UTC end-to-end; frontend localizes via JS Date
     assert params["station"] == "9410230"
     assert params["format"] == "json"
 

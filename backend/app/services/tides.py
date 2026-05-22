@@ -118,17 +118,30 @@ def detect_extrema(predictions: list[dict]) -> list[dict]:
 
 
 def _parse_noaa_predictions(response_json: dict) -> list[dict]:
-    """Convert NOAA's {"predictions": [{"t": "YYYY-MM-DD HH:MM", "v": "1.234"}]} to floats."""
+    """Convert NOAA's {"predictions": [{"t": "YYYY-MM-DD HH:MM", "v": "1.234"}]} to floats.
+
+    NOAA returns `t` as a naive timestamp string (no timezone suffix). With
+    time_zone=gmt those are UTC; we serialize as ISO-8601 with a Z suffix
+    so JS `new Date(t)` parses them unambiguously as UTC and auto-localizes
+    for display. Without the Z, JS treats the naive string as local time,
+    introducing the same ~7-8h shift bug we just fixed on the request side.
+    """
     out: list[dict] = []
     for entry in response_json.get("predictions", []) or []:
         try:
             v = float(entry["v"])
         except (KeyError, ValueError, TypeError):
             continue
-        t = entry.get("t")
-        if not t:
+        t_raw = entry.get("t")
+        if not t_raw:
             continue
-        out.append({"t": t, "v": v})
+        # "2026-05-22 06:00" → "2026-05-22T06:00:00Z"
+        t_iso = t_raw.replace(" ", "T")
+        if "T" in t_iso and t_iso.count(":") == 1:
+            t_iso = t_iso + ":00"
+        if not t_iso.endswith("Z"):
+            t_iso = t_iso + "Z"
+        out.append({"t": t_iso, "v": v})
     return out
 
 
@@ -145,9 +158,15 @@ def fetch_tides(lat: float, lon: float, *, _client: httpx.Client | None = None) 
     if cached and cached.expires_at > now:
         return cached.payload
 
-    # NOAA CO-OPS wants YYYYMMDD HH:MM for begin_date/end_date. Use UTC->local
-    # is not strictly required when we ask for time_zone=lst_ldt — but begin/end
-    # are interpreted in the requested time_zone, so naive UTC dates work fine.
+    # NOAA CO-OPS interprets begin_date / end_date in the timezone specified
+    # by time_zone. Previously we sent naive UTC strings paired with
+    # time_zone=lst_ldt (local station time) — that's a ~7-8h shift bug:
+    # NOAA reads "06:00" as 6 AM PDT (= 13:00 UTC), not 6 AM UTC. Result:
+    # at midnight viewing, the past half of the client's ±8h window had no
+    # cached data, so the chart curve only filled the right side.
+    # Fix: time_zone=gmt with naive UTC strings. The response 't' fields
+    # come back as UTC ISO timestamps. The frontend's `new Date(t)` parses
+    # them as UTC and auto-localizes for display.
     nowUtc = datetime.now(timezone.utc).replace(tzinfo=None)
     begin = nowUtc - timedelta(hours=_PAST_PREDICTION_HOURS)
     end = nowUtc + timedelta(hours=_PREDICTION_HOURS)
@@ -158,7 +177,7 @@ def fetch_tides(lat: float, lon: float, *, _client: httpx.Client | None = None) 
         "begin_date": begin.strftime("%Y%m%d %H:%M"),
         "end_date": end.strftime("%Y%m%d %H:%M"),
         "datum": "MLLW",
-        "time_zone": "lst_ldt",
+        "time_zone": "gmt",
         "units": "english",
         "interval": "h",  # hourly resolution; sufficient for chart + extrema
         "format": "json",
