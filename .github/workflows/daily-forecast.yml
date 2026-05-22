@@ -127,6 +127,18 @@ jobs:
         working-directory: backend
         continue-on-error: true
 
+      - name: G.2 auto-expire zombie active advisories
+        # MUST run before the audit step. The auto_expire_zombie_advisories()
+        # function is also called inside the serving_snapshot bake later in
+        # the workflow, but that step runs AFTER the audit gate — too late.
+        # This standalone invocation demotes >14-day-old active rows
+        # (excluding Chronic Posting) in-place on advisories.parquet so the
+        # subsequent audit reads the corrected state.
+        run: |
+          python scripts/auto_expire_advisories.py \
+            --advisories ../data/curated/advisories.parquet
+        working-directory: backend
+
       - name: Audit forecasts vs advisories
         run: |
           python scripts/audit_forecasts_vs_advisories.py \
