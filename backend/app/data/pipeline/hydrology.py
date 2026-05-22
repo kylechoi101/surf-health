@@ -87,7 +87,11 @@ def build_beach_hydrology_daily(
         "nearest_stream_gage_id", "distance_to_pour_point_km", "distance_to_gage_km",
         "streamflow_cfs_latest", "streamflow_cfs_mean_24h", "streamflow_cfs_max_24h",
         "streamflow_rising_flag", "precip_mm_6h", "precip_mm_24h", "precip_mm_48h",
-        "precip_mm_72h", "precip_mm_7d", "precip_awi", "first_flush_flag",
+        "precip_mm_72h", "precip_mm_7d",
+        "precip_mm_96h", "precip_mm_192h",
+        "precip_72h_prior", "precip_168h_prior",
+        "first_rain_score",
+        "precip_awi", "first_flush_flag",
     ]
 
     if hydrologic_links.empty:
@@ -152,7 +156,10 @@ def build_beach_hydrology_daily(
                 beach_to_station[str(brow["beach_id"])] = nearest_st
 
         beach_dates["_station_id"] = beach_dates["beach_id"].astype(str).map(beach_to_station)
-        precip_cols = [c for c in precip_daily.columns if c.startswith("precip_") or c == "first_flush_flag"]
+        precip_cols = [
+            c for c in precip_daily.columns
+            if c.startswith("precip_") or c in ("first_flush_flag", "first_rain_score")
+        ]
         pjoin = precip_daily[["station_id", "sample_date", *precip_cols]].copy()
         pjoin["sample_date"] = pd.to_datetime(pjoin["sample_date"]).dt.date
         pjoin = pjoin.rename(columns={"station_id": "_station_id"})

@@ -35,6 +35,11 @@ HYDROLOGY_NUMERIC_COLUMNS = [
     "precip_mm_7d",
     "precip_awi",
     "first_flush_flag",
+    # First-rain-after-dry-spell feature (Hermes, 5-Opus+Sonnet council winner
+    # 2026-05-19): captures disproportionate bacterial loading from impervious-
+    # surface accumulation flushed by the first rain event after a dry spell.
+    # Computed in app.data.pipeline.precipitation.compute_first_rain_score.
+    "first_rain_score",
 ]
 
 # Marine-microbiology features — captures UV inactivation, plume transport,
