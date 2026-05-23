@@ -182,6 +182,13 @@ def test_main_exits_one_when_unresolved_exceeds_absolute_floor(tmp_path, monkeyp
     import fetch_county_advisories as fca
     monkeypatch.setattr(fca, "COUNTIES_FIRST_CLASS", [("Orange", _stub_fetch)])
     monkeypatch.setattr(fca, "BEST_EFFORT_COUNTIES", {})
+    # State board scraper runs first in main(); stub it out so the test
+    # doesn't depend on network or the live State board roster size.
+    def _state_board_stub(client, resolver):
+        return [], CountyReport(county="State Board", success=True,
+                                last_attempted_at="2026-05-18T16:00:00Z",
+                                source_url="https://example.test")
+    monkeypatch.setattr(fca, "fetch_state_board_advisories", _state_board_stub)
 
     # Patch sys.argv so main()'s argparser sees our curated dir
     monkeypatch.setattr(sys, "argv", ["fetch_county_advisories.py", "--curated", str(curated)])
@@ -222,6 +229,13 @@ def test_main_exits_zero_when_all_resolved(tmp_path, monkeypatch):
     import fetch_county_advisories as fca
     monkeypatch.setattr(fca, "COUNTIES_FIRST_CLASS", [("Orange", _stub_fetch)])
     monkeypatch.setattr(fca, "BEST_EFFORT_COUNTIES", {})
+    # State board scraper runs first in main(); stub it out so the test
+    # doesn't depend on network or the live State board roster size.
+    def _state_board_stub(client, resolver):
+        return [], CountyReport(county="State Board", success=True,
+                                last_attempted_at="2026-05-18T16:00:00Z",
+                                source_url="https://example.test")
+    monkeypatch.setattr(fca, "fetch_state_board_advisories", _state_board_stub)
     monkeypatch.setattr(sys, "argv", ["fetch_county_advisories.py", "--curated", str(curated)])
 
     rc = fca.main()
@@ -268,6 +282,13 @@ def test_main_exits_one_on_ratio_threshold(tmp_path, monkeypatch):
     import fetch_county_advisories as fca
     monkeypatch.setattr(fca, "COUNTIES_FIRST_CLASS", [("Orange", _stub_fetch)])
     monkeypatch.setattr(fca, "BEST_EFFORT_COUNTIES", {})
+    # State board scraper runs first in main(); stub it out so the test
+    # doesn't depend on network or the live State board roster size.
+    def _state_board_stub(client, resolver):
+        return [], CountyReport(county="State Board", success=True,
+                                last_attempted_at="2026-05-18T16:00:00Z",
+                                source_url="https://example.test")
+    monkeypatch.setattr(fca, "fetch_state_board_advisories", _state_board_stub)
     monkeypatch.setattr(sys, "argv", ["fetch_county_advisories.py", "--curated", str(curated)])
 
     rc = fca.main()
@@ -377,3 +398,83 @@ def test_merge_and_rebuild_preserves_state_csv_active_when_scraper_silent(tmp_pa
     assert demoted == 0  # scraper-silence no longer demotes; G.2 handles aging
     result = pd.read_parquet(curated / "advisories.parquet")
     assert (result["status"] == "active").sum() == 1  # state-CSV row survives
+
+
+# ---------- State Water Board scraper ----------
+
+def test_state_board_parse_row_extracts_active_posting():
+    """Active = empty DateClosed; row parser pulls the 11 columns we need."""
+    from scripts.fetch_county_advisories import _state_board_parse_row
+    cells = [
+        "Posting", "San Diego", "FM-030", "Tourmaline drain outlet",
+        "Tourmaline Surfing Park", "Bacterial Standards Violation",
+        "Unknown", ".", "2026-05-20", "", "Enterococcus",
+    ]
+    parsed = _state_board_parse_row(cells)
+    assert parsed is not None
+    assert parsed["type"] == "Posting"
+    assert parsed["county"] == "San Diego"
+    assert parsed["station_code"] == "FM-030"
+    assert parsed["started_at"] == "2026-05-20"
+    assert parsed["ended_at"] is None  # empty DateClosed → still active
+
+
+def test_state_board_parse_row_skips_closed_rows():
+    """Non-empty DateClosed → not currently active; caller filters out."""
+    from scripts.fetch_county_advisories import _state_board_parse_row
+    cells = [
+        "Posting", "San Diego", "FM-030", "Tourmaline drain outlet",
+        "Tourmaline Surfing Park", "Bacterial Standards Violation",
+        "Unknown", ".", "2026-04-15", "2026-04-16", "Enterococcus",
+    ]
+    parsed = _state_board_parse_row(cells)
+    assert parsed is not None
+    assert parsed["ended_at"] == "2026-04-16"
+
+
+def test_state_board_parse_row_rejects_header_row():
+    """Header row has 'Type' in cell 0, not a valid type enum value."""
+    from scripts.fetch_county_advisories import _state_board_parse_row
+    header = ["Type", "County", "Station Code", "Station Name", "Beach",
+              "Cause", "Source", "Substance", "Start Date", "End Date", "Analyte"]
+    assert _state_board_parse_row(header) is None
+
+
+def test_state_board_parse_row_rejects_short_row():
+    from scripts.fetch_county_advisories import _state_board_parse_row
+    assert _state_board_parse_row(["Posting", "San Diego"]) is None
+
+
+def test_state_board_advisories_are_unioned_into_merge(tmp_path):
+    """The new scraper feeds merge_and_rebuild like any other county source.
+    Verifies an active State-board row for a beach NOT in the prior parquet
+    gets added as active after merge."""
+    curated = tmp_path / "curated"
+    curated.mkdir()
+    # Empty starting parquet (no prior state-CSV entries for this beach)
+    pd.DataFrame(
+        columns=["beach_id", "advisory_type", "started_at", "ended_at",
+                 "status", "cause", "county", "advisory_website"]
+    ).to_parquet(curated / "advisories.parquet", index=False)
+
+    from scripts.fetch_county_advisories import CountyAdvisory, merge_and_rebuild
+    state_board_advisory = CountyAdvisory(
+        county="San Diego",
+        station_code="FM-030",
+        area="Tourmaline Surfing Park",
+        advisory_type="Posting",
+        started_at=pd.Timestamp("2026-05-20"),
+        advisory_website="https://beachwatch.waterboards.ca.gov/public/advisory.php",
+        cause="Bacterial Standards Violation",
+    )
+    state_board_advisory.beach_id = "ca748587-san-diego-tourmaline-surfing-park-fm-030"
+
+    added, demoted = merge_and_rebuild(
+        [state_board_advisory], curated, rebuild_beach_day=False,
+        authoritative_counties={"San Diego"},
+    )
+    assert added == 1
+    result = pd.read_parquet(curated / "advisories.parquet")
+    active = result[result["status"] == "active"]
+    assert len(active) == 1
+    assert active.iloc[0]["beach_id"] == "ca748587-san-diego-tourmaline-surfing-park-fm-030"

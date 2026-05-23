@@ -1686,6 +1686,170 @@ def merge_and_rebuild(
     return (len(new_rows), n_demoted)
 
 
+# ---------- State Water Resources Control Board (beachwatch.waterboards.ca.gov) ---------- #
+#
+# This is a 3rd source layered on top of:
+#   1. data.ca.gov "beach-advisories.csv" (state batch export, lags 1-6 months)
+#   2. Per-county scrapers (county websites, sometimes lag the State board too)
+# The State board's web search UI (beachwatch.waterboards.ca.gov/public/advisory.php)
+# has the freshest authoritative state-level data. Discovered 2026-05-23: the CSV
+# export had a 5-month gap for Tourmaline FM-030 while the UI had the current
+# 2026-05-20 advisory.
+#
+# Per-county POSTs are required (the search form rejects "all counties").
+
+STATE_BOARD_HOMEPAGE = "https://beachwatch.waterboards.ca.gov/public/advisory.php"
+
+# County dropdown values from the form (HTML option value="N") → our parquet's
+# canonical county name. Keep in sync with the form if they ever renumber.
+STATE_BOARD_COUNTY_IDS: dict[str, int] = {
+    "East Bay Parks District": 19,
+    "Humboldt": 3,
+    "Long Beach City": 4,
+    "Los Angeles": 5,
+    "Marin": 6,
+    "Mendocino": 7,
+    "Monterey": 8,
+    "Orange": 9,
+    "San Diego": 10,
+    "San Francisco": 11,
+    "San Luis Obispo": 12,
+    "San Mateo": 13,
+    "Santa Barbara": 14,
+    "Santa Cruz": 15,
+    "Sonoma": 16,
+    "Ventura": 17,
+}
+
+
+def _state_board_parse_row(cells: list[str]) -> dict | None:
+    """Column layout from the result table (verified 2026-05-23):
+      0=Type, 1=County, 2=Station code, 3=Station name, 4=Beach name,
+      5=Cause, 6=Source, 7=Substance, 8=DateOpened, 9=DateClosed, 10=Analyte
+    Returns None for malformed rows."""
+    if len(cells) < 10:
+        return None
+    type_str = cells[0].strip()
+    if type_str not in ("Posting", "Closure", "Rain Advisory", "Chronic Advisory"):
+        return None
+    end_str = cells[9].strip()
+    return {
+        "type": type_str,
+        "county": cells[1].strip(),
+        "station_code": cells[2].strip(),
+        "station_name": cells[3].strip(),
+        "beach_name": cells[4].strip(),
+        "cause": cells[5].strip() or None,
+        "started_at": cells[8].strip(),
+        "ended_at": end_str if end_str else None,
+    }
+
+
+def fetch_state_board_advisories(client: httpx.Client, resolver: StationResolver) -> tuple[list[CountyAdvisory], CountyReport]:
+    """Scrape the State Water Board's beach advisory search UI for ACTIVE
+    advisories across all 16 supported counties + East Bay Parks District.
+
+    A row is treated as currently active when its DateClosed cell is empty.
+    The State board's batch CSV export at data.ca.gov can lag this by months
+    (see project_advisory_sources.md). We layer this on top of CSV + county
+    scrapers via the union-policy merge so under-warning is bounded.
+    """
+    rpt = CountyReport(
+        county="State Board",
+        success=False,
+        last_attempted_at=datetime.now(timezone.utc).isoformat(),
+        source_url=STATE_BOARD_HOMEPAGE,
+    )
+    rpt.stations_in_lookup = sum(
+        len(by_code) for by_code in resolver._station_code_lookup.values()
+    )
+    current_year = datetime.now(timezone.utc).year
+    advisories: list[CountyAdvisory] = []
+    counties_tried = 0
+    counties_with_data = 0
+    last_err: str | None = None
+
+    for county_name, county_id in STATE_BOARD_COUNTY_IDS.items():
+        counties_tried += 1
+        try:
+            resp = client.post(
+                STATE_BOARD_HOMEPAGE,
+                data={
+                    "type": "",
+                    "County": str(county_id),
+                    "stationID": "",
+                    "cause": "",
+                    "source": "",
+                    "substance": "",
+                    "year": str(current_year),
+                    "start_dt": "",
+                    "end_dt": "",
+                    "sort1": "`Start Date`",
+                    "sort2": "DESC",
+                    "submit": "Submit",
+                },
+                headers={"User-Agent": _BROWSER_UA},
+                timeout=30.0,
+            )
+            resp.raise_for_status()
+        except Exception as e:  # noqa: BLE001
+            last_err = f"{county_name}: {e}"
+            continue
+        html = resp.text
+        # Find <tr> with <td> cells; first row is the header, skip rows
+        # without a recognized type in cell 0 (the parser returns None).
+        rows = re.findall(r"<tr[^>]*>(.*?)</tr>", html, re.DOTALL)
+        county_active = 0
+        for r in rows:
+            cells_raw = re.findall(r"<td[^>]*>(.*?)</td>", r, re.DOTALL)
+            cells = [_clean_html_text(c) for c in cells_raw]
+            parsed = _state_board_parse_row(cells)
+            if parsed is None:
+                continue
+            # ACTIVE = empty DateClosed. (Future end dates are rare but should
+            # also be active; we don't see them in practice — keep simple.)
+            if parsed["ended_at"]:
+                continue
+            started_at = _parse_iso_date(parsed["started_at"])
+            if started_at is None:
+                continue
+            adv_type = parsed["type"]
+            # Normalize Chronic Advisory → Chronic Posting (matches G.2 opt-out)
+            if adv_type == "Chronic Advisory":
+                adv_type = "Chronic Posting"
+            # State Board lists "Rain Advisory" as its own type — funnel to
+            # Posting so downstream UI treats it as an advisory chip.
+            elif adv_type == "Rain Advisory":
+                adv_type = "Posting"
+            advisories.append(CountyAdvisory(
+                county=parsed["county"] or county_name,
+                station_code=parsed["station_code"] or None,
+                area=parsed["beach_name"] or parsed["station_name"] or "",
+                advisory_type=adv_type,
+                started_at=started_at,
+                advisory_website=STATE_BOARD_HOMEPAGE,
+                cause=parsed["cause"],
+            ))
+            county_active += 1
+        if county_active:
+            counties_with_data += 1
+
+    rpt.success = counties_tried > 0 and (counties_with_data > 0 or last_err is None)
+    if last_err and counties_with_data == 0:
+        rpt.error = f"all {counties_tried} county POSTs failed; last: {last_err}"
+    return advisories, rpt
+
+
+def _parse_iso_date(s: str) -> pd.Timestamp | None:
+    """Parse YYYY-MM-DD into a pandas Timestamp (naive)."""
+    if not s:
+        return None
+    try:
+        return pd.Timestamp(s)
+    except (ValueError, TypeError):
+        return None
+
+
 # ---------- Main ---------- #
 
 
@@ -1754,6 +1918,35 @@ def main() -> int:
     total_scraped = 0
 
     with RetryingClient(follow_redirects=True) as client:
+        # State Water Board UI search — runs FIRST so its fresh statewide
+        # active-set is in beach_ids_covered when the per-county scrapers
+        # add their finer-grained data. Both populate via the union-policy
+        # merge below; this just gets the state-of-record into the loop
+        # early.
+        if not args.only or "state" in args.only.lower():
+            print("Fetching State Water Board advisories (all counties) ...")
+            try:
+                advs, rpt = fetch_state_board_advisories(client, resolver)
+            except Exception as e:
+                print(f"  ERROR for State Board: {e}", file=sys.stderr)
+                rpt = CountyReport(
+                    county="State Board",
+                    success=False,
+                    last_attempted_at=datetime.now(timezone.utc).isoformat(),
+                    source_url=STATE_BOARD_HOMEPAGE,
+                    error=str(e),
+                )
+                advs = []
+            total_scraped += len(advs)
+            resolved = resolve_advisories(advs, resolver, rpt, unresolved_sink=unresolved_rows)
+            print(
+                f"  {len(advs)} parsed → {len(resolved)} resolved "
+                f"(live_list={rpt.matched_via_live_list}, csv={rpt.matched_via_csv}, "
+                f"fuzzy={rpt.matched_via_fuzzy}, unmatched={len(rpt.unmatched_names)})"
+            )
+            all_advisories.extend(resolved)
+            reports.append(rpt)
+
         for county_name, fetcher in COUNTIES_FIRST_CLASS:
             if args.only and args.only.lower() not in county_name.lower():
                 continue
