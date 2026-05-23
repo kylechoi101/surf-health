@@ -1611,24 +1611,25 @@ def merge_and_rebuild(
     if not county_advisories and not auth_counties:
         return (0, 0)
 
-    # Two demotion lanes:
-    # 1. Beach-level (G.3 scraper-wins): any active state-CSV record sharing
-    #    a beach_id with a freshly resolved scraper advisory. The scraper's
-    #    fresh row replaces it via the re-add below.
-    # 2. County-level: for counties with an authoritative scraper, demote
-    #    EVERY active record in that county whose beach_id is not in the
-    #    re-resolved set. Closes the "Ventura returns 0 but state-feed has
-    #    44 stale active records from 2018" hole.
+    # Union-of-sources policy (revised 2026-05-23). For a health-safety
+    # product, under-warning is worse than over-warning. Scraper silence on
+    # a beach_id ≠ "no advisory" — it can mean the county website hasn't
+    # synced from the State board yet (e.g. Tourmaline FM-030 on 2026-05-22:
+    # State board has it active, sdbeachinfo.com cleared it the same day,
+    # the State board signal is the safer one to keep). So we only demote
+    # at the BEACH level when both sources see the same beach_id — there
+    # the scraper's fresh data legitimately replaces the state-CSV row.
+    # The previous county_demote lane (nuke any active SD record the SD
+    # scraper didn't enumerate today) is removed. Stale state-feed cruft
+    # is now bounded by:
+    #   - G.2 auto-expire (14-day age cap, non-Chronic),
+    #   - state CSV refreshes (next pull replaces the row),
+    #   - the audit gate (>30d zombies fail the workflow).
     beach_demote = (
         advisories["beach_id"].isin(beach_ids_covered)
         & (advisories["status"] == "active")
     )
-    county_demote = (
-        advisories["county"].isin(auth_counties)
-        & (advisories["status"] == "active")
-        & ~advisories["beach_id"].isin(beach_ids_covered)
-    )
-    keep_mask = ~(beach_demote | county_demote)
+    keep_mask = ~beach_demote
     n_demoted = int((~keep_mask).sum())
     base = advisories.loc[keep_mask].copy()
 

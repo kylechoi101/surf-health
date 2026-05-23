@@ -332,9 +332,22 @@ def test_merge_and_rebuild_scraper_wins_over_state_csv(tmp_path):
     assert row["advisory_website"] == "https://ocbeachinfo.com"
 
 
-def test_merge_and_rebuild_demotes_unscraped_when_county_authoritative(tmp_path):
-    """When the OC scraper is authoritative and didn't cover Newport, the
-    stale state-CSV Newport entry must be demoted (county-demote lane)."""
+def test_merge_and_rebuild_preserves_state_csv_active_when_scraper_silent(tmp_path):
+    """Health-safety conservatism (2026-05-23): scraper silence ≠ no advisory.
+
+    When the OC scraper runs successfully but doesn't enumerate Newport,
+    a stale state-CSV Newport active record is PRESERVED, NOT demoted.
+    The county website may be lagging the State board's update (e.g.
+    Tourmaline FM-030 was cleared on sdbeachinfo.com but still flagged by
+    the State board the same day). Under-warning on a health app is a
+    worse failure mode than over-warning, so we keep the State board's
+    signal.
+
+    Stale state-feed cruft is bounded by:
+      - G.2 auto-expire (14-day age cap, non-Chronic),
+      - state CSV refreshes (next pull may drop the row),
+      - the audit gate (>30d zombies fail the workflow).
+    """
     curated = tmp_path / "curated"
     curated.mkdir()
     newport = "ca002-orange-newport-beach"
@@ -361,6 +374,6 @@ def test_merge_and_rebuild_demotes_unscraped_when_county_authoritative(tmp_path)
         authoritative_counties={"Orange"},
     )
     assert added == 0
-    assert demoted == 1
+    assert demoted == 0  # scraper-silence no longer demotes; G.2 handles aging
     result = pd.read_parquet(curated / "advisories.parquet")
-    assert (result["status"] == "active").sum() == 0
+    assert (result["status"] == "active").sum() == 1  # state-CSV row survives
