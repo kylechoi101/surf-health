@@ -502,8 +502,11 @@ def fetch_orange_county_advisories(client: httpx.Client, resolver: StationResolv
         return [], rpt
 
     text = _clean_html_text(html)
-    # Section boundaries
-    sections = {"Closure": None, "Posting": None}
+    # Section boundaries. The ADVISORIES section runs from m_ad.end() to EOF;
+    # without slicing it into the dict the section's entries were never even
+    # scanned (the 2026-05-23 regression: 0 of 3 entries returned because all
+    # 3 were under ADVISORIES — Salt Creek, Doheny, etc.).
+    sections = {"Closure": None, "Posting": None, "Advisory": None}
     m_cl = re.search(r"CLOSURES\s*:?", text, re.IGNORECASE)
     m_wr = re.search(r"WARNINGS\s*:?", text, re.IGNORECASE)
     m_ad = re.search(r"ADVISORIES\s*:?", text, re.IGNORECASE)
@@ -512,6 +515,7 @@ def fetch_orange_county_advisories(client: httpx.Client, resolver: StationResolv
         return [], rpt
     sections["Closure"] = (m_cl.end(), m_wr.start())
     sections["Posting"] = (m_wr.end(), m_ad.start())
+    sections["Advisory"] = (m_ad.end(), len(text))
 
     advisories: list[CountyAdvisory] = []
     for adv_type, (s, e) in sections.items():
@@ -519,10 +523,12 @@ def fetch_orange_county_advisories(client: httpx.Client, resolver: StationResolv
         # Skip if "currently in effect" → "No ocean, harbor, or bay water X currently in effect."
         if re.search(r"No (ocean|water).{0,80}currently in effect", chunk, re.IGNORECASE):
             continue
-        # Each posting: "<area or full description> (posted on M/D/YYYY)" or "(updated on M/D/YYYY)"
-        # Allow descriptions starting with digits (e.g., "33rd Street Channel") AND uppercase.
+        # Each entry: "<description> (posted M/D/YYYY)" or "(updated on M/D/YYYY)".
+        # The "on" was historically required; OC dropped it in some entries
+        # (verified 2026-05-23: "Newport Bay (updated 5/15/2026)") so the regex
+        # makes "on" optional.
         for m in re.finditer(
-            r"([\dA-Z][^.()]+?)\s*\((?:posted|updated)\s+on\s+(\d{1,2}/\d{1,2}/\d{2,4})\)",
+            r"([\dA-Z][^.()]+?)\s*\((?:posted|updated)\s+(?:on\s+)?(\d{1,2}/\d{1,2}/\d{2,4})\)",
             chunk,
         ):
             description = m.group(1).strip(" -:")
