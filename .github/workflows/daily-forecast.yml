@@ -62,11 +62,18 @@ jobs:
             'https://data.ca.gov/dataset/b9c8ce91-40ff-4ad3-8164-bc17c46afb44/resource/d5cd6a23-829c-426d-a63e-689a55a3db9c/download/beach-advisories.csv'
 
       - name: Fetch Safe to Swim CEDEN results for stormwater features
+        # data.ca.gov's CKAN file-store occasionally serves a 302 with a malformed
+        # `Location:` header (filename as host, no scheme), so the raw CSV download
+        # is unreliable. The datastore JSON API stays healthy through those incidents
+        # — see scripts/fetch_safetoswim_geomeans.py for the replacement.
+        # Stormwater is a soft dep downstream (continue-on-error: true), so we tolerate
+        # transient CKAN failures here without killing the daily pipeline.
+        continue-on-error: true
+        working-directory: backend
         run: |
-          if [ ! -f data/raw/safetoswim_geomeans_2020-present.csv ]; then
-            curl -fsSL -o data/raw/safetoswim_geomeans_2020-present.csv \
-              'https://data.ca.gov/dataset/6723ab78-4530-4e97-ba5e-6ffd17a4c139/resource/15a63495-8d9f-4a49-b43a-3092ef3106b9/download/safetoswim_geomeans_2020-present.csv'
-          fi
+          python scripts/fetch_safetoswim_geomeans.py \
+            --output ../data/raw/safetoswim_geomeans_2020-present.csv \
+            --skip-if-exists
 
       - name: Run data pipeline
         run: |
