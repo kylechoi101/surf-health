@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from app.services.shore_normal import compute_shore_normal_deg
+
 OBSERVATION_LIMIT = 25
 ENVIRONMENT_LIMIT = 10
 SERVING_SNAPSHOT_NAME = "serving.sqlite"
@@ -167,6 +169,35 @@ def _recent_advisories(advisories: pd.DataFrame) -> pd.DataFrame:
     return pd.concat([latest, active], ignore_index=True).drop_duplicates()[columns]
 
 
+def _attach_shore_normal(beaches: pd.DataFrame) -> pd.DataFrame:
+    """Precompute the seaward `shore_normal_deg` bearing for every beach.
+
+    Shore-normal depends only on geography, so baking it into the snapshot
+    lets the API read a column instead of running an 850-beach SVD on the
+    first /beaches request after each process start (the old cold-cache path
+    cost ~12s). The runtime fallback in ServingSnapshotRepository still works
+    for legacy snapshots that predate this column.
+    """
+    required = {"beach_id", "latitude", "longitude"}
+    if beaches.empty or not required.issubset(beaches.columns):
+        return beaches
+
+    population: list[tuple[str, float, float]] = []
+    for bid, lat, lon in zip(
+        beaches["beach_id"], beaches["latitude"], beaches["longitude"], strict=False
+    ):
+        try:
+            population.append((str(bid), float(lat), float(lon)))
+        except (TypeError, ValueError):
+            continue
+
+    beaches = beaches.copy()
+    beaches["shore_normal_deg"] = [
+        compute_shore_normal_deg(str(bid), population) for bid in beaches["beach_id"]
+    ]
+    return beaches
+
+
 def _write_table(conn: sqlite3.Connection, name: str, frame: pd.DataFrame) -> None:
     _normalize_datetime_columns(frame).to_sql(name, conn, if_exists="replace", index=False)
 
@@ -224,7 +255,7 @@ def build_serving_snapshot(curated_dir: Path, output_path: Path | None = None) -
     if tmp_path.exists():
         tmp_path.unlink()
 
-    beaches = _load_parquet(curated_dir, "beaches")
+    beaches = _attach_shore_normal(_load_parquet(curated_dir, "beaches"))
     parent_beaches = _prepare_json_columns(_load_parquet(curated_dir, "parent_beaches"), ["member_beach_ids"])
     forecasts = _prepare_json_columns(_load_parquet(curated_dir, "forecasts"), ["top_drivers"])
     latest_env = _load_parquet(curated_dir, "latest_env")

@@ -326,10 +326,21 @@ class ServingSnapshotRepository(BeachRepository):
                 latitude=float(row["latitude"]),
                 longitude=float(row["longitude"]),
             ),
-            shore_normal_deg=compute_shore_normal_deg(
-                beach_id, self._beach_geometry_population(),
-            ),
+            shore_normal_deg=self._shore_normal_for(beach_id, row),
         )
+
+    def _shore_normal_for(self, beach_id: str, row: sqlite3.Row) -> float | None:
+        """Seaward bearing for a beach.
+
+        Prefer the value precomputed at snapshot-build time (a `beaches`
+        column) so /beaches doesn't pay an 850-beach SVD on the first
+        request after each process start. Fall back to the runtime
+        computation only for legacy snapshots that predate the column.
+        """
+        stored = _safe_float(_row_get(row, "shore_normal_deg"))
+        if stored is not None:
+            return stored
+        return compute_shore_normal_deg(beach_id, self._beach_geometry_population())
 
     def list_parent_beaches(self) -> list[ParentBeachSummary]:
         rows = self._fetch_all("select * from parent_beaches")
