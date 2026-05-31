@@ -528,6 +528,89 @@ def test_cardiff_lagoon_rain_interaction_lights_only_for_cardiff_in_rain():
     assert south_wet.iloc[0]["cardiff_lagoon_rain_interaction"] == 0.0
 
 
+# ---------------------------------------------------------------------------
+# Regime-resolved south-SD plume features (Kim, Terrill & Cornuelle 2009,
+# Environ. Sci. Technol. 43:7450). The 2009 hindcast decomposes "Tijuana
+# contamination" into three physically distinct sources with different
+# triggers: TJR (rain-driven, wet season, northward transport), SBO (weak
+# winter stratification → plume surfacing), PBD (continuous dry-weather,
+# upcoast transport). These tests pin each regime to its trigger so the model
+# sees three differentiated signals instead of the prior three identical flags.
+# ---------------------------------------------------------------------------
+def test_south_alongshore_wind_is_northward_for_southerly_wind():
+    """south_alongshore_wind_ms: +ve = upcoast (northward) transport toward
+    Imperial Beach / Coronado — the paper's core advection mechanism. A wind
+    blowing FROM the south (met dir 180°) pushes plume water north → positive;
+    a wind FROM the north (0°) → negative. Non-SD beaches stay at 0."""
+    southerly = add_temporal_features(
+        _boundary_row(
+            SOUTH_SD_BEACH_IDS[0], wind_direction_24h_mean=180.0, wind_speed_24h_max=6.0
+        )
+    )
+    northerly = add_temporal_features(
+        _boundary_row(
+            SOUTH_SD_BEACH_IDS[0], wind_direction_24h_mean=0.0, wind_speed_24h_max=6.0
+        )
+    )
+    assert southerly.iloc[0]["south_alongshore_wind_ms"] > 0
+    assert northerly.iloc[0]["south_alongshore_wind_ms"] < 0
+    # Magnitude ≈ wind speed when wind is purely meridional.
+    assert math.isclose(southerly.iloc[0]["south_alongshore_wind_ms"], 6.0, abs_tol=1e-6)
+    non_sd = add_temporal_features(
+        _boundary_row(
+            "ca-other-malibu-pl-100", wind_direction_24h_mean=180.0, wind_speed_24h_max=6.0
+        )
+    )
+    assert non_sd.iloc[0]["south_alongshore_wind_ms"] == 0.0
+
+
+def test_tjr_wet_plume_interaction_high_in_wet_season_with_rain():
+    """tjr_wet_plume_interaction: TJR is the rain-driven, wet-season source.
+    Fires for south-SD beaches only when it is the wet season AND multi-day
+    rain is present. Dry days, the summer dry season, and non-SD beaches all
+    produce 0."""
+    wet_winter = add_temporal_features(
+        _boundary_row(SOUTH_SD_BEACH_IDS[0], sample_date="2026-01-15", precip_mm_72h=80.0)
+    )
+    dry_winter = add_temporal_features(
+        _boundary_row(SOUTH_SD_BEACH_IDS[0], sample_date="2026-01-15", precip_mm_72h=0.0)
+    )
+    wet_summer = add_temporal_features(
+        _boundary_row(SOUTH_SD_BEACH_IDS[0], sample_date="2026-07-15", precip_mm_72h=80.0)
+    )
+    assert wet_winter.iloc[0]["tjr_wet_plume_interaction"] > 0
+    assert dry_winter.iloc[0]["tjr_wet_plume_interaction"] == 0.0
+    assert wet_summer.iloc[0]["tjr_wet_plume_interaction"] == 0.0
+    non_sd = add_temporal_features(
+        _boundary_row("ca-other-malibu-pl-100", sample_date="2026-01-15", precip_mm_72h=80.0)
+    )
+    assert non_sd.iloc[0]["tjr_wet_plume_interaction"] == 0.0
+
+
+def test_sbo_weak_stratification_interaction_winter_and_mixed_only():
+    """sbo_weak_stratification_interaction: the South Bay Ocean Outfall plume
+    surfaces only under weak stratification, which in the paper is a winter
+    (418 days) vs summer (2 days) phenomenon driven by wind mixing. Fires for
+    south-SD beaches in the wet season when wind mixing is present; summer,
+    calm winter, and non-SD beaches produce 0."""
+    winter_mixed = add_temporal_features(
+        _boundary_row(SOUTH_SD_BEACH_IDS[0], sample_date="2026-01-15", wind_speed_24h_max=8.0)
+    )
+    winter_calm = add_temporal_features(
+        _boundary_row(SOUTH_SD_BEACH_IDS[0], sample_date="2026-01-15", wind_speed_24h_max=0.0)
+    )
+    summer_mixed = add_temporal_features(
+        _boundary_row(SOUTH_SD_BEACH_IDS[0], sample_date="2026-07-15", wind_speed_24h_max=8.0)
+    )
+    assert winter_mixed.iloc[0]["sbo_weak_stratification_interaction"] > 0
+    assert winter_calm.iloc[0]["sbo_weak_stratification_interaction"] == 0.0
+    assert summer_mixed.iloc[0]["sbo_weak_stratification_interaction"] == 0.0
+    non_sd = add_temporal_features(
+        _boundary_row("ca-other-malibu-pl-100", sample_date="2026-01-15", wind_speed_24h_max=8.0)
+    )
+    assert non_sd.iloc[0]["sbo_weak_stratification_interaction"] == 0.0
+
+
 def test_boundary_flag_and_interaction_columns_appear_in_sliding_window_dataset():
     """All boundary columns must reach the model feature matrix."""
     values = [25.0 + 10.0 * (i % 3) for i in range(40)]

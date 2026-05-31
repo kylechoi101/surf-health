@@ -174,6 +174,25 @@ SD_BOUNDARY_INTERACTION_COLUMNS: list[str] = [
     # Decouples Cardiff from rain when the inlet is closed. True inlet telemetry
     # is not available, so this is a proxy keyed off the static cohort flag.
     "cardiff_lagoon_rain_interaction",
+    # ---- Regime-resolved south-SD plume features ------------------------------
+    # Source: Kim, Terrill & Cornuelle, "Assessing Coastal Plumes in a Region of
+    # Multiple Discharges: The U.S.-Mexico Border", Environ. Sci. Technol. 2009,
+    # 43, 7450-7457. The hindcast separates three discharges with distinct
+    # triggers; we encode each as its own signal so the model no longer sees
+    # three identical static flags for one collapsed regime.
+    #
+    # Alongshore (upcoast/northward) wind for the south cohort. +ve pushes plume
+    # water toward Imperial Beach / Coronado — the paper's dominant advection
+    # mechanism (currents head north in 80%+ of rain events). Wind-derived proxy
+    # for the HF-radar surface currents the paper used; we don't have those.
+    "south_alongshore_wind_ms",
+    # TJR (Tijuana River) regime: rain-driven, wet-season, multi-day plume tail
+    # (source active ~7 days post-rain). Distinct from the dry-weather term below.
+    "tjr_wet_plume_interaction",
+    # SBO (South Bay Ocean Outfall) regime: the submerged plume only contaminates
+    # the coast when weak stratification lets it surface — a winter (418 days)
+    # vs summer (2 days) phenomenon driven by wind mixing. Diagnostic proxy.
+    "sbo_weak_stratification_interaction",
 ]
 
 
@@ -208,6 +227,37 @@ def _sd_boundary_features(enriched: pd.DataFrame) -> pd.DataFrame:
     sample_dates = pd.to_datetime(enriched["sample_date"], errors="coerce")
     month = sample_dates.dt.month.fillna(0).astype(int)
     is_summer = month.between(5, 10).astype(int)
+    # Wet (rainy) season is the complement of the south-swell summer window —
+    # Nov-Apr in SoCal, when the Tijuana River runs and the SBO plume surfaces.
+    is_wet_season = (1 - is_summer).astype(int)
+
+    def _num(col: str) -> pd.Series:
+        """Numeric column coerced to a 0-filled float Series. Returns all-zeros
+        when the column is absent so the feature degrades gracefully on frames
+        (or non-SD rows) that lack the upstream solar-wind covariates."""
+        if col in enriched:
+            return pd.to_numeric(enriched[col], errors="coerce").fillna(0.0)
+        return pd.Series(0.0, index=enriched.index)
+
+    # Northward (upcoast) wind component, m/s. Met convention: wind_direction is
+    # the direction the wind blows FROM, so the toward-vector's north component
+    # is -speed * cos(dir). A southerly wind (FROM 180°) yields +ve = transport
+    # toward Imperial Beach / Coronado.
+    wind_speed = _num("wind_speed_24h_max")
+    wind_dir_rad = np.deg2rad(_num("wind_direction_24h_mean"))
+    northward_wind = -wind_speed * np.cos(wind_dir_rad)
+
+    # TJR rain-driven plume: normalize a multi-day rain accumulation (3-day
+    # window approximates the post-rain plume tail). 100 mm / 72 h anchors a
+    # major storm.
+    precip_72h = _num("precip_mm_72h")
+    rain_norm = (precip_72h / 100.0).clip(lower=0.0, upper=1.0)
+
+    # Weak-stratification proxy for SBO surfacing: wind mixing breaks down the
+    # density trap. 10 m/s anchors strong mixing.
+    mixing_norm = (wind_speed / 10.0).clip(lower=0.0, upper=1.0)
+
+    south_float = south_flag.astype(float)
 
     frame = pd.DataFrame(
         {
@@ -221,6 +271,11 @@ def _sd_boundary_features(enriched: pd.DataFrame) -> pd.DataFrame:
             "south_swell_season_interaction": (south_flag * is_summer).astype(int),
             "protected_north_rain_interaction": (protected_flag.astype(float) * precip_24h).astype(float),
             "cardiff_lagoon_rain_interaction": (cardiff_flag.astype(float) * precip_24h).astype(float),
+            "south_alongshore_wind_ms": (south_float * northward_wind).astype(float),
+            "tjr_wet_plume_interaction": (south_float * is_wet_season * rain_norm).astype(float),
+            "sbo_weak_stratification_interaction": (
+                south_float * is_wet_season * mixing_norm
+            ).astype(float),
         },
         index=enriched.index,
     )
