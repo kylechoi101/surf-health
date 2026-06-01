@@ -36,6 +36,7 @@ from app.data.pipeline.ceden import (
 )
 from app.data.pipeline.curation import curate_beach_days, write_duckdb_snapshot
 from app.data.pipeline.external_covariates import enrich_beach_day_with_external_covariates
+from app.data.pipeline.station_quality import support_status_for
 
 
 def _download_file(url: str, destination: Path) -> Path:
@@ -174,15 +175,26 @@ def normalize_beachwatch_bundle(
     advisories = normalize_advisories(advisories_raw)
 
     if not observations.empty and "beach_id" in observations.columns:
-        observation_counts = observations.groupby("beach_id").size().rename("observation_count")
-        stations = stations.merge(observation_counts, on="beach_id", how="left")
-        stations = stations.loc[stations["observation_count"].fillna(0) > 0].copy()
-        stations["support_status"] = stations["observation_count"].fillna(0).map(
-            lambda count: "production" if count >= 10 else "beta"
+        grouped = observations.groupby("beach_id")["sample_time"]
+        observation_counts = grouped.size().rename("observation_count")
+        # Sampling span (first→last sample) gates out one-time incident stations.
+        sampling_span_days = (
+            (grouped.max() - grouped.min()).dt.days.rename("sampling_span_days")
         )
-        stations = stations.drop(columns=["observation_count"])
+        stations = stations.merge(observation_counts, on="beach_id", how="left")
+        stations = stations.merge(sampling_span_days, on="beach_id", how="left")
+        stations = stations.loc[stations["observation_count"].fillna(0) > 0].copy()
+        stations["support_status"] = [
+            support_status_for(count, span)
+            for count, span in zip(
+                stations["observation_count"].fillna(0),
+                stations["sampling_span_days"],
+                strict=False,
+            )
+        ]
+        stations = stations.drop(columns=["observation_count", "sampling_span_days"])
     else:
-        stations["support_status"] = "beta"
+        stations["support_status"] = "unsupported"
     advisories = advisories.loc[advisories["beach_id"].isin(stations["beach_id"])].reset_index(drop=True)
     if not observations.empty and "beach_id" in observations.columns:
         observations = observations.loc[observations["beach_id"].isin(stations["beach_id"])].reset_index(drop=True)

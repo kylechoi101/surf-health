@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 
 from app.data.pipeline.exceedance import compute_exceeds_stv
+from app.data.pipeline.spelling import correct_place_spelling
 
 
 ENTEROCOCCUS_TERMS = {"enterococcus", "enterococci", "entero", "enterococus"}
@@ -148,6 +149,7 @@ def normalize_station_metadata(frame: pd.DataFrame) -> pd.DataFrame:
         return "Unknown Station"
 
     marine["name"] = [_best_name(d, s, b) for d, s, b in zip(desc, st_name, b_name, strict=False)]
+    marine["name"] = marine["name"].map(correct_place_spelling)
     marine["county"] = _column(marine, "CountyName").fillna(_column(marine, "County")).fillna("Unknown")
     marine["region"] = _column(marine, "Regional Board Name").fillna(_column(marine, "Regional Board"))
     marine["support_status"] = _column(marine, "Status", "Unknown").fillna("Unknown").map(
@@ -162,7 +164,7 @@ def normalize_station_metadata(frame: pd.DataFrame) -> pd.DataFrame:
     marine["latest_official_sample_at"] = pd.NaT
     marine["usepa_id"] = _column(marine, "USEPAID").map(_clean_text)
     marine["station_code"] = _column(marine, "Station_Name").map(_clean_text)
-    marine["beach_name"] = _column(marine, "Beach_Name").map(_clean_text)
+    marine["beach_name"] = _column(marine, "Beach_Name").map(_clean_text).map(correct_place_spelling)
     marine["water_body_class"] = _column(marine, "WaterBodyClass").map(_clean_text)
     marine["water_body_type"] = _column(marine, "WaterBodyType").map(_clean_text)
     marine["agency_name"] = _column(marine, "Agency_Name").fillna(
@@ -378,8 +380,8 @@ def normalize_bacteria_results(frame: pd.DataFrame, stv_threshold: float) -> pd.
         marine["value"], marine["method"], marine["units"], stv_threshold
     )
     marine["county"] = _column(marine, "CountyName").fillna(_column(marine, "County"))
-    marine["station_name"] = _column(marine, "Station_Name")
-    marine["beach_name"] = _column(marine, "Beach_Name")
+    marine["station_name"] = _column(marine, "Station_Name").map(correct_place_spelling)
+    marine["beach_name"] = _column(marine, "Beach_Name").map(correct_place_spelling)
     marine["usepa_id"] = _column(marine, "USEPAID").map(_clean_text)
     marine["station_code"] = _column(marine, "Station_Name").map(_clean_text)
     marine["data_source"] = "BeachWatch"
