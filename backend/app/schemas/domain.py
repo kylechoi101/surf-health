@@ -59,6 +59,10 @@ class BeachSummary(BaseModel):
     # this for display when available. Optional because legacy serving
     # snapshots and fixtures may not carry the column.
     beach_name: str | None = None
+    # Beachwatch sampling-station code (e.g. "FM-090", "15N", "1000"). Shown
+    # in the apps as a compact monospace chip beside the consolidated beach
+    # name. Optional because legacy serving snapshots may not carry it.
+    station_code: str | None = None
     county: str
     region: str
     support_status: SupportStatus
@@ -86,6 +90,11 @@ class ParentBeachSummary(BaseModel):
     # match search queries against these so users can find a parent by the
     # name they actually know it by, not just the official BeachWatch label.
     member_beach_names: list[str] = Field(default_factory=list)
+    # Beachwatch station codes for each member, index-aligned with
+    # member_beach_ids (empty string where a member has no code). Lets the
+    # apps render the station-code chip for whichever member supplies the
+    # parent's display name (e.g. the aliased "Black's Beach" → "FM-090").
+    member_station_codes: list[str] = Field(default_factory=list)
     latest_official_sample_at: datetime | None = None
     geometry: Point
     risk_band: RiskBand | None = None

@@ -158,6 +158,19 @@ def _coerce_beach_name(raw: object) -> str | None:
     return text or None
 
 
+def _coerce_station_code(raw: object) -> str | None:
+    """Return a clean Beachwatch station code, or None if missing/blank/NaN."""
+    if raw is None:
+        return None
+    try:
+        if pd.isna(raw):
+            return None
+    except (TypeError, ValueError):
+        pass
+    text = str(raw).strip()
+    return text or None
+
+
 def _safe_bool(value: object, *, default: bool = True) -> bool:
     """Parse a boolean that may have been stored as string/int in parquet/SQLite."""
     if value is None:
@@ -333,9 +346,20 @@ class CuratedBeachRepository(BeachRepository):
                 if display:
                     member_name_lookup[bid] = display
 
+        # member_id -> Beachwatch station code, index-aligned onto each
+        # parent's member_beach_ids so the apps can chip the resolved member.
+        member_code_lookup: dict[str, str] = {}
+        if not self.beaches_frame.empty and "station_code" in self.beaches_frame.columns:
+            for _, brow in self.beaches_frame.iterrows():
+                bid = str(brow.get("beach_id") or "")
+                if not bid:
+                    continue
+                member_code_lookup[bid] = _coerce_station_code(brow.get("station_code")) or ""
+
         parents: list[ParentBeachSummary] = []
         for _, row in self.parent_beaches_frame.iterrows():
             member_ids: list[str] = list(row["member_beach_ids"])
+            member_codes = [member_code_lookup.get(str(bid), "") for bid in member_ids]
             member_forecasts = [forecast_lookup[bid] for bid in member_ids if bid in forecast_lookup]
             worst_band: str | None = None
             worst_p: float | None = None
@@ -377,6 +401,7 @@ class CuratedBeachRepository(BeachRepository):
                 model_version=worst_model_v,
                 station_count=int(row["station_count"]),
                 member_beach_ids=member_ids,
+                member_station_codes=member_codes,
                 latest_official_sample_at=(
                     pd.to_datetime(row.get("latest_official_sample_at")).to_pydatetime()
                     if pd.notna(row.get("latest_official_sample_at"))
@@ -422,6 +447,7 @@ class CuratedBeachRepository(BeachRepository):
                     id=bid,
                     name=_derive_friendly_name(row),
                     beach_name=_coerce_beach_name(row.get("beach_name")),
+                    station_code=_coerce_station_code(row.get("station_code")),
                     county=row["county"],
                     region=row["region"],
                     support_status=support,
@@ -455,6 +481,7 @@ class CuratedBeachRepository(BeachRepository):
             id=row["beach_id"],
             name=_derive_friendly_name(row),
             beach_name=_coerce_beach_name(row.get("beach_name")),
+            station_code=_coerce_station_code(row.get("station_code")),
             county=row["county"],
             region=row["region"],
             support_status=support,

@@ -361,11 +361,13 @@ def _write_multi_member_parent(curated_dir):
         "ca103-orange-multi-member-station-4",
     ]
     nicknames = ["Black's Beach", "North Stairs", "South Stairs", "Pier Cove"]
+    codes = ["FM-090", "NS-01", "SS-02", "PC-03"]
     rows = []
-    for bid, nick in zip(beach_ids, nicknames):
+    for bid, nick, code in zip(beach_ids, nicknames, codes):
         rows.append({
             "beach_id": bid,
             "name": nick,
+            "station_code": code,
             "county": "Orange",
             "region": "Santa Ana",
             "support_status": "production",
@@ -467,6 +469,33 @@ def test_serving_parent_beach_flags_member_stations(tmp_path):
     assert p.flagged_station_count == 2
     # The two posted members are index 0 (Black's Beach) and index 2 (South Stairs).
     assert set(p.flagged_station_names) == {nicknames[0], nicknames[2]}
+
+
+def test_serving_parent_exposes_member_station_codes(tmp_path):
+    """Each parent carries the Beachwatch station code for every member,
+    index-aligned with member_beach_ids so the apps can render a compact
+    station-code chip for the resolved display station."""
+    curated_dir = tmp_path / "curated"
+    beach_ids, _ = _write_multi_member_parent(curated_dir)
+    snapshot_path = build_serving_snapshot(curated_dir)
+
+    repository = ServingSnapshotRepository(snapshot_path, stv_threshold=104.0)
+    parents = repository.list_parent_beaches()
+    p = parents[0]
+    assert p.member_beach_ids == beach_ids
+    assert p.member_station_codes == ["FM-090", "NS-01", "SS-02", "PC-03"]
+
+
+def test_serving_beach_exposes_station_code(tmp_path):
+    """A single BeachSummary carries its Beachwatch station code."""
+    curated_dir = tmp_path / "curated"
+    beach_ids, _ = _write_multi_member_parent(curated_dir)
+    snapshot_path = build_serving_snapshot(curated_dir)
+
+    repository = ServingSnapshotRepository(snapshot_path, stv_threshold=104.0)
+    by_id = {b.id: b for b in repository.list_beaches()}
+    assert by_id[beach_ids[0]].station_code == "FM-090"
+    assert by_id[beach_ids[2]].station_code == "SS-02"
 
 
 def test_serving_parent_with_no_advisories_reports_zero_flagged(tmp_path):

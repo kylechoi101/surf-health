@@ -312,11 +312,14 @@ class ServingSnapshotRepository(BeachRepository):
         if beach_name_raw is not None:
             cleaned = str(beach_name_raw).strip().replace("\\'", "'").replace("\\\\", "")
             beach_name = cleaned or None
+        station_code_raw = _row_get(row, "station_code")
+        station_code = str(station_code_raw).strip() or None if station_code_raw is not None else None
         return BeachSummary(
             id=beach_id,
             name=parent_name or friendly,
             station_name=station_nickname,
             beach_name=beach_name,
+            station_code=station_code,
             county=str(row["county"]),
             region=str(row["region"]),
             support_status=support,
@@ -369,6 +372,15 @@ class ServingSnapshotRepository(BeachRepository):
             str(row["beach_id"]): _clean_nickname(row["name"])
             for row in self._fetch_all("select beach_id, name from beaches")
         }
+        # member_id -> Beachwatch station code, so parents can carry a code
+        # per member (index-aligned with member_beach_ids) for the chip.
+        member_code_lookup: dict[str, str] = {}
+        try:
+            for r in self._fetch_all("select beach_id, station_code from beaches"):
+                code = str(r["station_code"]).strip() if r["station_code"] is not None else ""
+                member_code_lookup[str(r["beach_id"])] = code
+        except sqlite3.OperationalError:
+            member_code_lookup = {}
         # Separate lookup for the flagged-station display name. Prefer
         # `station_name` when present (it's the local nickname users know,
         # e.g. "Black's Beach"); fall back to the canonical `name`.
@@ -389,6 +401,7 @@ class ServingSnapshotRepository(BeachRepository):
         parents: list[ParentBeachSummary] = []
         for row in rows:
             member_ids = [str(member_id) for member_id in _parse_json_list(row["member_beach_ids"])]
+            member_codes = [member_code_lookup.get(mid, "") for mid in member_ids]
             member_names = [member_name_lookup.get(mid, "") for mid in member_ids]
             member_names = [n for n in member_names if n]
             member_forecasts = [
@@ -437,6 +450,7 @@ class ServingSnapshotRepository(BeachRepository):
                     station_count=int(row["station_count"]),
                     member_beach_ids=member_ids,
                     member_beach_names=member_names,
+                    member_station_codes=member_codes,
                     latest_official_sample_at=_parse_datetime(row["latest_official_sample_at"]),
                     geometry=Point(
                         latitude=float(row["latitude"]),

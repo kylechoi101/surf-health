@@ -180,6 +180,7 @@ def bake(curated: Path, out: Path) -> None:
             "id": bid,
             "name": display_name,
             "station_name": station_name,
+            "station_code": station_code or None,
             "county": _safe(b.get("county")),
             "region": _safe(b.get("region")),
             "latitude": _safe(b.get("latitude")),
@@ -212,6 +213,7 @@ def bake(curated: Path, out: Path) -> None:
             "station_count": 0,
             "member_beach_ids": [],
             "member_beach_names": [],
+            "member_station_codes": [],
             "latest_official_sample_at": None,
             "latitude": r["latitude"],
             "longitude": r["longitude"],
@@ -224,6 +226,7 @@ def bake(curated: Path, out: Path) -> None:
         p["station_count"] += 1
         p["member_beach_ids"].append(r["id"])
         p["member_beach_names"].append(r["station_name"] or r["name"])
+        p["member_station_codes"].append(r["station_code"] or "")
         if r["has_active_advisory"]:
             p["has_active_advisory"] = True
             p["advisory_website"] = p["advisory_website"] or r["advisory_website"]

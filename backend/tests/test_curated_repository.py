@@ -600,3 +600,9 @@ def test_curated_repository_parent_flagged_station_count(tmp_path):
     # Two DISTINCT flagged stations (member 0 has 2 advisories but only counts once).
     assert p.flagged_station_count == 2
     assert set(p.flagged_station_names) == {nicknames[0], nicknames[2]}
+    # Station codes ride along, index-aligned with member_beach_ids.
+    assert p.member_beach_ids == beach_ids
+    assert p.member_station_codes == [bid.upper() for bid in beach_ids]
+    # And a single BeachSummary carries its own station_code.
+    by_id = {b.id: b for b in repository.list_beaches()}
+    assert by_id[beach_ids[0]].station_code == beach_ids[0].upper()
