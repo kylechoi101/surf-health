@@ -9,6 +9,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from app.data.pipeline.exceedance import compute_exceeds_stv
+
 
 ENTEROCOCCUS_TERMS = {"enterococcus", "enterococci", "entero", "enterococus"}
 MARINE_WATER_CLASSES = {"saltwater", "estuarine"}
@@ -370,7 +372,11 @@ def normalize_bacteria_results(frame: pd.DataFrame, stv_threshold: float) -> pd.
     marine["value"] = _column(marine, "Result").map(_to_float)
     marine["units"] = _column(marine, "Unit", "unknown").fillna("unknown").astype(str).str.strip()
     marine["method"] = _column(marine, "AnalysisMethod", "unknown").fillna("unknown").astype(str).str.strip()
-    marine["exceeds_stv"] = marine["value"].fillna(0).gt(stv_threshold)
+    # Method-aware: PCR (copies) judged against the molecular threshold, not the
+    # culture STV. See app.data.pipeline.exceedance.
+    marine["exceeds_stv"] = compute_exceeds_stv(
+        marine["value"], marine["method"], marine["units"], stv_threshold
+    )
     marine["county"] = _column(marine, "CountyName").fillna(_column(marine, "County"))
     marine["station_name"] = _column(marine, "Station_Name")
     marine["beach_name"] = _column(marine, "Beach_Name")

@@ -9,6 +9,7 @@ import httpx
 import pandas as pd
 
 from app.data.pipeline.beachwatch import build_beach_day_frame
+from app.data.pipeline.exceedance import compute_exceeds_stv
 from app.data.pipeline.external_covariates import haversine_km
 
 
@@ -264,9 +265,13 @@ def normalize_ceden_results(frame: pd.DataFrame, stv_threshold: float) -> pd.Dat
     result_sub = pd.to_numeric(results.get("ResultSub"), errors="coerce")
     raw_result = pd.to_numeric(results.get("Result"), errors="coerce")
     results["value"] = result_sub.where(result_sub.notna(), raw_result)
-    results["exceeds_stv"] = results["value"].fillna(0.0).gt(stv_threshold)
     results["method"] = results["MethodName"].fillna("unknown").astype(str).str.strip()
     results["units"] = results["Unit"].fillna("unknown").astype(str).str.strip()
+    # Method-aware: PCR (copies) judged against the molecular threshold, not the
+    # culture STV. See app.data.pipeline.exceedance.
+    results["exceeds_stv"] = compute_exceeds_stv(
+        results["value"], results["method"], results["units"], stv_threshold
+    )
     results["data_source"] = (
         results["DataSource"].map(_clean_text).fillna("SafeToSwim").map(lambda value: f"{value}.SafeToSwim")
     )
