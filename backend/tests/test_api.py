@@ -120,3 +120,55 @@ def test_repository_dependency_is_cached(monkeypatch):
     assert len(calls) == 1
 
     routes.get_repository.cache_clear()
+
+
+# ---------------------------------------------------------------------------
+# Rate-limit keying: behind Cloudflare + Render's proxy, request.client.host is
+# the proxy IP (identical for every client), which turns the per-IP limit into
+# a single global bucket that 429s everyone at once. The limiter must key on
+# the real client IP from CF-Connecting-IP / X-Forwarded-For.
+# ---------------------------------------------------------------------------
+def _make_request(headers: dict[str, str], client_host: str = "10.0.0.1"):
+    from starlette.requests import Request
+
+    raw = [(k.lower().encode(), v.encode()) for k, v in headers.items()]
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/",
+        "headers": raw,
+        "client": (client_host, 12345),
+    }
+    return Request(scope)
+
+
+def test_client_ip_key_prefers_cf_connecting_ip():
+    from app.main import _client_ip_key
+
+    req = _make_request(
+        {"CF-Connecting-IP": "203.0.113.7", "X-Forwarded-For": "203.0.113.7, 172.16.0.1"},
+        client_host="172.16.0.1",
+    )
+    assert _client_ip_key(req) == "203.0.113.7"
+
+
+def test_client_ip_key_falls_back_to_first_forwarded_for_hop():
+    from app.main import _client_ip_key
+
+    req = _make_request({"X-Forwarded-For": "198.51.100.23, 172.16.0.1"}, client_host="172.16.0.1")
+    assert _client_ip_key(req) == "198.51.100.23"
+
+
+def test_client_ip_key_falls_back_to_socket_peer_when_no_proxy_headers():
+    from app.main import _client_ip_key
+
+    req = _make_request({}, client_host="192.0.2.55")
+    assert _client_ip_key(req) == "192.0.2.55"
+
+
+def test_two_real_clients_behind_same_proxy_get_distinct_keys():
+    from app.main import _client_ip_key
+
+    a = _make_request({"CF-Connecting-IP": "203.0.113.1"}, client_host="172.16.0.1")
+    b = _make_request({"CF-Connecting-IP": "203.0.113.2"}, client_host="172.16.0.1")
+    assert _client_ip_key(a) != _client_ip_key(b)
