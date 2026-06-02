@@ -1,0 +1,57 @@
+name: Hourly closures feed
+
+on:
+  schedule:
+    - cron: '0 * * * *'   # top of every hour
+  workflow_dispatch:
+
+# Pools currently-active beach closures into a tiny public feed
+# (data/curated/closures.json). The mobile app fetches it on a background
+# schedule and does the proximity check + dedup ON-DEVICE — no user data,
+# push tokens, or locations are stored server-side.
+jobs:
+  closures:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+
+      - name: Install backend (base only — no training extras)
+        run: pip install -e .
+        working-directory: backend
+
+      - name: Scrape live county advisories
+        working-directory: backend
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Non-fatal: a flaky county source must not block the feed; we still
+        # rebuild from whatever advisories.parquet currently holds.
+        run: python scripts/fetch_county_advisories.py || echo "[warn] advisory scrape had errors; building feed from current data"
+
+      - name: Build closures.json feed
+        working-directory: backend
+        run: python scripts/refresh_closures.py
+
+      - name: Commit feed if changed
+        run: |
+          git config user.name "shorelife-bot"
+          git config user.email "bot@shorelife.app"
+          # Only the public feed — never the re-scraped advisories.parquet
+          # (that belongs to the daily pipeline; avoids churn/conflicts).
+          git add -f data/curated/closures.json
+          if git diff --cached --quiet; then
+            echo "no closure changes"
+          else
+            git commit -m "chore(closures): hourly feed refresh [skip ci]"
+            git push
+          fi
