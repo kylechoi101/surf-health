@@ -13,12 +13,73 @@ method-aware threshold layer (culture 104 STV vs PCR 1413 copies).
 
 from __future__ import annotations
 
+import re
+
 import httpx
 import pandas as pd
 
 from app.data.pipeline.exceedance import compute_exceeds_stv
+from app.data.pipeline.station_quality import support_status_for
 
 WQP_RESULT_URL = "https://www.waterqualitydata.us/data/Result/search"
+
+# US coastal + Great Lakes states/territories (BEACH Act beach-monitoring
+# reporters), as WQP FIPS state codes. Used to pool a national training set.
+COASTAL_STATE_FIPS = [
+    "US:01", "US:02", "US:06", "US:09", "US:10", "US:12", "US:13", "US:15",
+    "US:17", "US:18", "US:22", "US:23", "US:24", "US:25", "US:26", "US:27",
+    "US:28", "US:33", "US:34", "US:36", "US:37", "US:39", "US:41", "US:42",
+    "US:44", "US:45", "US:48", "US:51", "US:53", "US:55", "US:72",
+]
+
+_STATION_COLUMNS = [
+    "beach_id",
+    "station_id",
+    "name",
+    "county",
+    "region",
+    "latitude",
+    "longitude",
+    "support_status",
+]
+
+
+def _wqp_beach_id(state_fips: str, station_id: str) -> str:
+    """Stable, namespaced beach_id for a WQP station — ``wqp-<state>-<slug>``
+    so it can never collide with the California BeachWatch ids."""
+    slug = re.sub(r"[^a-z0-9]+", "-", str(station_id).lower()).strip("-")
+    st = str(state_fips or "").replace("US:", "us").lower() or "us"
+    return f"wqp-{st}-{slug}"[:120]
+
+
+def build_wqp_stations(observations: pd.DataFrame) -> pd.DataFrame:
+    """Derive a national station roster from normalized WQP observations.
+
+    One row per station with median coordinates and a support_status from the
+    same duration cap used for California (a sampling span < 90 days is a
+    one-time/short-incident station → unsupported).
+    """
+    if observations.empty:
+        return pd.DataFrame(columns=_STATION_COLUMNS)
+
+    rows = []
+    for sid, sub in observations.groupby("station_id"):
+        state = str(sub["state_fips"].iloc[0]) if "state_fips" in sub.columns else ""
+        times = pd.to_datetime(sub["sample_time"], errors="coerce").dropna()
+        span = int((times.max() - times.min()).days) if len(times) else 0
+        rows.append(
+            {
+                "beach_id": _wqp_beach_id(state, sid),
+                "station_id": str(sid),
+                "name": str(sid),
+                "county": None,
+                "region": state,
+                "latitude": float(sub["latitude"].median()),
+                "longitude": float(sub["longitude"].median()),
+                "support_status": support_status_for(len(sub), span),
+            }
+        )
+    return pd.DataFrame(rows, columns=_STATION_COLUMNS)
 
 # WQX column names -> our fields.
 _VALUE_COL = "ResultMeasureValue"
@@ -90,6 +151,66 @@ def normalize_wqp_results(frame: pd.DataFrame, stv_threshold: float) -> pd.DataF
     df["data_source"] = "WQP"
 
     return df[_OUTPUT_COLUMNS].reset_index(drop=True)
+
+
+# CA-side observed columns that BeachWatch carries but WQP does not — added as
+# null so the national frame is schema-compatible with build_beach_day_frame.
+_BEACHWATCH_ONLY_OBS_COLS = [
+    "weather", "storm_drain_flow", "tidal_height", "surf_height_observed",
+    "turbidity_observed", "odor", "water_color", "analyte", "units", "method",
+    "county", "station_name", "beach_name", "usepa_id", "station_code",
+]
+
+
+def fetch_national_wqp(
+    states: list[str],
+    start: str,
+    end: str,
+    stv_threshold: float,
+    *,
+    client: httpx.Client | None = None,
+) -> pd.DataFrame:
+    """Fetch + normalize WQP enterococcus for many states, tagged by state.
+
+    Per-state failures are logged and skipped so one flaky state can't abort the
+    national pool. Returns concatenated normalized observations.
+    """
+    owns = client is None
+    client = client or httpx.Client(timeout=300.0, follow_redirects=True)
+    frames: list[pd.DataFrame] = []
+    try:
+        for st in states:
+            try:
+                raw = fetch_wqp_results(st, start, end, client=client)
+                norm = normalize_wqp_results(raw, stv_threshold)
+                if not norm.empty:
+                    norm["state_fips"] = st
+                    frames.append(norm)
+                    print(f"[wqp] {st}: {len(norm)} enterococcus obs")
+            except Exception as exc:  # noqa: BLE001 - one state must not abort the pool
+                print(f"[wqp] {st} failed: {type(exc).__name__}: {str(exc)[:120]}")
+    finally:
+        if owns:
+            client.close()
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+def to_beach_day_observations(national_obs: pd.DataFrame) -> pd.DataFrame:
+    """Shape national WQP observations to match build_beach_day_frame's input:
+    rename value->kept, add the BeachWatch-only observed columns as null, and
+    map station_id -> beach_id."""
+    if national_obs.empty:
+        return national_obs
+    df = national_obs.copy()
+    df["beach_id"] = [
+        _wqp_beach_id(str(s), str(sid))
+        for s, sid in zip(df.get("state_fips", ""), df["station_id"], strict=False)
+    ]
+    for col in _BEACHWATCH_ONLY_OBS_COLS:
+        if col not in df.columns:
+            df[col] = None
+    df["analyte"] = "enterococcus"
+    return df
 
 
 def fetch_wqp_results(
