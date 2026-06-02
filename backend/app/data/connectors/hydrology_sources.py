@@ -440,6 +440,129 @@ class OpenMeteoHistoricalSolarWindConnector:
 
 
 @dataclass
+class OpenMeteoMarineForecastConnector:
+    """
+    Fetches hourly marine forecast (waves + swell partitions) from the Open-Meteo
+    Marine API. No API key required. Source is a global wave model (~5 km).
+
+    Variables fetched per (rounded coord, issue date):
+      wave_*                       — total significant wave height / dir / period
+      swell_wave_*                 — primary swell train (height / dir / period)
+      secondary_swell_wave_*       — secondary swell train
+      wind_wave_*                  — locally wind-generated sea
+
+    Surfers care about the swell partitions: a clean 16 s primary groundswell from
+    the SSW behaves nothing like a 7 s windswell from the WNW even at identical total
+    height. The secondary/tertiary trains and their direction are the signal Surfline
+    paywalls; Open-Meteo exposes them for free.
+
+    Forecast data is refreshed daily, so the cache is keyed by issue date — same-day
+    reruns hit disk, the next day refetches.
+    """
+
+    BASE_URL: str = "https://marine-api.open-meteo.com/v1/marine"
+    concurrency: int = 5
+    forecast_days: int = 7
+    HOURLY_VARS: tuple[str, ...] = (
+        "wave_height",
+        "wave_direction",
+        "wave_period",
+        "swell_wave_height",
+        "swell_wave_direction",
+        "swell_wave_period",
+        "secondary_swell_wave_height",
+        "secondary_swell_wave_direction",
+        "secondary_swell_wave_period",
+        "wind_wave_height",
+        "wind_wave_direction",
+        "wind_wave_period",
+    )
+
+    async def _fetch_coord(
+        self,
+        client: httpx.AsyncClient,
+        lat: float,
+        lon: float,
+        issue_date: date,
+        cache_dir: Path,
+    ) -> pd.DataFrame:
+        lat_r = round(lat, 1)
+        lon_r = round(lon, 1)
+        cache_key = f"openmeteo_marine_{lat_r}_{lon_r}_{issue_date.isoformat()}_{self.forecast_days}d.parquet"
+        cache_file = cache_dir / cache_key
+        if cache_file.exists():
+            return pd.read_parquet(cache_file)
+
+        params = {
+            "latitude": lat_r,
+            "longitude": lon_r,
+            "hourly": ",".join(self.HOURLY_VARS),
+            "forecast_days": self.forecast_days,
+            "timezone": "UTC",
+            "length_unit": "metric",
+        }
+        try:
+            r = await client.get(self.BASE_URL, params=params, timeout=60.0)
+            r.raise_for_status()
+            payload = r.json()
+        except Exception as exc:
+            logger.error("Open-Meteo marine fetch failed for (%.1f, %.1f): %s", lat_r, lon_r, exc)
+            return pd.DataFrame()
+
+        hourly = payload.get("hourly", {})
+        times = hourly.get("time", [])
+        if not times:
+            return pd.DataFrame()
+
+        station_id = f"{lat_r}_{lon_r}"
+        df = pd.DataFrame({
+            "station_id": station_id,
+            "time_utc": pd.to_datetime(times, utc=True),
+            "latitude": lat_r,
+            "longitude": lon_r,
+            "source_name": "open_meteo_marine",
+        })
+        for var in self.HOURLY_VARS:
+            vals = hourly.get(var, [])
+            df[var] = [float(v) if v is not None else np.nan for v in vals]
+        df.to_parquet(cache_file, index=False)
+        return df
+
+    async def fetch_marine_forecast(
+        self,
+        locations: list[tuple[float, float]],
+        issue_date: date,
+        cache_dir: Path,
+    ) -> pd.DataFrame:
+        if not locations:
+            return pd.DataFrame()
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        unique_coords = list({(round(lat, 1), round(lon, 1)) for lat, lon in locations})
+
+        semaphore = asyncio.Semaphore(self.concurrency)
+
+        async def _bounded(client: httpx.AsyncClient, lat: float, lon: float) -> pd.DataFrame:
+            async with semaphore:
+                return await self._fetch_coord(client, lat, lon, issue_date, cache_dir)
+
+        async with httpx.AsyncClient() as client:
+            tasks = [_bounded(client, lat, lon) for lat, lon in unique_coords]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        frames: list[pd.DataFrame] = []
+        for (lat, lon), result in zip(unique_coords, results):
+            if isinstance(result, Exception):
+                logger.error("Open-Meteo marine gather failed for (%.1f, %.1f): %s", lat, lon, result)
+            elif isinstance(result, pd.DataFrame) and not result.empty:
+                frames.append(result)
+
+        if not frames:
+            logger.warning("Open-Meteo marine returned no data for %d locations [issue %s]", len(locations), issue_date)
+            return pd.DataFrame()
+        return pd.concat(frames, ignore_index=True)
+
+
+@dataclass
 class CnrfcQpfConnector:
     """Stub for CNRFC QPF (gridded forecast precipitation). Deferred to Phase 2."""
 

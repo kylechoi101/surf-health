@@ -292,6 +292,19 @@ def main() -> None:
              "marine-microbiology features (shore_normal_wind, solar_inactivation_index, "
              "days_since_sunny, pier/estuary proximity) into beach_day.",
     )
+    parser.add_argument(
+        "--with-surf",
+        action="store_true",
+        help="Fetch the Open-Meteo Marine forecast (waves + primary/secondary swell "
+             "trains) for surf-spot beaches and write surf_now.parquet + "
+             "surf_daily_forecast.parquet to the curated dir.",
+    )
+    parser.add_argument(
+        "--surf-forecast-days",
+        type=int,
+        default=7,
+        help="Forecast horizon for --with-surf (Open-Meteo marine supports up to 16).",
+    )
     parser.add_argument("--usgs-gages-csv", type=Path)
     parser.add_argument("--cnrfc-observed-csv", type=Path)
     parser.add_argument("--cnrfc-qpf-csv", type=Path)
@@ -683,6 +696,12 @@ def main() -> None:
                 bd["tidal_height"] = np.cos(phase * 2 * np.pi) * 1.5
             bundle["beach_day"] = bd
 
+        # Surf-spot aliases: attach surfer names + true break locations to stations so
+        # they survive every full refresh (display-only; official name/coords untouched).
+        from app.data.pipeline.surf_spots import apply_surf_aliases
+        bundle["stations"] = apply_surf_aliases(bundle["stations"])
+        print(f"[surf] tagged {int(bundle['stations']['is_surf_spot'].sum())} surf spots")
+
         write_curated_bundle(
             curated_dir=Path(settings.curated_dir),
             stations=bundle["stations"],
@@ -703,6 +722,49 @@ def main() -> None:
                 indent=2,
             )
         )
+
+    if args.with_surf:
+        from datetime import date as _date
+        from app.data.connectors.hydrology_sources import OpenMeteoMarineForecastConnector
+        from app.data.pipeline.surf_spots import apply_surf_aliases
+        from app.data.pipeline.surf_conditions import build_surf_now, build_surf_daily_forecast
+
+        settings = get_settings()
+        curated = Path(settings.curated_dir)
+        beaches = pd.read_parquet(curated / "beaches.parquet")
+        if "is_surf_spot" not in beaches.columns:
+            beaches = apply_surf_aliases(beaches)
+
+        spots = beaches.loc[beaches["is_surf_spot"] == True].copy()  # noqa: E712
+        spots["station_id"] = (
+            spots["surf_latitude"].round(1).astype(str) + "_" + spots["surf_longitude"].round(1).astype(str)
+        )
+        print(f"[surf] fetching marine forecast for {len(spots)} surf spots")
+
+        locations = [
+            (float(r["surf_latitude"]), float(r["surf_longitude"]))
+            for _, r in spots.iterrows()
+            if pd.notna(r["surf_latitude"]) and pd.notna(r["surf_longitude"])
+        ]
+        raw = asyncio.run(
+            OpenMeteoMarineForecastConnector(forecast_days=args.surf_forecast_days).fetch_marine_forecast(
+                locations,
+                _date.today(),
+                cache_dir=settings.precip_cache_dir / "openmeteo_marine",
+            )
+        )
+        if raw.empty:
+            print("[surf] marine forecast returned no data; skipping surf artifacts")
+        else:
+            meta = spots[["beach_id", "surf_name", "county", "region", "station_id"]]
+            now = build_surf_now(raw, pd.Timestamp.now(tz="UTC"))
+            now = meta.merge(now, on="station_id", how="inner")
+            daily = build_surf_daily_forecast(raw)
+            daily = meta.merge(daily, on="station_id", how="inner")
+
+            now.to_parquet(curated / "surf_now.parquet", index=False)
+            daily.to_parquet(curated / "surf_daily_forecast.parquet", index=False)
+            print(f"[surf] wrote surf_now ({len(now)} spots) + surf_daily_forecast ({len(daily)} rows)")
 
 
 if __name__ == "__main__":
