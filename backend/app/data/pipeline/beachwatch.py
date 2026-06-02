@@ -589,6 +589,13 @@ def write_curated_bundle(
     model_registry: dict[str, Any] | None = None,
 ) -> None:
     curated_dir.mkdir(parents=True, exist_ok=True)
+    # Final county-correction pass — fixes jurisdiction-as-county values
+    # ("Long Beach City" -> "Los Angeles") regardless of which path set them
+    # (BeachWatch, CEDEN merge, or id-slug fallback). beach_id keys unchanged.
+    # derive_parent_beaches() below then inherits the corrected county.
+    for _frame in (stations, observations, beach_day):
+        if "county" in _frame.columns:
+            _frame["county"] = _frame["county"].map(correct_county)
     stations.to_parquet(curated_dir / "beaches.parquet", index=False)
     derive_parent_beaches(stations).to_parquet(curated_dir / "parent_beaches.parquet", index=False)
     observations.to_parquet(curated_dir / "observations.parquet", index=False)
