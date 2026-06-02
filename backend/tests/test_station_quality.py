@@ -1,5 +1,3 @@
-import pandas as pd
-
 from app.data.pipeline.station_quality import (
     MIN_SAMPLING_SPAN_DAYS,
     support_status_for,
