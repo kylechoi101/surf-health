@@ -9,6 +9,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from app.data.pipeline.county_corrections import correct_county
 from app.data.pipeline.exceedance import compute_exceeds_stv
 from app.data.pipeline.spelling import correct_place_spelling
 
@@ -150,7 +151,9 @@ def normalize_station_metadata(frame: pd.DataFrame) -> pd.DataFrame:
 
     marine["name"] = [_best_name(d, s, b) for d, s, b in zip(desc, st_name, b_name, strict=False)]
     marine["name"] = marine["name"].map(correct_place_spelling)
-    marine["county"] = _column(marine, "CountyName").fillna(_column(marine, "County")).fillna("Unknown")
+    marine["county"] = (
+        _column(marine, "CountyName").fillna(_column(marine, "County")).fillna("Unknown").map(correct_county)
+    )
     marine["region"] = _column(marine, "Regional Board Name").fillna(_column(marine, "Regional Board"))
     marine["support_status"] = _column(marine, "Status", "Unknown").fillna("Unknown").map(
         lambda status: "production" if str(status).lower() == "active" else "unsupported"
@@ -372,6 +375,10 @@ def normalize_bacteria_results(frame: pd.DataFrame, stv_threshold: float) -> pd.
     marine = marine.loc[_plausible_datetime_mask(marine["sample_time"])].copy()
     marine["sample_date"] = marine["sample_time"].dt.date
     marine["value"] = _column(marine, "Result").map(_to_float)
+    # Enterococcus is a non-negative count (MPN/CFU/copies). Negative results are
+    # invalid sentinels (e.g. -1000 "not analyzed") — drop them so they don't
+    # poison the lag/rolling features or the label.
+    marine.loc[marine["value"] < 0, "value"] = np.nan
     marine["units"] = _column(marine, "Unit", "unknown").fillna("unknown").astype(str).str.strip()
     marine["method"] = _column(marine, "AnalysisMethod", "unknown").fillna("unknown").astype(str).str.strip()
     # Method-aware: PCR (copies) judged against the molecular threshold, not the
@@ -379,7 +386,7 @@ def normalize_bacteria_results(frame: pd.DataFrame, stv_threshold: float) -> pd.
     marine["exceeds_stv"] = compute_exceeds_stv(
         marine["value"], marine["method"], marine["units"], stv_threshold
     )
-    marine["county"] = _column(marine, "CountyName").fillna(_column(marine, "County"))
+    marine["county"] = _column(marine, "CountyName").fillna(_column(marine, "County")).map(correct_county)
     marine["station_name"] = _column(marine, "Station_Name").map(correct_place_spelling)
     marine["beach_name"] = _column(marine, "Beach_Name").map(correct_place_spelling)
     marine["usepa_id"] = _column(marine, "USEPAID").map(_clean_text)
@@ -446,8 +453,8 @@ def normalize_advisories(frame: pd.DataFrame) -> pd.DataFrame:
     marine["status"] = marine["ended_at"].isna().map(lambda active: "active" if active else "historical")
     marine["advisory_type"] = _column(marine, "AdvisoryType", "Unknown").fillna("Unknown")
     marine["cause"] = _column(marine, "AdvisoryCause", "Unknown").fillna("Unknown")
-    marine["county"] = _column(marine, "CountyName").fillna(_column(marine, "County"))
-    
+    marine["county"] = _column(marine, "CountyName").fillna(_column(marine, "County")).map(correct_county)
+
     # Extract website if present, otherwise fall back to per-county mapping,
     # then to a state-level resource so we never serve a "no link" advisory.
     marine["advisory_website"] = _column(marine, "AdvisoryWebsite", "Unknown").fillna("Unknown")

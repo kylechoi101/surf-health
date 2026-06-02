@@ -52,7 +52,7 @@ def make_baselines(frame: pd.DataFrame) -> BaselineBundle:
             (
                 "model",
                 LogisticRegression(
-                    class_weight={0: 1.0, 1: 3.0},
+                    class_weight="balanced",
                     max_iter=2000,
                     solver="lbfgs",
                 ),
@@ -64,7 +64,7 @@ def make_baselines(frame: pd.DataFrame) -> BaselineBundle:
         learning_rate=0.05,
         max_depth=6,
         max_iter=300,
-        class_weight={0: 1.0, 1: 3.0},
+        class_weight="balanced",
         random_state=42,
     )
     tree_regressor = HistGradientBoostingRegressor(

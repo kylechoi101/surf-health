@@ -23,6 +23,7 @@ from torch.utils.data import DataLoader, Subset
 
 from app.core.config import get_settings
 from app.data.pipeline.features import (
+    MARINE_MICROBIOLOGY_NUMERIC_COLUMNS,
     STORMWATER_EXPERT_NUMERIC_COLUMNS,
     SlidingWindowDataset,
     build_inference_features,
@@ -300,6 +301,10 @@ def _load_fixture_training_frame() -> pd.DataFrame:
 def _load_curated_training_frame(curated_dir: Path) -> pd.DataFrame:
     beach_day = pd.read_parquet(curated_dir / "beach_day.parquet")
     frame = beach_day.copy()
+    # Exclude one-time-incident / unsupported stations: their sampling history
+    # is too short to model and they'd inject noise (see station_quality).
+    if "support_status" in frame.columns:
+        frame = frame[frame["support_status"].astype(str) != "unsupported"].copy()
     frame["sample_time"] = pd.to_datetime(frame["sample_time"], errors="coerce")
     frame["sample_date"] = pd.to_datetime(frame["sample_date"], errors="coerce")
     frame["enterococcus_value"] = pd.to_numeric(frame["enterococcus_value"], errors="coerce")
@@ -340,6 +345,7 @@ def _load_curated_training_frame(curated_dir: Path) -> pd.DataFrame:
         "distance_to_gage_km",
         "watershed_area_km2",
         *STORMWATER_EXPERT_NUMERIC_COLUMNS,
+        *MARINE_MICROBIOLOGY_NUMERIC_COLUMNS,
     ):
         if column not in frame.columns:
             frame[column] = np.nan
@@ -385,6 +391,7 @@ def _load_curated_training_frame(curated_dir: Path) -> pd.DataFrame:
             "distance_to_gage_km",
             "watershed_area_km2",
             *STORMWATER_EXPERT_NUMERIC_COLUMNS,
+            *MARINE_MICROBIOLOGY_NUMERIC_COLUMNS,
         ]
     ].dropna(subset=["sample_time", "enterococcus_value"])
     return _filter_plausible_training_rows(filtered)
@@ -3021,13 +3028,18 @@ def _run_winner_only(
     # qualified winner selection has alternatives to swap in if the current
     # winner fails the slope/AUCPR/Brier gates. Same trained classifier under
     # the hood; the variants differ only in post-processing.
-    if spatial_strategy == "shortlist" and winner.startswith("hist_gbm"):
-        backtest_models = [
+    if spatial_strategy == "shortlist":
+        # Always backtest the full hist_gbm family (plus the temporal winner) so
+        # the spatially-qualified selection has robust alternatives to swap in —
+        # even when the temporal winner is a non-hist_gbm model (e.g. logistic)
+        # that overfits the temporal split but fails spatial generalization.
+        backtest_models = list(dict.fromkeys([
+            winner,
             "hist_gbm",
             "hist_gbm_positive_persistence_guard",
             "hist_gbm_persistence_blend",
             "hist_gbm_no_bacteria_weather_delta",
-        ]
+        ]))
     else:
         backtest_models = [winner]
 
@@ -3065,7 +3077,7 @@ def _run_winner_only(
     # Swap winner if the registry's choice fails spatial gates and an
     # alternative passes. Same classifier + calibrator under the hood for
     # hist_gbm variants, so we don't need to retrain.
-    if spatial_backtests and winner.startswith("hist_gbm"):
+    if spatial_backtests:
         new_winner = _spatially_qualified_production_winner(
             metrics,
             preferred=winner,
@@ -3125,7 +3137,7 @@ def train_curated_and_export(
     model_type: str = "tcn",
     spatial_strategy: str = "shortlist",
     winner_only: bool = False,
-    training_window_days: int = 60,
+    training_window_days: int = 365,
     min_sample_recency_days: int | None = None,
     active_only_training: bool = False,
 ) -> TrainingArtifacts:
@@ -3443,7 +3455,7 @@ def train_all(
     model_type: str = "tcn",
     spatial_strategy: str = "shortlist",
     winner_only: bool = False,
-    training_window_days: int = 60,
+    training_window_days: int = 365,
     min_sample_recency_days: int | None = None,
     active_only_training: bool = False,
 ) -> TrainingArtifacts:
@@ -3502,7 +3514,7 @@ def main() -> None:
     parser.add_argument("--winner-only", action="store_true",
                         help="Retrain only the persisted backtest winner (reads production_model.json). "
                              "Falls back to full comparison if no registry exists.")
-    parser.add_argument("--training-window-days", type=int, default=60,
+    parser.add_argument("--training-window-days", type=int, default=365,
                         help="Days of recent beach_day rows to train on. Default 60. "
                              "Set higher (e.g. 365) once marine-micro coverage is uniform.")
     parser.add_argument("--forecast-min-recency-days", type=int, default=None,
