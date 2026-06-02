@@ -50,8 +50,15 @@ jobs:
           # (that belongs to the daily pipeline; avoids churn/conflicts).
           git add -f data/curated/closures.json
           if git diff --cached --quiet; then
-            echo "no closure changes"
-          else
-            git commit -m "chore(closures): hourly feed refresh [skip ci]"
-            git push
+            echo "no closure changes"; exit 0
           fi
+          git commit -m "chore(closures): hourly feed refresh [skip ci]"
+          # Rebase + retry: the daily/scraper bots push concurrently, so the
+          # first push can be rejected (non-fast-forward). closures.json is the
+          # only change here, so the rebase is conflict-free.
+          for attempt in 1 2 3 4 5; do
+            if git push; then echo "pushed (attempt $attempt)"; exit 0; fi
+            echo "push rejected, rebasing (attempt $attempt)"
+            git pull --rebase --autostash origin main || true
+          done
+          echo "::error::could not push closures feed after retries"; exit 1
