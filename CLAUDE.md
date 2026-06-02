@@ -51,6 +51,34 @@ into beach_day: `shore_normal_wind_ms`, `solar_inactivation_index`, `cloud_cover
 
 Cache persists per (lat_0.1°, lon_0.1°, date_range) parquet in `data/raw/cnrfc/openmeteo_solar_wind/`.
 
+`--with-surf` fetches the Open-Meteo **Marine** forecast (waves + primary/secondary swell
+trains: height/period/direction) for surf-spot beaches and writes `surf_now.parquet`
+(current conditions, one row/spot) + `surf_daily_forecast.parquet` (per-spot, per-day range +
+dominant swell). Surf spots come from the curated `surf_spot_aliases.csv` matched onto beaches
+via `surf_spots.apply_surf_aliases()`, which also adds `surf_name` / `is_surf_spot` /
+`surf_latitude` / `surf_longitude` to `beaches.parquet` (display-only; official `name`/coords
+untouched). Marine cache: `data/raw/cnrfc/openmeteo_marine/`, keyed by (coord, issue_date).
+Aggregation lives in `pipeline/surf_conditions.py`. Note: surf heights are honest offshore
+significant wave heights in feet — translating to breaking-wave *face* height per spot needs
+per-spot swell-window modeling (deferred fast-follow).
+
+### Data-quality corrections (applied in normalization, 2026-06-01)
+
+- **PCR exceedance threshold** (`pipeline/exceedance.py`): San Diego ddPCR/MCB-ddPCR samples
+  report enterococcus in **copies/100mL** and must be judged against **1413 copies**, NOT the
+  104 culture STV. `is_pcr_measurement` (method contains "pcr" OR units contain "copies") +
+  `compute_exceeds_stv` are wired into both beachwatch + ceden normalizers. The flat 104 had
+  false-flagged ~98% of PCR samples.
+- **County corrections** (`pipeline/county_corrections.py`): jurisdiction-as-county fixes
+  (`"Long Beach City"` → `"Los Angeles"`). Note `region` is the regulatory **Regional Water
+  Board** (San Diego board covers south Orange County) — NOT the county; the apps label by
+  county only.
+- **Place-name spelling** (`pipeline/spelling.py`): Tijana→Tijuana, Oceanisde→Oceanside,
+  storn→storm, oultet→outlet (display name/beach_name/station_name; `beach_id` keys untouched).
+- **One-time-station cap** (`pipeline/station_quality.py`): `support_status_for` marks stations
+  whose sampling history spans **<90 days** as `unsupported` (one-time incidents, out of training).
+- **Negative enterococcus values** (−1000 sentinels) are dropped → NaN in normalization.
+
 ## ML training
 
 ```
@@ -63,17 +91,34 @@ python -m app.ml.training --curated --spatial-backtests \
 1. **Temporal split** (`_blocked_indices`, line 1514): unique sample dates split 70% train / 15% valid / 15% test. Single split, no folds. Produces `temporal_validation_metrics` and `production_metrics`.
 2. **Spatial county holdouts** (`_spatial_backtest_metrics`, line 1183): leave-one-county-out — train on N-1 counties, test on the held-out county, rotate. Capped by `--spatial-county-limit` (CI default 12, rigorous local 30). Produces `spatial_county_<model>` metrics.
 3. **Spatial beach holdouts**: same pattern at the individual-beach level. Capped by `--spatial-beach-limit` (CI default 50, rigorous local 500). Produces `spatial_beach_<model>` metrics.
-4. **Promotion gate** (`_spatially_qualified_production_winner`, line 1815): the persisted hist_gbm winner can be swapped to a variant if it fails spatial gates AND a sibling passes. Both spatial holdout sets must produce non-NaN Brier scores. Result reflected in `public_release_eligible` + `promotion_blockers`.
+4. **Promotion gate** (`_spatially_qualified_production_winner`): the temporal winner is vetoed
+   when it fails the spatial gates (held-out county/beach AUCPR + Brier must beat persistence,
+   spatial calibration slope ≥ 0.4) and a sibling passes. **Fixed 2026-06-01**: the gate now runs
+   for ANY temporal winner (the prior `winner.startswith("hist_gbm")` guard let an overfit
+   non-hist_gbm winner like logistic bypass the spatial veto), and shortlist mode always backtests
+   the full hist_gbm family so a robust alternative is available to swap in.
 
-**Doc/code drift** (deferred future work): the previously-claimed "county GroupKFold 3×3 seeds + 1000-bootstrap 10th-percentile gate" is *not* in the code. Either implement it (real work) or remove the claim. The current temporal-+spatial-holdout stack is what runs and what gates promotion.
+**2026-06-01 model rebuild** (`app/ml/training.py`, `app/ml/models.py`):
+- **Training window 60 → 365 days** — the 60-day default starved the fit (~1.8k rows / ~9 unique
+  dates → degenerate temporal split). 365d ≈ 24k rows.
+- **Marine-microbiology features wired into the loader allowlist** — the 11 columns
+  (`solar_inactivation_index`, `uv_index_24h_max`, `wind_speed_24h_max`, pier/estuary proximity…)
+  were computed into `beach_day` but dropped by `_load_curated_training_frame`'s column list, so
+  they re-entered as all-NaN→0. Now selected. (Also fixes the dead `uv_index`/`wind_speed_mps`
+  name mismatch by adding the real `*_24h_max` columns.)
+- **Class weight** `{0:1, 1:3}` → `"balanced"` (true base rate ~10%).
+- Risk bands (`calibration.py`): Low <0.20, Moderate 0.20–0.30, High 0.30–0.70, Very High ≥0.70
+  (High = ~3× the average beach's ~10% base rate). Pre-rebuild the calibrated probabilities were
+  squashed (<0.06) so upper bands never fired; post-rebuild the spread is being re-established.
 
-Current baseline AUCPR ≈ 0.37 production held-out (hist-gbm-curated-v0). Per-spatial-beach AUCPR ≈ 0.85 in the rigorous 500-fold backtest; sequence-model LSTM hits 0.76 county-level (best of the candidates), worth promoting to a research_winner candidate.
+Baseline AUCPR is being re-established by the rebuild (the prior "≈0.37 / 0.85 / 0.76" figures
+predate the corrected labels + feature fixes and should not be cited until the rebuild lands).
 
 ## Key design decisions
 
-- **Feature space**: 50+ existing features have absorbed cross-county-generalizable signal from
-  standard meteorology. Remaining headroom comes from marine-microbiology features (UV inactivation,
-  wind plume transport, point-source proximity) and per-station models.
+- **Feature space**: 50+ features plus the 11 marine-microbiology features (UV inactivation,
+  wind plume transport, point-source proximity) — now actually fed to the model (2026-06-01 fix;
+  they were previously computed-but-dropped). Remaining headroom: per-station models.
 - **Forecast-safe cutoff**: 5 AM PT daily summaries; nothing leaks same-morning sample data.
 - **Shore azimuth**: SVD over 5 nearest-neighbor beaches for coastline tangent; disambiguated
   by vector toward CA inland centroid (37°N, 120.5°W).
