@@ -94,6 +94,14 @@ def main() -> int:
     bd["sample_date"] = pd.to_datetime(bd["sample_date"])
     print(f"[cohort] base beach_day {len(bd)} rows / {bd['beach_id'].nunique()} beaches")
 
+    # Clamp the Open-Meteo archive fetches to the data range AND to the past —
+    # ERA5 (precip/solar) and the marine archive 400 on future end-dates.
+    import datetime as _dt
+    data_min, data_max = bd["sample_date"].min().date(), bd["sample_date"].max().date()
+    fetch_start = max(start_d, data_min)
+    fetch_end = min(end_d, data_max, _dt.date.today() - _dt.timedelta(days=2))
+    print(f"[cohort] archive fetch window clamped to {fetch_start} -> {fetch_end}")
+
     # 2) hydrology (USGS + Open-Meteo precip)
     links = build_hydrologic_beach_links(stations)
     gage_cov = links["nearest_stream_gage_id"].notna().mean() if not links.empty else 0.0
@@ -103,7 +111,7 @@ def main() -> int:
     pr = pd.DataFrame()
     if not links.empty and {"pour_point_latitude", "pour_point_longitude"}.issubset(links.columns):
         locs = list(zip(*[links[c].dropna() for c in ("pour_point_latitude", "pour_point_longitude")], strict=False))
-        raw_pr = asyncio.run(OpenMeteoHistoricalPrecipConnector().fetch_historical_precip(locs, start_d, end_d, cache_dir=cache / "openmeteo"))
+        raw_pr = asyncio.run(OpenMeteoHistoricalPrecipConnector().fetch_historical_precip(locs, fetch_start, fetch_end, cache_dir=cache / "openmeteo"))
         pr = aggregate_precip_windows(raw_pr)
     beach_hydro = build_beach_hydrology_daily(links, sf, pr)
     if not beach_hydro.empty:
@@ -115,7 +123,7 @@ def main() -> int:
     shore_az = compute_beach_shore_azimuth(stations)
     coastal = compute_beach_coastal_features(stations)
     locs = list({(round(float(r["latitude"]), 1), round(float(r["longitude"]), 1)) for _, r in stations.iterrows() if pd.notna(r.get("latitude"))})
-    raw_sw = asyncio.run(OpenMeteoHistoricalSolarWindConnector().fetch_historical_solar_wind(locs, start_d, end_d, cache_dir=cache / "openmeteo_solar_wind"))
+    raw_sw = asyncio.run(OpenMeteoHistoricalSolarWindConnector().fetch_historical_solar_wind(locs, fetch_start, fetch_end, cache_dir=cache / "openmeteo_solar_wind"))
     sw_daily = aggregate_solar_wind_windows(raw_sw)
     if not sw_daily.empty:
         sw_daily["sample_date"] = pd.to_datetime(sw_daily["sample_date"])
@@ -127,7 +135,7 @@ def main() -> int:
             print(f"[cohort] marine-micro joined {len(mm)} rows")
 
     # 4) historical ocean (wave/period/SST) -> CDIP replacement
-    raw_oc = asyncio.run(OpenMeteoMarineHistoricalConnector().fetch_marine_history(locs, start_d, end_d, cache_dir=cache / "openmeteo_marine_hist"))
+    raw_oc = asyncio.run(OpenMeteoMarineHistoricalConnector().fetch_marine_history(locs, fetch_start, fetch_end, cache_dir=cache / "openmeteo_marine_hist"))
     oc_daily = aggregate_marine_history_daily(raw_oc)
     if not oc_daily.empty:
         oc_daily["sample_date"] = pd.to_datetime(oc_daily["sample_date"])
