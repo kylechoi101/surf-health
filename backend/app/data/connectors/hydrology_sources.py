@@ -562,6 +562,79 @@ class OpenMeteoMarineForecastConnector:
         return pd.concat(frames, ignore_index=True)
 
 
+class OpenMeteoMarineHistoricalConnector:
+    """Historical hourly ocean conditions (wave height/period + sea-surface
+    temperature) from the Open-Meteo Marine archive — the non-CA replacement for
+    CDIP (which is California-only). Used to give out-of-state cohorts the ocean
+    features for the compare-and-contrast. Cached per (0.1deg coord, date range).
+    """
+
+    BASE_URL: str = "https://marine-api.open-meteo.com/v1/marine"
+    concurrency: int = 5
+    HOURLY_VARS: tuple[str, ...] = ("wave_height", "wave_period", "sea_surface_temperature")
+
+    async def _fetch_coord(self, client, lat, lon, start: date, end: date, cache_dir: Path) -> pd.DataFrame:
+        lat_r, lon_r = round(lat, 1), round(lon, 1)
+        cache_file = cache_dir / f"openmeteo_marine_hist_{lat_r}_{lon_r}_{start.isoformat()}_{end.isoformat()}.parquet"
+        if cache_file.exists():
+            return pd.read_parquet(cache_file)
+        params = {
+            "latitude": lat_r, "longitude": lon_r,
+            "start_date": start.isoformat(), "end_date": end.isoformat(),
+            "hourly": ",".join(self.HOURLY_VARS), "timezone": "UTC", "length_unit": "metric",
+        }
+        try:
+            r = await client.get(self.BASE_URL, params=params, timeout=60.0)
+            r.raise_for_status()
+            hourly = r.json().get("hourly", {})
+        except Exception as exc:
+            logger.error("Open-Meteo marine-history fetch failed (%.1f, %.1f): %s", lat_r, lon_r, exc)
+            return pd.DataFrame()
+        times = hourly.get("time", [])
+        if not times:
+            return pd.DataFrame()
+        df = pd.DataFrame({"station_id": f"{lat_r}_{lon_r}", "time_utc": pd.to_datetime(times, utc=True),
+                           "latitude": lat_r, "longitude": lon_r})
+        for var in self.HOURLY_VARS:
+            vals = hourly.get(var, [])
+            df[var] = [float(v) if v is not None else np.nan for v in vals]
+        df.to_parquet(cache_file, index=False)
+        return df
+
+    async def fetch_marine_history(self, locations, start: date, end: date, cache_dir: Path) -> pd.DataFrame:
+        if not locations:
+            return pd.DataFrame()
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        coords = list({(round(lat, 1), round(lon, 1)) for lat, lon in locations})
+        sem = asyncio.Semaphore(self.concurrency)
+
+        async def _b(client, lat, lon):
+            async with sem:
+                return await self._fetch_coord(client, lat, lon, start, end, cache_dir)
+
+        async with httpx.AsyncClient() as client:
+            results = await asyncio.gather(*[_b(client, la, lo) for la, lo in coords], return_exceptions=True)
+        frames = [r for r in results if isinstance(r, pd.DataFrame) and not r.empty]
+        return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+def aggregate_marine_history_daily(raw: pd.DataFrame) -> pd.DataFrame:
+    """Hourly Open-Meteo marine-history -> per (coord, UTC date) ocean features
+    matching beach_day's CDIP-sourced columns."""
+    if raw.empty:
+        return pd.DataFrame(columns=["station_id", "latitude", "longitude", "sample_date", "wave_height_m", "dominant_period_s", "water_temperature_c"])
+    df = raw.copy()
+    df["sample_date"] = pd.to_datetime(df["time_utc"], utc=True).dt.date
+    agg = df.groupby(["station_id", "sample_date"]).agg(
+        latitude=("latitude", "first"),
+        longitude=("longitude", "first"),
+        wave_height_m=("wave_height", "mean"),
+        dominant_period_s=("wave_period", "mean"),
+        water_temperature_c=("sea_surface_temperature", "mean"),
+    ).reset_index()
+    return agg
+
+
 @dataclass
 class CnrfcQpfConnector:
     """Stub for CNRFC QPF (gridded forecast precipitation). Deferred to Phase 2."""
