@@ -14,6 +14,15 @@ on:
       - '.github/workflows/daily-forecast.yml'
       - 'backend/app/**'
   workflow_dispatch:
+    inputs:
+      full_comparison:
+        description: >-
+          Run the FULL model comparison (re-select the production winner across
+          all candidates) instead of the fast winner-only retrain. Use this once
+          to promote a newly-added model (e.g. xgb_undersample_ensemble); daily
+          runs stay winner-only.
+        type: boolean
+        default: false
 
 jobs:
   refresh:
@@ -124,7 +133,15 @@ jobs:
       - name: Run ML training + forecasts
         run: |
           FORECAST_DATE=$(TZ=America/Los_Angeles date +%Y-%m-%d)
-          python -m app.ml.training --curated --forecast-date "$FORECAST_DATE" --winner-only --spatial-backtests --spatial-strategy shortlist --spatial-beach-limit 50 --spatial-county-limit 12 --training-window-days 365 --forecast-min-recency-days 45
+          # winner-only is the fast daily path (retrain the registry winner).
+          # A manual full_comparison=true run re-selects the winner across all
+          # candidates — used to promote a newly-added model into the registry.
+          WINNER_FLAG="--winner-only"
+          if [ "${{ github.event.inputs.full_comparison }}" = "true" ]; then
+            WINNER_FLAG=""
+            echo "::notice::Running FULL model comparison (winner re-selection)"
+          fi
+          python -m app.ml.training --curated --forecast-date "$FORECAST_DATE" $WINNER_FLAG --spatial-backtests --spatial-strategy shortlist --spatial-beach-limit 50 --spatial-county-limit 12 --training-window-days 365 --forecast-min-recency-days 45
         working-directory: backend
 
       - name: Forecast-time weather pull (100% wind/UV coverage)
