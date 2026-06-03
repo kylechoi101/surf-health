@@ -2,9 +2,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
+import sys
+
+# macOS only: torch + xgboost each bundle libomp; their OpenMP pools deadlock
+# during torch training. Pin to one thread to break it (set before libomp loads).
+# Not set on Linux/CI → full multithreaded performance.
+if sys.platform == "darwin":
+    os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 import numpy as np
 import pandas as pd
+# Import xgboost before torch: both ship a libomp, and on macOS loading torch's
+# first then xgboost's segfaults (duplicate OpenMP runtime). Forcing xgboost's
+# OpenMP to initialize first avoids it; harmless on Linux CI.
+import xgboost  # noqa: F401
 import torch
 os.environ.setdefault("LOKY_MAX_CPU_COUNT", str(os.cpu_count() or 8))
 from sklearn.compose import ColumnTransformer
@@ -80,6 +91,98 @@ def make_baselines(frame: pd.DataFrame) -> BaselineBundle:
         tree_classifier=tree_classifier,
         tree_regressor=tree_regressor,
     )
+
+
+class XGBUndersampleEnsemble:
+    """XGBoost balanced-undersample soft-ensemble (an EasyEnsemble variant).
+
+    Keeps every positive and draws ``n_estimators_ensemble`` equal-size random
+    undersamples of the majority class (``negative_ratio`` negatives per
+    positive), fits one XGBoost per subsample, and soft-averages the per-class
+    probabilities. Spatial leave-one-CA-county-out validation selected this over
+    the incumbent single balanced GBM (+0.069 AUCPR / better Brier on held-out
+    counties). sklearn-compatible fit/predict_proba so the existing isotonic
+    calibration + spatial-gate machinery wrap it unchanged.
+    """
+
+    def __init__(
+        self,
+        *,
+        n_estimators_ensemble: int = 12,
+        negative_ratio: float = 2.0,
+        n_estimators: int = 250,
+        max_depth: int = 6,
+        learning_rate: float = 0.05,
+        subsample: float = 0.8,
+        colsample_bytree: float = 0.8,
+        random_state: int = 42,
+        n_jobs: int = 12,
+    ) -> None:
+        self.n_estimators_ensemble = n_estimators_ensemble
+        self.negative_ratio = negative_ratio
+        self.n_estimators = n_estimators
+        self.max_depth = max_depth
+        self.learning_rate = learning_rate
+        self.subsample = subsample
+        self.colsample_bytree = colsample_bytree
+        self.random_state = random_state
+        self.n_jobs = n_jobs
+        self.members_: list = []
+        self.classes_ = np.array([0, 1])
+
+    def _numeric(self, X: pd.DataFrame) -> pd.DataFrame:
+        frame = X if isinstance(X, pd.DataFrame) else pd.DataFrame(X)
+        return frame.select_dtypes(include=["number"]).fillna(0.0)
+
+    def fit(self, X: pd.DataFrame, y) -> "XGBUndersampleEnsemble":
+        from xgboost import XGBClassifier
+
+        features = self._numeric(X).reset_index(drop=True)
+        self.feature_names_ = list(features.columns)
+        labels = np.asarray(y).astype(int)
+        pos = np.flatnonzero(labels == 1)
+        neg = np.flatnonzero(labels == 0)
+        rng = np.random.default_rng(self.random_state)
+        self.members_ = []
+        # Degenerate single-class input: fall back to one plain fit so downstream
+        # never crashes (the spatial gate already filters these folds out).
+        if len(pos) < 1 or len(neg) < 1:
+            model = XGBClassifier(
+                n_estimators=self.n_estimators, max_depth=self.max_depth,
+                learning_rate=self.learning_rate, subsample=self.subsample,
+                colsample_bytree=self.colsample_bytree, eval_metric="aucpr",
+                tree_method="hist", random_state=self.random_state,
+                n_jobs=self.n_jobs, verbosity=0,
+            )
+            model.fit(features, labels)
+            self.members_.append(model)
+            return self
+        k = min(int(len(pos) * self.negative_ratio), len(neg))
+        for i in range(self.n_estimators_ensemble):
+            draw = rng.choice(neg, size=k, replace=False)
+            idx = np.concatenate([pos, draw])
+            model = XGBClassifier(
+                n_estimators=self.n_estimators, max_depth=self.max_depth,
+                learning_rate=self.learning_rate, subsample=self.subsample,
+                colsample_bytree=self.colsample_bytree, eval_metric="aucpr",
+                tree_method="hist", random_state=self.random_state + i,
+                n_jobs=self.n_jobs, verbosity=0,
+            )
+            model.fit(features.iloc[idx], labels[idx])
+            self.members_.append(model)
+        return self
+
+    def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
+        if not self.members_:
+            raise RuntimeError("XGBUndersampleEnsemble is not fitted")
+        features = self._numeric(X)
+        if getattr(self, "feature_names_", None):
+            features = features.reindex(columns=self.feature_names_, fill_value=0.0)
+        positive = np.mean([m.predict_proba(features)[:, 1] for m in self.members_], axis=0)
+        return np.column_stack([1.0 - positive, positive])
+
+    def predict(self, X: pd.DataFrame) -> np.ndarray:
+        return (self.predict_proba(X)[:, 1] >= 0.5).astype(int)
 
 
 class TemporalBlock(nn.Module):

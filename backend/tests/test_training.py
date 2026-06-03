@@ -697,6 +697,7 @@ def test_two_stage_training_plan_shortlists_production_and_research_winners():
         "hist_gbm_positive_persistence_guard",
         "hist_gbm_persistence_blend",
         "hist_gbm_no_bacteria_weather_delta",
+        "xgb_undersample_ensemble",
     ]
 
 

@@ -114,11 +114,39 @@ python -m app.ml.training --curated --spatial-backtests \
 Baseline AUCPR is being re-established by the rebuild (the prior "≈0.37 / 0.85 / 0.76" figures
 predate the corrected labels + feature fixes and should not be cited until the rebuild lands).
 
+**2026-06-02 architecture flip — `xgb_undersample_ensemble`** (`app/ml/models.py`,
+`app/ml/training.py`, `scripts/spatial_compare.py`, `scripts/spatial_incumbent.py`):
+Added `XGBUndersampleEnsemble` (EasyEnsemble variant: keep all positives, draw N balanced
+negative undersamples at a 2:1 ratio, fit one XGBoost each, soft-average probabilities). It is
+**always trained** alongside hist_gbm and registered in `PRODUCTION_MODEL_NAMES` + the planner's
+spatial backtest set, so the existing promotion gate can swap it in **on its own
+leave-one-county-out spatial logic** (no hard-override).
+- **Why it won (honest spatial numbers, not temporal):** leave-one-CA-county-out validation,
+  predictions pooled across 12 counties:
+  - ensemble +marine **0.615 AUCPR / 0.100 Brier** vs incumbent single balanced GBM
+    **0.546 / 0.114** (+0.069 AUCPR, better calibration).
+  - **Texas pooling REJECTED** — every CA+TX cell was *worse* than CA-only on held-out counties
+    (Gulf regime doesn't transfer); the temporal split had falsely favored it (0.775). The product
+    stays **CA-only**; the WQP/TX cohort scripts remain offline experiments, not a training input.
+  - **Marine features CONFIRMED spatially** (+0.029 over base, best Brier) — they help *more*
+    spatially than temporally (unseen counties can't lean on memorized base rates).
+  - **0.615 is the real generalization number** — the earlier ~0.76 was temporal-split inflation
+    (same beaches in train+test).
+- **macOS-only fix:** `import xgboost` must precede `import torch` (duplicate-libomp segfault);
+  guarded at the top of both `models.py` and `training.py`. Harmless on Linux CI.
+- MPS/LSTM was compared and **dropped** — it lost on every cohort (CA 0.721, TX 0.235,
+  CA+TX 0.718) AND would need a freeze→CPU-inference→CI path to ship; the XGB ensemble is CPU,
+  fast, and retrains daily in the existing CI with no new infra.
+
 ## Key design decisions
 
 - **Feature space**: 50+ features plus the 11 marine-microbiology features (UV inactivation,
   wind plume transport, point-source proximity) — now actually fed to the model (2026-06-01 fix;
-  they were previously computed-but-dropped). Remaining headroom: per-station models.
+  they were previously computed-but-dropped) and **spatially confirmed** to help (2026-06-02).
+  Remaining headroom: per-station models.
+- **Production classifier**: `xgb_undersample_ensemble` (2026-06-02) — balanced-undersample XGBoost
+  soft-ensemble, promoted by the spatial gate over hist_gbm. CA-only; cross-region (TX) pooling was
+  tested and rejected on held-out counties.
 - **Forecast-safe cutoff**: 5 AM PT daily summaries; nothing leaks same-morning sample data.
 - **Shore azimuth**: SVD over 5 nearest-neighbor beaches for coastline tangent; disambiguated
   by vector toward CA inland centroid (37°N, 120.5°W).

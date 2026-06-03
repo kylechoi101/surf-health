@@ -3,12 +3,22 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
 
+# macOS only: torch and xgboost each bundle their own libomp. Loading both in one
+# process makes their OpenMP thread pools deadlock during torch training (hang at
+# 0% CPU). Pinning OpenMP to a single thread breaks the deadlock. Set before any
+# libomp-loading import. Not set on Linux/CI → full multithreaded performance.
+if sys.platform == "darwin":
+    os.environ.setdefault("OMP_NUM_THREADS", "1")
+
 import numpy as np
 import pandas as pd
+# Import xgboost before torch (duplicate-libomp segfault on macOS; see models.py).
+import xgboost  # noqa: F401
 import torch
 from sklearn.cluster import KMeans
 from sklearn.impute import SimpleImputer
@@ -43,7 +53,8 @@ from app.ml.models import (
     BeachTCN, 
     BeachLSTM, 
     BeachTransformer, 
-    BeachPINN_MultiTask, 
+    BeachPINN_MultiTask,
+    XGBUndersampleEnsemble,
     make_baselines
 )
 from app.ml.stale_evaluation import (
@@ -68,6 +79,7 @@ PRODUCTION_MODEL_NAMES = (
     "logistic_hierarchical",
     "hist_gbm",
     "hist_gbm_positive_persistence_guard",
+    "xgb_undersample_ensemble",
     "stacked_ensemble",
 )
 SEQUENCE_MODEL_NAMES = ("tcn", "cnn", "lstm", "transformer", "pinn")
@@ -719,6 +731,8 @@ def _fit_classifier_for_name(features: pd.DataFrame, model_name: str):
         return baselines.logistic
     if model_name == "hist_gbm":
         return baselines.tree_classifier
+    if model_name == "xgb_undersample_ensemble":
+        return XGBUndersampleEnsemble()
     raise ValueError(f"Unsupported classifier model '{model_name}'")
 
 
@@ -1773,6 +1787,10 @@ def _two_stage_training_plan(
         spatial_backtest_models.append("hist_gbm_persistence_blend")
     if "hist_gbm_no_bacteria_weather_delta" not in spatial_backtest_models:
         spatial_backtest_models.append("hist_gbm_no_bacteria_weather_delta")
+    # Spatially-validated challenger: must be backtested so the gate can swap it
+    # in over the temporal winner on held-out counties (+0.069 AUCPR vs hist_gbm).
+    if "xgb_undersample_ensemble" not in spatial_backtest_models:
+        spatial_backtest_models.append("xgb_undersample_ensemble")
     return StageTwoTrainingPlan(
         production_winner=production_winner,
         research_winner=research_winner,
@@ -2909,6 +2927,21 @@ def _run_winner_only(
             )
             metrics["hist_gbm_test_active_only"]["n_total_test"] = float(len(eval_idx))
 
+    # xgb_undersample_ensemble is always trained so the spatial gate can swap it
+    # in as the production winner without retraining. Leave-one-CA-county-out
+    # validation selected it over hist_gbm (+0.069 AUCPR / 0.100 vs 0.114 Brier
+    # on held-out counties); see scripts/spatial_compare.py + spatial_incumbent.py.
+    print("Training XGB undersample ensemble model...", file=sys.stderr, flush=True)
+    ensemble_classifier = XGBUndersampleEnsemble().fit(features.iloc[train_idx], labels[train_idx])
+    ens_cal_raw = ensemble_classifier.predict_proba(features.iloc[cal_idx])[:, 1]
+    ens_metric_raw = ensemble_classifier.predict_proba(features.iloc[val_metric_idx])[:, 1]
+    _, ensemble_calibrator = _identity_or_calibrated(ens_cal_raw, labels[cal_idx], cal_metadata)
+    _record_valid_metrics("xgb_undersample_ensemble", ens_metric_raw, ensemble_calibrator)
+    ens_eval = ensemble_classifier.predict_proba(features.iloc[eval_idx])[:, 1]
+    if len(test_idx):
+        ens_eval = _apply_calibrator(ensemble_calibrator, ens_eval, eval_metadata)
+    metrics["xgb_undersample_ensemble"] = classification_metrics(labels[eval_idx], ens_eval)
+
     logistic = logistic_calibrator = None
     coastal_cell_logistic = hierarchical_logistic = None
     ensemble_weights: np.ndarray | None = None
@@ -3008,6 +3041,9 @@ def _run_winner_only(
             _s = _aucs.sum()
             ensemble_weights = _aucs / _s if _s > 0 else np.full(4, 0.25)
 
+    elif winner == "xgb_undersample_ensemble":
+        classifier, calibrator = ensemble_classifier, ensemble_calibrator
+
     else:  # hist_gbm (default)
         classifier, calibrator = tree_classifier, tree_calibrator
 
@@ -3039,6 +3075,9 @@ def _run_winner_only(
             "hist_gbm_positive_persistence_guard",
             "hist_gbm_persistence_blend",
             "hist_gbm_no_bacteria_weather_delta",
+            # The spatially-validated challenger — must be backtested so the gate
+            # can swap it in over the temporal winner on held-out counties.
+            "xgb_undersample_ensemble",
         ]))
     else:
         backtest_models = [winner]
@@ -3089,6 +3128,15 @@ def _run_winner_only(
                 file=sys.stderr, flush=True,
             )
             winner = new_winner
+
+    # Repoint the export classifier/calibrator to the FINAL winner. The export's
+    # generic branch reads models.classifier, so after a spatial swap into (or
+    # out of) the ensemble these must match. hist_gbm variants are special-cased
+    # in export via tree_classifier, so they need no repoint here.
+    if winner == "xgb_undersample_ensemble":
+        classifier, calibrator = ensemble_classifier, ensemble_calibrator
+    elif winner == "hist_gbm":
+        classifier, calibrator = tree_classifier, tree_calibrator
 
     return _export_forecasts(
         curated_dir=curated_dir,
@@ -3271,6 +3319,20 @@ def train_curated_and_export(
         tree_eval = _apply_calibrator(tree_calibrator, tree_eval, eval_metadata)
     metrics["hist_gbm"] = classification_metrics(labels[eval_idx], tree_eval)
 
+    # xgb_undersample_ensemble — always trained so the spatial gate can promote
+    # it as production winner without a retrain. Leave-one-CA-county-out spatial
+    # validation selected it over hist_gbm (+0.069 AUCPR / 0.100 vs 0.114 Brier);
+    # see scripts/spatial_compare.py + scripts/spatial_incumbent.py.
+    print("Training XGB undersample ensemble model...", file=sys.stderr, flush=True)
+    xgb_ens_classifier = XGBUndersampleEnsemble().fit(features.iloc[train_idx], labels[train_idx])
+    xgb_ens_valid_raw = xgb_ens_classifier.predict_proba(features.iloc[valid_idx])[:, 1]
+    metrics["xgb_undersample_ensemble_valid"] = classification_metrics(labels[valid_idx], xgb_ens_valid_raw)
+    _, xgb_ens_calibrator = _identity_or_calibrated(xgb_ens_valid_raw, labels[valid_idx], valid_metadata)
+    xgb_ens_eval = xgb_ens_classifier.predict_proba(features.iloc[eval_idx])[:, 1]
+    if len(test_idx):
+        xgb_ens_eval = _apply_calibrator(xgb_ens_calibrator, xgb_ens_eval, eval_metadata)
+    metrics["xgb_undersample_ensemble"] = classification_metrics(labels[eval_idx], xgb_ens_eval)
+
     # Compute validation + eval metrics for the positive persistence guard so it
     # can participate in production winner selection via _two_stage_training_plan.
     guard_valid = _positive_persistence_guarded_blend_probabilities(
@@ -3392,8 +3454,12 @@ def train_curated_and_export(
             research_winner=plan.research_winner,
             spatial_backtest_models=plan.spatial_backtest_models,
         )
-    classifier = logistic if winner == "logistic" else tree_classifier
-    calibrator = logistic_calibrator if winner == "logistic" else tree_calibrator
+    if winner == "logistic":
+        classifier, calibrator = logistic, logistic_calibrator
+    elif winner == "xgb_undersample_ensemble":
+        classifier, calibrator = xgb_ens_classifier, xgb_ens_calibrator
+    else:
+        classifier, calibrator = tree_classifier, tree_calibrator
     if metrics["elastic_net_valid"]["rmse"] <= metrics["hist_gbm_regressor_valid"]["rmse"]:
         regressor = baselines.linear
         regressor_valid_predictions = linear_valid
