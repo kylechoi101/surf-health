@@ -1,16 +1,16 @@
 {
-  "generated_at": "2026-06-04T19:13:04.417208+00:00",
-  "forecast_date": "2026-06-04",
+  "generated_at": "2026-06-05T19:04:27.511646+00:00",
+  "forecast_date": "2026-06-05",
   "model_version": "xgb-undersample-ensemble-curated-v0",
   "risk_threshold": 0.2,
-  "total_beaches": 218,
-  "active_advisories": 11,
-  "agreement_rate": 0.727,
+  "total_beaches": 210,
+  "active_advisories": 13,
+  "agreement_rate": 0.923,
   "pool_metrics": {
     "acute": {
-      "advised_beaches": 8,
-      "model_flagged": 6,
-      "agreement_rate": 0.75
+      "advised_beaches": 10,
+      "model_flagged": 10,
+      "agreement_rate": 1.0
     },
     "closure": {
       "advised_beaches": 2,
@@ -34,90 +34,82 @@
     }
   },
   "false_negatives": {
-    "count": 3,
+    "count": 1,
     "description": "Active advisory but model says Low/Moderate",
     "by_pool": {
-      "acute": 2,
+      "acute": 0,
       "closure": 0,
       "chronic": 0,
       "stale": 1,
       "unknown_duration": 0
     },
-    "worst_acute": [
-      {
-        "beach_id": "ca436129-marin-drakes-estero-drakes-estero",
-        "risk_band": "Low",
-        "p_exceed": 0.042,
-        "pool": "acute",
-        "advisory_age_days": 0
-      },
-      {
-        "beach_id": "ca938432-marin-chicken-ranch-chicken-ranch-ditch",
-        "risk_band": "Low",
-        "p_exceed": 0.069,
-        "pool": "acute",
-        "advisory_age_days": 0
-      }
-    ],
+    "worst_acute": [],
     "worst_chronic": []
   },
   "false_positives": {
-    "count": 15,
+    "count": 13,
     "description": "Model says High/VeryHigh but no active advisory",
     "worst": [
       {
         "beach_id": "ca104746-san-diego-tijuana-slough-national-wildlife-refuge-ib-030",
         "risk_band": "Very High",
-        "p_exceed": 0.778,
+        "p_exceed": 0.855,
         "pool": "none",
         "advisory_age_days": null
       },
       {
         "beach_id": "ca104746-san-diego-tijuana-slough-national-wildlife-refuge-ib-040",
         "risk_band": "High",
-        "p_exceed": 0.577,
+        "p_exceed": 0.644,
         "pool": "none",
         "advisory_age_days": null
       },
       {
         "beach_id": "ca809706-san-diego-border-field-state-park-ib-020",
         "risk_band": "High",
-        "p_exceed": 0.503,
+        "p_exceed": 0.542,
         "pool": "none",
         "advisory_age_days": null
       },
       {
         "beach_id": "ca562372-san-mateo-venice-state-beach-pilarcitos-creek",
         "risk_band": "High",
-        "p_exceed": 0.481,
+        "p_exceed": 0.52,
         "pool": "none",
         "advisory_age_days": null
       },
       {
         "beach_id": "ca323807-san-mateo-montara-state-beach-san-vicente-creek",
         "risk_band": "High",
-        "p_exceed": 0.445,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
-        "beach_id": "ca447069-san-mateo-pacifica-state-beach-linda-mar-beach-7",
-        "risk_band": "High",
-        "p_exceed": 0.338,
+        "p_exceed": 0.448,
         "pool": "none",
         "advisory_age_days": null
       },
       {
         "beach_id": "ca839312-san-diego-baja-california-mexico-bc-030",
         "risk_band": "High",
-        "p_exceed": 0.335,
+        "p_exceed": 0.35,
+        "pool": "none",
+        "advisory_age_days": null
+      },
+      {
+        "beach_id": "ca534500-san-mateo-gazos-creek-access-gazos-creek-access",
+        "risk_band": "High",
+        "p_exceed": 0.313,
         "pool": "none",
         "advisory_age_days": null
       },
       {
         "beach_id": "ca517375-san-mateo-fitzgerald-marine-moss-beach-fitzgerald-marine-moss-beach",
         "risk_band": "High",
-        "p_exceed": 0.302,
+        "p_exceed": 0.31,
+        "pool": "none",
+        "advisory_age_days": null
+      },
+      {
+        "beach_id": "ca447069-san-mateo-pacifica-state-beach-linda-mar-beach-7",
+        "risk_band": "High",
+        "p_exceed": 0.303,
         "pool": "none",
         "advisory_age_days": null
       },
@@ -129,44 +121,23 @@
         "advisory_age_days": null
       },
       {
-        "beach_id": "ca292952-marin-china-camp-china-camp",
-        "risk_band": "High",
-        "p_exceed": 0.3,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
-        "beach_id": "ca389133-marin-dillon-beach-dillon",
-        "risk_band": "High",
-        "p_exceed": 0.3,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
-        "beach_id": "ca534500-san-mateo-gazos-creek-access-gazos-creek-access",
-        "risk_band": "Moderate",
-        "p_exceed": 0.295,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
         "beach_id": "ca809706-san-diego-border-field-state-park-ib-010",
         "risk_band": "Moderate",
-        "p_exceed": 0.288,
+        "p_exceed": 0.279,
         "pool": "none",
         "advisory_age_days": null
       },
       {
-        "beach_id": "ca465304-san-luis-obispo-olde-port-beach-olde12",
+        "beach_id": "ca880471-santa-cruz-capitola-city-beach-o240",
         "risk_band": "Moderate",
-        "p_exceed": 0.283,
+        "p_exceed": 0.226,
         "pool": "none",
         "advisory_age_days": null
       },
       {
         "beach_id": "ca432205-san-mateo-san-gregorio-state-beach-san-gregorio-state-beach",
         "risk_band": "Moderate",
-        "p_exceed": 0.216,
+        "p_exceed": 0.204,
         "pool": "none",
         "advisory_age_days": null
       }
