@@ -1,5 +1,7 @@
 {
-  "model_version": "hist-gbm-curated-v0",
-  "promoted_at": "2026-04-30T16:04:49Z",
-  "ship_target": "v1.7-calibrated-stormwater"
+  "model_version": "xgb-undersample-ensemble-curated-v0",
+  "promoted_at": "2026-06-08T17:30:00Z",
+  "ship_target": "v1.8-spatial-ensemble-1095d",
+  "training_window_days": 1095,
+  "promotion_basis": "leave-one-county-out AUCPR 0.590 vs hist_gbm 0.478 (persistence 0.404); beach 0.900 vs 0.894; calib slopes county 1.26 / beach 1.16"
 }

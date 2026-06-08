@@ -528,14 +528,35 @@ def main() -> None:
                     coords_df["pour_point_longitude"].tolist(),
                 ))
                 _pr_path = Path(settings.curated_dir) / "precip_daily.parquet"
+                # The cached precip_daily is only safe to fetch incrementally (last
+                # 7 days) when it already carries the *derived* columns. When a new
+                # derived column is added (e.g. first_rain_score / precip_*_prior),
+                # the historical cached rows lack it and an incremental fetch leaves
+                # them NaN forever — the feature reads ~0% covered. Detect that and
+                # force a full re-aggregation from the on-disk raw cache (cheap: the
+                # Open-Meteo increments are already cached per coord), which self-heals
+                # the column for all history. See data-quality note 2026-06-08.
+                _PRECIP_DERIVED_COLS = (
+                    "precip_mm_96h", "precip_mm_192h",
+                    "precip_72h_prior", "precip_168h_prior", "first_rain_score",
+                )
+                _pr_cache_healthy = False
                 if not args.start_date and _pr_path.exists():
                     _existing_pr = pd.read_parquet(_pr_path)
+                    _pr_cache_healthy = all(
+                        c in _existing_pr.columns and _existing_pr[c].notna().mean() > 0.5
+                        for c in _PRECIP_DERIVED_COLS
+                    )
+                if not args.start_date and _pr_path.exists() and _pr_cache_healthy:
                     _pr_max = pd.to_datetime(_existing_pr["sample_date"]).max().date() if "sample_date" in _existing_pr.columns else _full_start_date
                     _pr_fetch_start = max(_full_start_date, (pd.Timestamp(_pr_max) - pd.Timedelta(days=7)).date())
                     print(f"[hydrology] precip incremental fetch {_pr_fetch_start} → {end_date}")
                 else:
                     _pr_fetch_start = _date.fromisoformat(args.start_date) if args.start_date else _full_start_date
-                    print(f"[hydrology] precip full fetch {_pr_fetch_start} → {end_date}")
+                    if _pr_path.exists() and not _pr_cache_healthy:
+                        print(f"[hydrology] precip cache missing derived cols → FULL re-aggregation {_pr_fetch_start} → {end_date}")
+                    else:
+                        print(f"[hydrology] precip full fetch {_pr_fetch_start} → {end_date}")
                 raw_precip = asyncio.run(
                     OpenMeteoHistoricalPrecipConnector().fetch_historical_precip(
                         locations,

@@ -100,7 +100,8 @@ python -m app.ml.training --curated --spatial-backtests \
 
 **2026-06-01 model rebuild** (`app/ml/training.py`, `app/ml/models.py`):
 - **Training window 60 → 365 days** — the 60-day default starved the fit (~1.8k rows / ~9 unique
-  dates → degenerate temporal split). 365d ≈ 24k rows.
+  dates → degenerate temporal split). 365d ≈ 24k rows. **(Superseded 2026-06-08: 365d in turn
+  starved the SPATIAL fit; now 1095d ≈ 84k rows — see the 2026-06-08 section below.)**
 - **Marine-microbiology features wired into the loader allowlist** — the 11 columns
   (`solar_inactivation_index`, `uv_index_24h_max`, `wind_speed_24h_max`, pier/estuary proximity…)
   were computed into `beach_day` but dropped by `_load_curated_training_frame`'s column list, so
@@ -138,15 +139,43 @@ leave-one-county-out spatial logic** (no hard-override).
   CA+TX 0.718) AND would need a freeze→CPU-inference→CI path to ship; the XGB ensemble is CPU,
   fast, and retrains daily in the existing CI with no new infra.
 
+**2026-06-08 — training window 365 → 1095d (the real spatial lever)**
+(`.github/workflows/daily-forecast.yml`, `pipeline/cli.py`):
+The 0.615 county AUCPR above was an offline `spatial_compare` number; the in-pipeline gate only
+reproduced 0.509 for the ensemble. Root cause is the **training window, not the model**:
+`spatial_compare` trains each leave-one-county-out fold on full history (~76k rows); the gate's
+`--winner-only` path used only the 365-day window (~24k rows). Isolation test (spatial_compare
+restricted to 365d): +marine 0.612 → 0.567 (−0.045 from the window); the rest of the gap is the
+gate's calibration + inner-validation split.
+- **Window experiment** (gate retrain @ 1095d, 84,805 rows): ensemble held-out **county AUCPR
+  0.507 → 0.590** (Brier 0.118 → 0.107), **beach 0.881 → 0.900**, decisively beating hist_gbm, which
+  does NOT benefit from more data (county 0.500 → 0.478). Ensemble passes every gate (calib slopes
+  county 1.26 / beach 1.16). 1095d captures all feature-rich post-2020 history (precip/marine
+  features only exist from 2020). CI now trains at 1095d.
+- **Gate veto limitation:** `_spatially_qualified_production_winner` keeps a *passing* incumbent
+  even when a sibling is decisively better — it never auto-swaps. The ensemble is set as the
+  registry winner; CI's daily `--winner-only --spatial-backtests` keeps it (preferred=ensemble,
+  passes). TODO: make the gate pick-best among passing models.
+- **first_rain_score cache self-heal** (`pipeline/cli.py`): the incremental `precip_daily.parquet`
+  cache only re-fetched the last 7 days, so derived columns added later (first_rain_score,
+  precip_*_prior, precip_mm_96h/192h) stayed NaN for all history (~0% covered). Now the pipeline
+  detects missing/sparse derived columns and forces a full re-aggregation from the on-disk raw
+  cache. Honest result: a live first_rain_score did NOT help the GLOBAL county metric (rainfall is
+  beach-specific — Searcy et al. 2018; pays off only in per-station models).
+- **Benchmark (Searcy et al. 2018, 10 CA oceanic beaches, operational):** median sensitivity 0.50
+  @ specificity 0.87 for enterococcus. Our temporal-holdout hist_gbm: sens 0.59 @ spec 0.87.
+
 ## Key design decisions
 
 - **Feature space**: 50+ features plus the 11 marine-microbiology features (UV inactivation,
   wind plume transport, point-source proximity) — now actually fed to the model (2026-06-01 fix;
   they were previously computed-but-dropped) and **spatially confirmed** to help (2026-06-02).
   Remaining headroom: per-station models.
-- **Production classifier**: `xgb_undersample_ensemble` (2026-06-02) — balanced-undersample XGBoost
-  soft-ensemble, promoted by the spatial gate over hist_gbm. CA-only; cross-region (TX) pooling was
-  tested and rejected on held-out counties.
+- **Production classifier**: `xgb_undersample_ensemble` — balanced-undersample XGBoost soft-ensemble.
+  Trained on the **1095-day window** (2026-06-08) where it beats hist_gbm on held-out counties
+  (0.590 vs 0.478) and beaches (0.900 vs 0.894). CA-only; cross-region (TX) pooling tested and
+  rejected on held-out counties. Set as registry winner manually because the gate's veto wouldn't
+  swap a passing incumbent.
 - **Forecast-safe cutoff**: 5 AM PT daily summaries; nothing leaks same-morning sample data.
 - **Shore azimuth**: SVD over 5 nearest-neighbor beaches for coastline tangent; disambiguated
   by vector toward CA inland centroid (37°N, 120.5°W).
