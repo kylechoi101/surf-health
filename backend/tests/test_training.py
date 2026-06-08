@@ -948,6 +948,47 @@ def test_spatially_qualified_winner_vetoes_temporal_winner_for_guard_candidate()
     assert winner == "hist_gbm_positive_persistence_guard"
 
 
+def _passing_pair_metrics(incumbent_valid_aucpr: float, challenger_valid_aucpr: float) -> dict:
+    """Both hist_gbm and the ensemble clear every spatial gate (AUCPR + Brier beat
+    persistence on county and beach); they differ only in temporal-valid AUCPR."""
+    return {
+        # production test metrics (required by _promotion_assessment's first gate)
+        "hist_gbm": {"aucpr": 0.62, "brier": 0.10},
+        "xgb_undersample_ensemble": {"aucpr": 0.64, "brier": 0.10},
+        "hist_gbm_valid": {"aucpr": incumbent_valid_aucpr, "brier": 0.12},
+        "xgb_undersample_ensemble_valid": {"aucpr": challenger_valid_aucpr, "brier": 0.11},
+        "spatial_county_persistence": {"aucpr": 0.40, "brier": 0.18},
+        "spatial_beach_persistence": {"aucpr": 0.63, "brier": 0.22},
+        "spatial_county_hist_gbm": {"aucpr": 0.50, "brier": 0.12},
+        "spatial_beach_hist_gbm": {"aucpr": 0.86, "brier": 0.14},
+        "spatial_county_xgb_undersample_ensemble": {"aucpr": 0.59, "brier": 0.11},
+        "spatial_beach_xgb_undersample_ensemble": {"aucpr": 0.90, "brier": 0.13},
+    }
+
+
+def test_spatially_qualified_winner_picks_best_passing_challenger():
+    # Both pass the gate; the challenger's temporal-valid AUCPR beats the incumbent's
+    # by a clear margin (0.75 vs 0.70). Pick-best must swap to it — the old veto would
+    # have kept the (passing) incumbent and never promoted the better model.
+    winner = _spatially_qualified_production_winner(
+        _passing_pair_metrics(0.70, 0.75),
+        preferred="hist_gbm",
+        candidates=("hist_gbm", "xgb_undersample_ensemble"),
+    )
+    assert winner == "xgb_undersample_ensemble"
+
+
+def test_spatially_qualified_winner_keeps_incumbent_within_margin():
+    # Both pass; the challenger is only marginally better (0.005 < swap margin).
+    # Hysteresis keeps the incumbent to avoid churning the production winner on noise.
+    winner = _spatially_qualified_production_winner(
+        _passing_pair_metrics(0.745, 0.750),
+        preferred="hist_gbm",
+        candidates=("hist_gbm", "xgb_undersample_ensemble"),
+    )
+    assert winner == "hist_gbm"
+
+
 def test_spatial_backtest_models_do_not_duplicate_production_guard_candidate():
     assert len(SPATIAL_BACKTEST_MODEL_NAMES) == len(set(SPATIAL_BACKTEST_MODEL_NAMES))
 

@@ -89,6 +89,9 @@ SPATIAL_DIAGNOSTIC_MODEL_NAMES = (
 )
 SPATIAL_BACKTEST_MODEL_NAMES = (*PRODUCTION_MODEL_NAMES, *SPATIAL_DIAGNOSTIC_MODEL_NAMES)
 SPATIAL_BACKTEST_STRATEGIES = ("shortlist", "requested", "quick")
+# Minimum temporal-valid AUCPR gain a challenger must show over the passing
+# incumbent before the gate swaps the production winner (hysteresis vs daily churn).
+_WINNER_SWAP_MARGIN = 0.01
 PERSISTENCE_BLEND_ALPHAS = tuple(float(alpha) for alpha in np.linspace(0.0, 1.0, 11))
 PERSISTENCE_BLEND_MAX_MODEL_ALPHA = 0.6
 WEATHER_DELTA_CAPS = tuple(float(cap) for cap in np.linspace(0.0, 0.3, 7))
@@ -1804,22 +1807,21 @@ def _spatially_qualified_production_winner(
     preferred: str,
     candidates: list[str] | tuple[str, ...] = PRODUCTION_MODEL_NAMES,
 ) -> str:
-    """Veto a temporal winner when spatial promotion gates reject it.
+    """Pick the best spatially-qualified model for production.
 
-    Temporal AUCPR is useful for ranking signal, but serving probabilities must
-    first clear the held-out county and beach persistence gates. Prefer the
-    positive persistence guard as the first conservative fallback because it is
-    designed to fail closed on recent confirmed exceedances.
+    First filter to candidates that clear the held-out county + beach persistence
+    gates (AUCPR + Brier beat persistence, spatial calibration plausible) — serving
+    probabilities must generalize, not just win the temporal split. Among the
+    *passing* set, pick the best by temporal-valid AUCPR (then lower spatial Brier).
+
+    This replaces an earlier veto that returned the incumbent whenever it merely
+    *passed* — which kept a passing-but-inferior model in production even when a
+    sibling was decisively better (the 1095d ensemble case, 2026-06-08). Hysteresis
+    (`_WINNER_SWAP_MARGIN`) keeps the incumbent unless a challenger beats it by a
+    clear margin, so the daily winner-only retrain doesn't churn on backtest noise.
     """
     if not any(name.startswith("spatial_") for name in metrics):
         return preferred
-    if _promotion_assessment(metrics, preferred)["public_release_eligible"]:
-        return preferred
-
-    fallback_order = ["hist_gbm_positive_persistence_guard"]
-    for model_name in fallback_order:
-        if model_name in candidates and _promotion_assessment(metrics, model_name)["public_release_eligible"]:
-            return model_name
 
     passing = [
         model_name
@@ -1836,7 +1838,15 @@ def _spatially_qualified_production_winner(
         spatial_brier = float(county.get("brier", 1.0)) + float(beach.get("brier", 1.0))
         return (-float(valid.get("aucpr", 0.0)), spatial_brier)
 
-    return min(passing, key=_key)
+    best = min(passing, key=_key)
+    # Hysteresis: keep a passing incumbent unless a challenger beats it on
+    # temporal-valid AUCPR by a clear margin.
+    if preferred in passing:
+        preferred_aucpr = -_key(preferred)[0]
+        best_aucpr = -_key(best)[0]
+        if best_aucpr - preferred_aucpr <= _WINNER_SWAP_MARGIN:
+            return preferred
+    return best
 
 
 def _promotion_assessment(
