@@ -305,6 +305,14 @@ def main() -> None:
         default=7,
         help="Forecast horizon for --with-surf (Open-Meteo marine supports up to 16).",
     )
+    parser.add_argument(
+        "--with-hourly",
+        action="store_true",
+        help="Precompute the per-beach hourly forecast+marine series into "
+             "hourly_forecast.parquet so the /hourly API route serves from disk "
+             "instead of calling Open-Meteo live (which is rate-limited from the "
+             "production server, 502-ing all surf data).",
+    )
     parser.add_argument("--usgs-gages-csv", type=Path)
     parser.add_argument("--cnrfc-observed-csv", type=Path)
     parser.add_argument("--cnrfc-qpf-csv", type=Path)
@@ -786,6 +794,17 @@ def main() -> None:
             now.to_parquet(curated / "surf_now.parquet", index=False)
             daily.to_parquet(curated / "surf_daily_forecast.parquet", index=False)
             print(f"[surf] wrote surf_now ({len(now)} spots) + surf_daily_forecast ({len(daily)} rows)")
+
+    if args.with_hourly:
+        from app.data.pipeline.hourly_forecast import build_hourly_forecast
+
+        curated = Path(settings.curated_dir)
+        beaches = pd.read_parquet(curated / "beaches.parquet")
+        hourly = build_hourly_forecast(beaches)
+        hourly.to_parquet(curated / "hourly_forecast.parquet", index=False)
+        n_cells = len(hourly)
+        n_coords = beaches[["latitude", "longitude"]].dropna().round(1).drop_duplicates().shape[0]
+        print(f"[hourly] wrote hourly_forecast.parquet ({n_cells}/{n_coords} grid cells covered)")
 
 
 if __name__ == "__main__":

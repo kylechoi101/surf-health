@@ -69,11 +69,20 @@ async def get_hourly(
     Returns wind, UV, temperature, wave height/period/direction at hourly
     resolution from yesterday-noon through ~48h ahead. Cached server-side
     for 3 hours per 0.1° lat/lon grid cell."""
+    from app.services.hourly_store import get_precomputed_hourly
     from app.services.hourly_weather import fetch_hourly
 
     # Look up the beach to get coordinates. get_beach raises 404 if unknown.
     beach = service.repository.get_beach(beach_id)
-    payload = await fetch_hourly(beach.geometry.latitude, beach.geometry.longitude)
+    lat, lon = beach.geometry.latitude, beach.geometry.longitude
+
+    # Serve the precomputed snapshot first (built by the daily pipeline from a
+    # non-throttled IP). The live per-request Open-Meteo path gets rate-limited
+    # from the production server, so it is now only a fallback for cells the
+    # snapshot doesn't cover.
+    payload = get_precomputed_hourly(get_settings().curated_dir, lat, lon)
+    if payload is None:
+        payload = await fetch_hourly(lat, lon)
     if payload is None:
         raise HTTPException(status_code=502, detail="upstream weather service unavailable")
     response.headers["Cache-Control"] = "public, max-age=10800, stale-while-revalidate=3600"
