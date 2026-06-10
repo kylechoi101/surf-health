@@ -27,6 +27,11 @@ import httpx
 _OPEN_METEO_FORECAST = "https://api.open-meteo.com/v1/forecast"
 _OPEN_METEO_MARINE = "https://marine-api.open-meteo.com/v1/marine"
 _CACHE_TTL_SECONDS = 60 * 60 * 3  # 3 hours
+# Memory guard: cap the live-fetch cache so it can't grow unbounded on the
+# 512 MB free-tier instance. Each payload is ~20 KB; 256 cells ≈ 5 MB worst case.
+# Most requests are served from the precomputed snapshot (hourly_store), so this
+# cache is rarely populated — but bound it anyway to fail safe under OOM pressure.
+_CACHE_MAX_ENTRIES = 256
 
 
 @dataclass
@@ -38,6 +43,19 @@ class _CacheEntry:
 # Module-level cache keyed by (lat_rounded, lon_rounded). 0.1° = ~11 km grid;
 # matches what we cache for the daily aggregator so we don't double-call.
 _CACHE: dict[tuple[float, float], _CacheEntry] = {}
+
+
+def _evict_cache(now: float) -> None:
+    """Drop expired entries; if still over the cap, drop the soonest-to-expire
+    (≈ oldest) ones. Keeps the live-fetch cache bounded in memory."""
+    expired = [k for k, e in _CACHE.items() if e.expires_at <= now]
+    for k in expired:
+        _CACHE.pop(k, None)
+    if len(_CACHE) > _CACHE_MAX_ENTRIES:
+        for k, _ in sorted(_CACHE.items(), key=lambda kv: kv[1].expires_at)[
+            : len(_CACHE) - _CACHE_MAX_ENTRIES
+        ]:
+            _CACHE.pop(k, None)
 
 
 async def _fetch_open_meteo(
@@ -129,5 +147,6 @@ async def fetch_hourly(lat: float, lon: float) -> dict | None:
 
     if payload is None:
         return None
+    _evict_cache(now)
     _CACHE[key] = _CacheEntry(expires_at=now + _CACHE_TTL_SECONDS, payload=payload)
     return payload
