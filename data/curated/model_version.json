@@ -3,5 +3,6 @@
   "promoted_at": "2026-06-08T17:30:00Z",
   "ship_target": "v1.8-spatial-ensemble-1095d",
   "training_window_days": 1095,
-  "promotion_basis": "leave-one-county-out AUCPR 0.590 vs hist_gbm 0.478 (persistence 0.404); beach 0.900 vs 0.894; calib slopes county 1.26 / beach 1.16"
+  "promotion_basis": "Held-out leave-one-county-out AUCPR 0.553 vs hist_gbm 0.481 (persistence 0.420); leave-one-beach-out AUCPR 0.932 vs hist_gbm 0.928 (persistence 0.762); calib slopes county 1.21 / beach 1.18. Snapshot of the 2026-06-11 daily run (6-county / 15-beach shortlist sweep, 1095d window). These are honest held-out generalization numbers graded on row-count-selected (high-incidence) holdout groups, so the beach figure sits over a high base rate (~0.56) where persistence already scores ~0.76; the county figure (base rate ~0.20) is the harder test. The previously cited 0.590/0.900 (slopes 1.26/1.16) were an offline spatial_compare number never reproduced by the in-pipeline gate (see backend/METRICS_RECONCILIATION.md).",
+  "metrics_source": "data/curated/system_health.json (model_registry.spatial_metrics + production_metrics) is the single source of truth; it is regenerated each daily run and the pooled spatial numbers drift run-to-run. The figures quoted in promotion_basis are a snapshot of the 2026-06-11 run."
 }

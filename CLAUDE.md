@@ -96,7 +96,53 @@ per-spot swell-window modeling (deferred fast-follow).
   held-out (label, probability) pairs are persisted to `data/curated/holdout_predictions_temporal
   .parquet` / `..._spatial.parquet`, and `sensitivity_at_specificity(...0.87)` is recorded into
   `system_health.json` (`production_metrics["sensitivity_at_spec_0.87"]` + spatial equivalents) —
-  closing the long-standing "Searcy sensitivity is unverifiable" gap (appears after next daily run).
+  closing the long-standing "Searcy sensitivity is unverifiable" gap. As of the 2026-06-11 daily run
+  (`c64a0b5da`) these artifacts EXIST on disk and the operating points are populated; any other
+  operating point recomputes from the parquet with no retrain.
+
+### Public-readiness hardening (2026-06-11, post-audit round 2)
+
+An external ML-reliability audit was adversarially verified (16-agent workflow); confirmed
+findings were fixed in this round:
+
+- **Any-exceedance daily labels** (`pipeline/beachwatch.py` `build_beach_day_frame`): same-day
+  samples now collapse to the WORST sample (max `exceeds_stv`, then max value, then `sample_time`)
+  instead of `.tail(1)` chronologically-last. The old rule flipped 1,021 contaminated beach-days
+  (120 beaches, ~440 in the 1095d window, 100% false-negative direction) to "safe".
+- **Forecast-time precip/streamflow refresh** (`ml/training.py`
+  `_refresh_candidate_precip_features` / `_refresh_candidate_streamflow_features`): forecast
+  candidates previously froze ALL rain features at the last lab sample's values (12–37 days
+  stale); they now refresh from `precip_daily.parquet` / `streamflow_daily.parquet` (already
+  regenerated daily through the forecast date) via the same beach→station links the pipeline
+  uses; rain-policy flags recompute via `add_rain_policy_features`; derived lag/interaction
+  features recompute downstream in `build_inference_features`. No-match rows keep the frozen
+  value (env-persistence) and are counted in a stderr warning.
+- **Release gate now BLOCKS publication** (`--enforce-release-gate`, set in CI): if
+  `public_release_eligible` is false, `forecasts.parquet`/`hourly_forecast.parquet` are NOT
+  overwritten (last-validated keeps serving), blockers land in `system_health.json
+  ["release_gate"]`, the data commit still happens (auditability), and
+  `scripts/verify_release_gate.py` then FAILS the job (no continue-on-error) → notify-failure
+  issue. `validate_forecast.py` tolerates the deliberately-frozen stale forecast date ONLY when
+  this run's fresh health payload says publication was blocked (fail-closed otherwise). The gate
+  also fails CLOSED on zero-fold spatial backtests.
+- **Forecast anomaly gate** (`scripts/validate_forecast.py` + `--previous` snapshot in CI):
+  all-safe collapse (every `p_exceed` below the Low threshold), mean-shift >4× either way vs the
+  previous run, and non-Low band-count collapse now fail validation.
+  `SKIP_FORECAST_ANOMALY_CHECKS=1` is the deliberate-change escape hatch.
+- **Serve-time staleness** (`repositories/serving_repository.py`, `schemas/domain.py`,
+  `api/routes.py`): forecast records carry `is_stale` (age > 48h via un-truncated hours from
+  `forecast_generated_at`, fallback `forecast_date`; unknowable age on a fallback row ⇒ stale);
+  `forecast_generated_at` is Optional and never fabricated; forecast/beach/advisory responses
+  use `max-age=3600, stale-while-revalidate=600` (was 86400); advisory windows are judged as-of
+  the snapshot's own `generated_at` (not `datetime('now')`), removing the asymmetric decay of
+  warnings out of a stale snapshot. Web + mobile render tiered staleness (≤24h fresh, 24–48h
+  amber notice, >48h/unknown strong warning + greyed band UI; advisories never greyed).
+- **Statistical rigor** (`ml/evaluation.py`, `ml/training.py`): spatial metrics in
+  `system_health.json` now carry cluster-bootstrap `aucpr_ci_low/high` (resampling unit = fold;
+  the 6-fold pooled county AUCPR 95% CI measured [0.32, 0.59]); holdout predictions persist for
+  EVERY backtested candidate (`model` column in `holdout_predictions_spatial.parquet`); the
+  winner swap needs gap > 0.01 AND a paired cluster-bootstrap 90% CI of the county-AUCPR gap
+  excluding 0 (fallback without per-row preds: gap > 0.07 ≈ measured cluster half-width).
 
 ## ML training
 
@@ -170,17 +216,24 @@ gate's calibration + inner-validation split.
   the ensemble over hist_gbm on held-out counties; hist_gbm does NOT benefit from more data.
   1095d captures all feature-rich post-2020 history (precip/marine features only exist from 2020).
   CI now trains at 1095d.
-  - **⚠️ 2026-06-10 reconciliation (see `backend/METRICS_RECONCILIATION.md`):** the "county AUCPR
-    0.590 / beach 0.900, slopes 1.26/1.16" originally written here were **never reproduced by the
-    in-pipeline gate**. The daily CI run that wrote the on-disk `data/curated/system_health.json`
-    (commit `5d99a8587`, 12-county/50-beach sweep @1095d — the SAME config) actually produced
-    **held-out county AUCPR 0.499 / beach 0.871, calib slopes 0.99 / 0.88** (county persistence
-    baseline 0.370, pooled county base rate 0.175). 0.499 vs 0.590 is the **offline
-    `spatial_compare` vs in-gate** gap — calibration (isotonic on test probs), the gate's inner
-    train/valid split, and a different county-selection rule (gate picks counties by row count,
-    `spatial_compare` by positive count). The model is identical; only the eval path differs.
-    **0.499 / 0.871 are the honest, shipped numbers** — a modest but real spatial lift over
-    persistence. Slopes 0.99/0.88 are *better* calibrated than the old 1.26/1.16 claim.
+  - **⚠️ Reconciliation (2026-06-10, refreshed 2026-06-11; see `backend/METRICS_RECONCILIATION.md`).
+    These spatial metrics are REGENERATED EVERY DAILY RUN — `data/curated/system_health.json`
+    (`model_registry.spatial_metrics` + `production_metrics`) is the single source of truth, and
+    any number written here is a dated snapshot that WILL drift (the daily sweep is now 6-county /
+    15-beach folds — commit `153f1368a` — so the pooled AUCPR is noisy run-to-run; re-read the JSON
+    before citing).** The "county AUCPR 0.590 / beach 0.900, slopes 1.26/1.16" once written here
+    were **never reproduced by the in-pipeline gate** (they were an offline `spatial_compare` number;
+    no gate run has ever shown them). **Current on-disk snapshot — daily run `c64a0b5da`,
+    2026-06-11, 6-county / 15-beach @1095d: held-out county AUCPR 0.553 / beach 0.932, calib slopes
+    1.21 / 1.18** (county persistence baseline 0.420, pooled county base rate 0.197; beach
+    persistence 0.762 over a high 0.561 base rate). hist_gbm on the same gate path: county 0.481 /
+    beach 0.928. (The prior 12/50 daily run `5d99a8587` had written 0.499 / 0.871, slopes 0.99 /
+    0.88 — now historical/superseded.) The offline-`spatial_compare`-vs-in-gate gap is calibration
+    (isotonic on test probs), the gate's inner train/valid split, and a different county-selection
+    rule (gate picks counties by row count, `spatial_compare` by positive count) — the model is
+    identical; only the eval path differs. The county number (over a ~0.20 base rate) is the honest
+    spatial-generalization test; the beach number sits over a high base rate where persistence
+    already scores high. **Do not cite 0.590 / 0.900 — never reproduced by the shipping path.**
 - **Gate picks-best among passing models (2026-06-11: was wrongly documented as a TODO).**
   `_spatially_qualified_production_winner` (`training.py:1806`) filters candidates to those that
   clear the held-out county+beach persistence gates, then picks the best by temporal-valid AUCPR
@@ -198,15 +251,17 @@ gate's calibration + inner-validation split.
   beach-specific — Searcy et al. 2018; pays off only in per-station models).
 - **Benchmark (Searcy et al. 2018, 10 CA oceanic beaches, operational):** median sensitivity 0.50
   @ specificity 0.87 for enterococcus. The old "sens 0.59 @ spec 0.87" claim was UNVERIFIABLE
-  (2026-06-10, no holdout artifact persisted). **Closed + computed 2026-06-11:** `training.py`
-  persists the winner's held-out (label, probability) pairs to
-  `data/curated/holdout_predictions_{temporal,spatial}.parquet` and records
-  `sensitivity_at_specificity(0.87)` into `system_health.json`. **Real shipped numbers (ensemble,
-  2026-06-11 dispatch run on `687aa2393`):**
-  - **Temporal-test (same beaches in train+test, optimistic): sensitivity 0.722 @ spec 0.871.**
+  (2026-06-10, no holdout artifact persisted). **Now computed:** `training.py` persists the winner's
+  held-out (label, probability) pairs to `data/curated/holdout_predictions_{temporal,spatial}.parquet`
+  and records `sensitivity_at_specificity(0.87)` into `system_health.json`. **As of the 2026-06-11
+  daily run (`c64a0b5da`) these artifacts EXIST on disk** and the operating points are populated.
+  **Snapshot of that run (these are REGENERATED EVERY DAILY RUN — read `system_health.json` for the
+  live values):**
+  - **Temporal-test (same beaches in train+test, in-distribution-optimistic): sensitivity 0.722 @
+    spec 0.871.**
   - **Leave-one-county-out holdout (the honest generalization figure): sensitivity 0.482 @ spec
     0.896** — essentially the Searcy operational median (0.50 @ 0.87).
-  - Leave-one-beach-out holdout: sensitivity 0.832 @ spec 0.871.
+  - Leave-one-beach-out holdout: sensitivity 0.832 @ spec 0.871 (over a high ~0.56 base rate).
   So cite **~0.48 @ 0.90 (county holdout)** as the conservative real-world number and **0.72 @ 0.87
   (temporal)** as the in-distribution number — NOT a single blended figure. Recompute any other
   operating point from the parquet with no retrain. See `backend/METRICS_RECONCILIATION.md`.
@@ -219,13 +274,17 @@ gate's calibration + inner-validation split.
   Remaining headroom: per-station models.
 - **Production classifier**: `xgb_undersample_ensemble` — balanced-undersample XGBoost soft-ensemble.
   Trained on the **1095-day window** (2026-06-08) where it beats hist_gbm on held-out counties and
-  beaches. **Shipped held-out metrics (2026-06-10 reconciliation, from on-disk
-  `system_health.json`): county AUCPR 0.499 / beach 0.871, calib slopes 0.99 / 0.88** — NOT the
-  0.590/0.900 once cited (that was an offline `spatial_compare` number never reproduced by the
-  gate; see `backend/METRICS_RECONCILIATION.md`). hist_gbm on the same gate path: county 0.480 /
-  beach 0.853. CA-only; cross-region (TX) pooling tested and rejected on held-out counties. It is
-  the registry winner because it wins the gate's pick-best-among-passing selection (with hysteresis),
-  not via a manual override — see the corrected "Gate picks-best" note above.
+  beaches. **Shipped held-out metrics are REGENERATED EVERY DAILY RUN — read
+  `data/curated/system_health.json` for the live values; the figures below are a dated snapshot that
+  WILL drift** (6-county / 15-beach folds → noisy pooled AUCPR). **Snapshot, daily run `c64a0b5da`
+  (2026-06-11): county AUCPR 0.553 / beach 0.932, calib slopes 1.21 / 1.18** (county persistence
+  0.420, beach persistence 0.762; hist_gbm on the same gate path county 0.481 / beach 0.928) — NOT
+  the 0.590/0.900 once cited (that was an offline `spatial_compare` number **never reproduced by the
+  gate**; see `backend/METRICS_RECONCILIATION.md`). The beach figure sits over a high ~0.56 base
+  rate where persistence already scores ~0.76; the county figure (base rate ~0.20) is the harder,
+  honest spatial test. CA-only; cross-region (TX) pooling tested and rejected on held-out counties.
+  It is the registry winner because it wins the gate's pick-best-among-passing selection (with
+  hysteresis), not via a manual override — see the corrected "Gate picks-best" note above.
 - **Forecast-safe cutoff**: 5 AM PT daily summaries; nothing leaks same-morning sample data.
 - **Shore azimuth**: SVD over 5 nearest-neighbor beaches for coastline tangent; disambiguated
   by vector toward CA inland centroid (37°N, 120.5°W).
@@ -255,7 +314,9 @@ deploy if it never returns 200, so a broken Render build no longer ships unnotic
 sweep at 1095d (~84k rows, ~60 retrains) overran the ML budget and timed the whole job out
 (stale forecast → `/system/health` 503). 6/15 still yields valid spatial-holdout metrics that
 pass the public-release gate. The full 12/50 sweep is kept only for the manual
-`workflow_dispatch full_comparison=true` (winner re-selection) path. NOTE: the on-disk
-`system_health.json` metrics (county 0.499 / beach 0.871) predate this trim — they were
-written by the prior 12/50 daily run; the next daily refresh at 6/15 will have noisier
-(fewer-fold) spatial numbers. Reconciliation detail: `backend/METRICS_RECONCILIATION.md`.
+`workflow_dispatch full_comparison=true` (winner re-selection) path. NOTE: the first daily
+refresh at 6/15 has now run (`c64a0b5da`, 2026-06-11), writing **county AUCPR 0.553 /
+beach 0.932** — *above* the prior 12/50 run's 0.499 / 0.871, illustrating that the
+fewer-fold pooled spatial AUCPR is noisy run-to-run. Always read the live
+`system_health.json` rather than any prose snapshot. Reconciliation detail:
+`backend/METRICS_RECONCILIATION.md`.
