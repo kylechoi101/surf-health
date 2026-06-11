@@ -1,0 +1,15 @@
+version: 2
+updates:
+  # GitHub Actions only. The Python ML stack (torch/xgboost/etc.) is pinned
+  # deliberately and upgraded by hand — pip updates would be high-noise and
+  # risk silent metric drift, so they are intentionally NOT automated here.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      actions:
+        update-types:
+          - "minor"
+          - "patch"
