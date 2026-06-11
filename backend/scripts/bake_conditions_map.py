@@ -52,6 +52,21 @@ def bake_conditions(curated: Path) -> list[dict]:
     fc_path = curated / "forecasts.parquet"
     fc = pd.read_parquet(fc_path) if fc_path.exists() else pd.DataFrame()
     band_by = {str(r["beach_id"]): r.get("risk_band") for _, r in fc.iterrows()} if not fc.empty else {}
+    pex_by = {str(r["beach_id"]): _f(r.get("p_exceed")) for _, r in fc.iterrows()} if not fc.empty else {}
+
+    # Water-quality severity in [0,1]: 0 = good (green), 1 = bad/advisory (red).
+    # The web draws a blurred gradient field from each station; this is the value
+    # it colors. Prefer the continuous p_exceed; fall back to the risk band.
+    _BAND_SEV = {"Low": 0.08, "Moderate": 0.38, "High": 0.66, "Very High": 0.9, "Advisory": 1.0}
+
+    def _wq_severity(band, pex) -> float | None:
+        if band == "Advisory":
+            return 1.0
+        if pex is not None:
+            return min(1.0, max(0.04, pex / 0.45))  # p_exceed 0.45+ → full red
+        if band:
+            return _BAND_SEV.get(band)
+        return None
 
     rows: list[dict] = []
     for _, b in beaches.iterrows():
@@ -75,6 +90,8 @@ def bake_conditions(curated: Path) -> list[dict]:
             "lat": round(lat, 4),
             "lon": round(lon, 4),
             "risk_band": band_by.get(bid),
+            "p_exceed": pex_by.get(bid),
+            "wq": _wq_severity(band_by.get(bid), pex_by.get(bid)),
             "wind_speed_mps": _f(e.get("wind_speed_mps")) if e is not None else None,
             "wind_dir_deg": _f(e.get("wind_direction_deg")) if e is not None else None,
             "uv_index": _f(e.get("uv_index")) if e is not None else None,
