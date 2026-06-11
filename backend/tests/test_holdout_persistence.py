@@ -144,7 +144,7 @@ def test_persist_holdout_artifacts_winner_base_key_mapping(tmp_path):
     }
     metrics = {
         "hist_gbm": {"aucpr": 0.5},
-        f"spatial_county_hist_gbm": {"aucpr": 0.48},
+        "spatial_county_hist_gbm": {"aucpr": 0.48},
     }
     _persist_holdout_artifacts(
         tmp_path,

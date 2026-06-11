@@ -46,7 +46,6 @@ from app.ml.calibration import (
     _HIGH_THRESHOLD,
     _VERY_HIGH_THRESHOLD as _CAL_VERY_HIGH,
     confidence_capped_risk_band,
-    risk_band,
 )
 from app.ml.datasets import SequenceDataset
 from app.ml.evaluation import (
