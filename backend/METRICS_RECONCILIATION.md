@@ -181,8 +181,18 @@ held-out (label, probability) pairs to `data/curated/holdout_predictions_tempora
 `spatial_county_<winner>` / `spatial_beach_<winner>` equivalents. After the next daily run
 these artifacts exist on disk and the Searcy operating point is a real, citable number —
 recompute any other operating point (precision@recall, per-county sensitivity) from the
-parquet with no retrain. **Until that run lands the artifacts are absent, so still do not
-cite a specific sensitivity value.**
+parquet with no retrain.
+
+**Computed 2026-06-11 (ensemble, dispatch run on `687aa2393`):**
+| holdout | sensitivity @ spec≈0.87 | threshold | note |
+|---|---|---|---|
+| Temporal-test | **0.722** @ 0.871 | 0.342 | same beaches in train+test — optimistic |
+| Leave-one-county-out | **0.482** @ 0.896 | 0.279 | honest unseen-county generalization ≈ Searcy 0.50@0.87 |
+| Leave-one-beach-out | **0.832** @ 0.871 | 0.467 | unseen beach, county signal present |
+
+Cite **~0.48 @ 0.90 (county holdout)** as the conservative real-world figure and **0.72 @ 0.87
+(temporal)** as in-distribution — never a single blended number. The old "0.59" claim is
+superseded; it matched neither path.
 
 ---
 

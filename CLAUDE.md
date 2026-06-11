@@ -198,15 +198,18 @@ gate's calibration + inner-validation split.
   beach-specific — Searcy et al. 2018; pays off only in per-station models).
 - **Benchmark (Searcy et al. 2018, 10 CA oceanic beaches, operational):** median sensitivity 0.50
   @ specificity 0.87 for enterococcus. The old "sens 0.59 @ spec 0.87" claim was UNVERIFIABLE
-  (2026-06-10) because no holdout prediction artifact was persisted. **Closed 2026-06-11:**
-  `training.py` now persists the winner's held-out (label, probability) pairs to
-  `data/curated/holdout_predictions_temporal.parquet` and `..._spatial.parquet`, AND pre-computes
-  the operating point via `sensitivity_at_specificity()` (`app/ml/evaluation.py`) into
-  `system_health.json` under `production_metrics["sensitivity_at_spec_0.87"]` (+ spatial county/
-  beach equivalents). After the next daily run these are real, citable numbers; recompute any other
-  operating point from the parquet with no retrain. **Until that run lands, still do not cite a
-  specific sensitivity figure** — the artifacts don't exist on disk yet. See
-  `backend/METRICS_RECONCILIATION.md`.
+  (2026-06-10, no holdout artifact persisted). **Closed + computed 2026-06-11:** `training.py`
+  persists the winner's held-out (label, probability) pairs to
+  `data/curated/holdout_predictions_{temporal,spatial}.parquet` and records
+  `sensitivity_at_specificity(0.87)` into `system_health.json`. **Real shipped numbers (ensemble,
+  2026-06-11 dispatch run on `687aa2393`):**
+  - **Temporal-test (same beaches in train+test, optimistic): sensitivity 0.722 @ spec 0.871.**
+  - **Leave-one-county-out holdout (the honest generalization figure): sensitivity 0.482 @ spec
+    0.896** — essentially the Searcy operational median (0.50 @ 0.87).
+  - Leave-one-beach-out holdout: sensitivity 0.832 @ spec 0.871.
+  So cite **~0.48 @ 0.90 (county holdout)** as the conservative real-world number and **0.72 @ 0.87
+  (temporal)** as the in-distribution number — NOT a single blended figure. Recompute any other
+  operating point from the parquet with no retrain. See `backend/METRICS_RECONCILIATION.md`.
 
 ## Key design decisions
 
