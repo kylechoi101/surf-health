@@ -917,6 +917,45 @@ def test_promotion_assessment_blocks_release_when_county_holdout_lags_persistenc
     assert "Held-out county AUCPR does not beat persistence." in promotion["promotion_blockers"]
 
 
+def test_promotion_assessment_blocks_release_on_degenerate_beach_calibration_slope():
+    # Beach holdout beats persistence on AUCPR + Brier but its calibration slope
+    # is degenerate (< 0.4): the symmetric beach-slope gate must block release,
+    # just like the county-slope gate does.
+    promotion = _promotion_assessment(
+        {
+            "logistic": {"aucpr": 0.5, "brier": 0.1},
+            "spatial_county_persistence": {"aucpr": 0.40, "brier": 0.18},
+            "spatial_beach_persistence": {"aucpr": 0.63, "brier": 0.22},
+            "spatial_county_logistic": {"aucpr": 0.55, "brier": 0.12, "calibration_slope": 1.0},
+            "spatial_beach_logistic": {"aucpr": 0.86, "brier": 0.14, "calibration_slope": 0.20},
+        },
+        "logistic",
+    )
+
+    assert promotion["public_release_eligible"] is False
+    assert any(
+        "beach calibration slope" in blocker for blocker in promotion["promotion_blockers"]
+    )
+
+
+def test_promotion_assessment_passes_with_plausible_beach_calibration_slope():
+    promotion = _promotion_assessment(
+        {
+            "logistic": {"aucpr": 0.5, "brier": 0.1},
+            "spatial_county_persistence": {"aucpr": 0.40, "brier": 0.18},
+            "spatial_beach_persistence": {"aucpr": 0.63, "brier": 0.22},
+            "spatial_county_logistic": {"aucpr": 0.55, "brier": 0.12, "calibration_slope": 1.0},
+            "spatial_beach_logistic": {"aucpr": 0.86, "brier": 0.14, "calibration_slope": 1.1},
+        },
+        "logistic",
+    )
+
+    assert promotion["public_release_eligible"] is True
+    assert not any(
+        "beach calibration slope" in blocker for blocker in promotion["promotion_blockers"]
+    )
+
+
 def test_spatially_qualified_winner_vetoes_temporal_winner_for_guard_candidate():
     # hist_gbm_positive_persistence_guard shares hist_gbm's training path so
     # the test-set metrics live under the "hist_gbm" key (see _metrics_base_key).
@@ -1046,8 +1085,12 @@ def test_export_forecasts_applies_advisory_safety_floor(monkeypatch, tmp_path):
     ])
     monkeypatch.setattr("app.ml.training._build_forecast_candidates", lambda *args, **kwargs: (pd.DataFrame(), candidates))
     
-    features = pd.DataFrame({"enterococcus_value_last_obs": [180.0, 180.0, 180.0]})
-    forecast_features = pd.DataFrame({"enterococcus_value_last_obs": [180.0, 180.0, 180.0], "advisory_active_recent_for_floor": [1, 1, 0]})
+    # Prior observations are BELOW the STV (104) so this test isolates the
+    # advisory-floor override: a prior exceedance would (correctly) trip the
+    # serve-time positive-persistence floor and force p_exceed to 1.0, which is
+    # covered separately by the guarded-blend test above.
+    features = pd.DataFrame({"enterococcus_value_last_obs": [80.0, 80.0, 80.0]})
+    forecast_features = pd.DataFrame({"enterococcus_value_last_obs": [80.0, 80.0, 80.0], "advisory_active_recent_for_floor": [1, 1, 0]})
     forecast_metadata = pd.DataFrame({"beach_id": ["acute_active", "chronic_active", "stale_active"], "sample_date": [pd.Timestamp("2026-04-20")]*3})
 
     monkeypatch.setattr(
@@ -1128,3 +1171,178 @@ def test_export_forecasts_applies_advisory_safety_floor(monkeypatch, tmp_path):
     assert forecasts.loc[forecasts["beach_id"] == "stale_active", "p_exceed"].iloc[0] == 0.2
     assert forecasts.loc[forecasts["beach_id"] == "stale_active", "p_exceed_raw"].iloc[0] == 0.2
     assert bool(forecasts.loc[forecasts["beach_id"] == "stale_active", "advisory_floor_applied"].iloc[0]) is False
+
+
+def _run_export_single_beach(
+    tmp_path,
+    monkeypatch,
+    *,
+    winner: str,
+    model_prob: float,
+    last_obs: float,
+    sample_recency_band: str,
+    advisory_floor: int,
+    raw_proba_override=None,
+):
+    """Drive _export_forecasts for one synthetic beach and return its forecast row."""
+    from app.ml.training import _export_forecasts, _TrainedModels, StageTwoTrainingPlan
+
+    class FixedClassifier:
+        def predict_proba(self, frame):
+            pos = (
+                np.full(len(frame), model_prob, dtype=float)
+                if raw_proba_override is None
+                else np.asarray(raw_proba_override, dtype=float)
+            )
+            return np.column_stack([1.0 - pos, pos])
+
+    class FixedRegressor:
+        def predict(self, frame):
+            return np.full(len(frame), 1.7, dtype=float)
+
+    curated_dir = tmp_path / "curated"
+    curated_dir.mkdir()
+    (curated_dir / "system_health.json").write_text("{}")
+
+    candidates = pd.DataFrame([
+        {
+            "beach_id": "beach",
+            "advisory_active_recent_for_floor": advisory_floor,
+            "sample_recency_band": sample_recency_band,
+            "sample_age_days": 90 if sample_recency_band == "very_stale" else 1,
+        }
+    ])
+    monkeypatch.setattr(
+        "app.ml.training._build_forecast_candidates",
+        lambda *args, **kwargs: (pd.DataFrame(), candidates),
+    )
+    forecast_features = pd.DataFrame(
+        {"enterococcus_value_last_obs": [last_obs], "advisory_active_recent_for_floor": [advisory_floor]}
+    )
+    forecast_metadata = pd.DataFrame(
+        {"beach_id": ["beach"], "sample_date": [pd.Timestamp("2026-04-20")]}
+    )
+    monkeypatch.setattr(
+        "app.ml.training.build_inference_features",
+        lambda inference_input: type(
+            "Inference", (), {"feature_frame": forecast_features, "metadata": forecast_metadata}
+        )(),
+    )
+    monkeypatch.setattr("app.ml.training._inject_agent_features", lambda features, *args: features)
+    monkeypatch.setattr("app.ml.training._compute_local_drivers", lambda *args, **kwargs: [["mock"]])
+    monkeypatch.setattr("app.ml.training._split_conformal_half_width", lambda *args: None)
+    monkeypatch.setattr("app.ml.training._write_model_card", lambda *args: None)
+
+    _export_forecasts(
+        curated_dir=curated_dir,
+        forecast_date=date(2026, 4, 20),
+        frame=pd.DataFrame(),
+        full_frame=pd.DataFrame(),
+        features=pd.DataFrame({"enterococcus_value_last_obs": [last_obs]}),
+        densities=np.array([1.0]),
+        valid_idx=np.array([0]),
+        test_idx=np.array([0]),
+        stations=pd.DataFrame(
+            [{"beach_id": "beach", "county": "Orange", "region": "South Coast",
+              "latitude": 33.0, "longitude": -117.0, "zip_code": "92651"}]
+        ),
+        uv_daily=pd.DataFrame(),
+        advisories=pd.DataFrame(),
+        models=_TrainedModels(
+            winner=winner,
+            tree_classifier=FixedClassifier(),
+            tree_calibrator=None,
+            classifier=FixedClassifier(),
+            calibrator=None,
+            logistic=None,
+            logistic_calibrator=None,
+            coastal_cell_logistic=None,
+            hierarchical_logistic=None,
+            ensemble_weights=None,
+            regressor=FixedRegressor(),
+            regressor_valid_predictions=np.array([1.0]),
+        ),
+        plan=StageTwoTrainingPlan(
+            production_winner=winner, research_winner=winner, spatial_backtest_models=[]
+        ),
+        metrics={winner: {}},
+        model_types_to_run=[],
+        spatial_backtests=False,
+        spatial_backtest_models=[],
+        spatial_strategy="shortlist",
+    )
+    forecasts = pd.read_parquet(curated_dir / "forecasts.parquet")
+    return forecasts.iloc[0]
+
+
+def test_export_positive_persistence_floor_applies_to_non_guard_winner(monkeypatch, tmp_path):
+    # Deployed-ensemble shape: a non-guard winner whose model says Low (0.05),
+    # but the prior official observation exceeded the STV (180 > 104). The
+    # serve-time positive-persistence floor must keep it from collapsing to Low.
+    row = _run_export_single_beach(
+        tmp_path, monkeypatch,
+        winner="baseline", model_prob=0.05, last_obs=180.0,
+        sample_recency_band="recent", advisory_floor=0,
+    )
+    assert row["p_exceed"] == 1.0
+    assert row["p_exceed_raw"] == 1.0  # guard runs before p_raw is read
+    assert row["risk_band"] == "Very High"
+
+
+def test_export_does_not_floor_non_guard_winner_when_prior_below_stv(monkeypatch, tmp_path):
+    row = _run_export_single_beach(
+        tmp_path, monkeypatch,
+        winner="baseline", model_prob=0.05, last_obs=20.0,
+        sample_recency_band="recent", advisory_floor=0,
+    )
+    assert row["p_exceed"] == 0.05
+    assert row["risk_band"] == "Low"
+
+
+def test_export_nan_probability_falls_back_to_safe_default(monkeypatch, tmp_path):
+    # A non-finite served probability with no prior exceedance must fall back to
+    # the safe Low/Moderate default (0.20), never NaN, in the parquet.
+    row = _run_export_single_beach(
+        tmp_path, monkeypatch,
+        winner="baseline", model_prob=0.0, last_obs=20.0,
+        sample_recency_band="recent", advisory_floor=0,
+        raw_proba_override=[np.nan],
+    )
+    assert np.isfinite(row["p_exceed"])
+    assert row["p_exceed"] == 0.20
+
+
+def test_export_confidence_cap_downgrades_strong_band_on_very_stale_no_advisory(
+    monkeypatch, tmp_path
+):
+    # Strong model band (High) off a very-stale sample with no advisory: the
+    # displayed band is capped at Moderate, but the numeric p_exceed stays honest.
+    row = _run_export_single_beach(
+        tmp_path, monkeypatch,
+        winner="baseline", model_prob=0.45, last_obs=20.0,
+        sample_recency_band="very_stale", advisory_floor=0,
+    )
+    assert row["risk_band"] == "Moderate"
+    assert abs(float(row["p_exceed"]) - 0.45) < 1e-9  # p_exceed unchanged
+
+
+def test_export_confidence_cap_does_not_fire_with_active_advisory(monkeypatch, tmp_path):
+    # Same very-stale sample, but an advisory is active: the cap must NOT
+    # suppress (advisory floor raises to >= High and the band stands).
+    row = _run_export_single_beach(
+        tmp_path, monkeypatch,
+        winner="baseline", model_prob=0.45, last_obs=20.0,
+        sample_recency_band="very_stale", advisory_floor=1,
+    )
+    assert row["risk_band"] in ("High", "Very High")
+
+
+def test_export_confidence_cap_does_not_fire_on_fresh_sample(monkeypatch, tmp_path):
+    # Fresh sample with a strong band: never capped — a true recent exceedance
+    # signal must still surface (no added false negatives on fresh data).
+    row = _run_export_single_beach(
+        tmp_path, monkeypatch,
+        winner="baseline", model_prob=0.45, last_obs=20.0,
+        sample_recency_band="fresh", advisory_floor=0,
+    )
+    assert row["risk_band"] == "High"

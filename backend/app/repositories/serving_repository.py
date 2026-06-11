@@ -12,7 +12,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
-from app.ml.calibration import risk_band
+from app.ml.calibration import confidence_capped_risk_band, risk_band
 from app.repositories.base import BeachRepository
 from app.services.shore_normal import compute_shore_normal_deg
 from app.schemas.domain import (
@@ -514,6 +514,11 @@ class ServingSnapshotRepository(BeachRepository):
         base_drivers = [str(item) for item in _parse_json_list(row.get("top_drivers"))]
         raw_p_exceed = _safe_float(row.get("p_exceed_raw"))
         model_risk_band = risk_band(raw_p_exceed) if raw_p_exceed is not None else str(row["risk_band"])
+
+        sample_age = _safe_int(row.get("sample_age_days"))
+        if sample_age is None:
+            sample_age = self._sample_age_days(beach_id, row.get("forecast_date"))
+
         advisory_website: str | None = None
         parent_has_advisory = False
         parent_advisory_url: str | None = None
@@ -523,14 +528,20 @@ class ServingSnapshotRepository(BeachRepository):
             advisory_website = website_map.get(beach_id)
         else:
             drivers = base_drivers
-            band = model_risk_band
+            # Apply the same confidence-aware false-alarm cap as the export/list path
+            # so the detail view doesn't re-derive an un-capped band from p_exceed_raw.
+            band = (
+                confidence_capped_risk_band(
+                    raw_p_exceed,
+                    sample_recency_band=sample_recency_band(sample_age),
+                    advisory_active=False,
+                )
+                if raw_p_exceed is not None
+                else model_risk_band
+            )
             parent_has_advisory, parent_advisory_url = self._parent_advisory_signal(
                 beach_id, active_set, website_map
             )
-
-        sample_age = _safe_int(row.get("sample_age_days"))
-        if sample_age is None:
-            sample_age = self._sample_age_days(beach_id, row.get("forecast_date"))
 
         return ForecastRecord(
             beach_id=beach_id,

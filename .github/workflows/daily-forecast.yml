@@ -133,7 +133,12 @@ jobs:
         working-directory: backend
 
       - name: Run ML training + forecasts
+        # NOT continue-on-error: a failed training/forecast run must abort the
+        # job loudly. set -e ensures any non-zero exit inside this block (not
+        # just the final python call) fails the step rather than silently
+        # falling through to a no-op commit of the previous run's stale forecast.
         run: |
+          set -euo pipefail
           FORECAST_DATE=$(TZ=America/Los_Angeles date +%Y-%m-%d)
           # winner-only is the fast daily path (retrain the registry winner).
           # A manual full_comparison=true run re-selects the winner across all
@@ -157,6 +162,16 @@ jobs:
           # 0.507 -> 0.590, beach 0.881 -> 0.900 (hist_gbm does NOT benefit: 0.500 -> 0.478).
           # 1095d ~= 84k rows, all feature-rich post-2020 history.
           python -m app.ml.training --curated --forecast-date "$FORECAST_DATE" $WINNER_FLAG $BACKTEST_FLAGS --training-window-days 1095 --forecast-min-recency-days 45
+        working-directory: backend
+
+      - name: Validate forecast (abort before committing a bad/stale run)
+        # Guards the freshly written forecasts.parquet BEFORE any downstream
+        # consumer (audit, serving_snapshot) or the git-commit step runs. Fails
+        # the job (exit 1) on a missing/unparseable/empty/truncated/degenerate
+        # or stale forecast, so a silent training failure can never ship a
+        # no-op commit of the previous run's stale data. NOT continue-on-error.
+        run: |
+          python scripts/validate_forecast.py --curated ../data/curated/
         working-directory: backend
 
       - name: Forecast-time weather pull (100% wind/UV coverage)

@@ -258,3 +258,42 @@ def risk_band(probability: float) -> str:
     if probability < _VERY_HIGH_THRESHOLD:
         return "High"
     return "Very High"
+
+
+# Sample-recency bands (mirrors app.schemas.domain.sample_recency_band) that the
+# confidence-aware display gate treats as "too stale to fire a strong warning"
+# on a *model-only* prediction. Kept here so calibration owns the band policy.
+_LOW_CONFIDENCE_RECENCY_BANDS: frozenset[str] = frozenset({"very_stale", "unknown"})
+
+
+def confidence_capped_risk_band(
+    probability: float,
+    *,
+    sample_recency_band: str | None,
+    advisory_active: bool,
+) -> str:
+    """Display band with a conservative false-alarm gate, NOT a cutpoint change.
+
+    FALSE-ALARM LEVER (does NOT touch the four public cutpoints, which the web +
+    mobile UIs publish and depend on). The model raises ~12 false positives per
+    false negative vs official advisories; the worst offenders are strong (High /
+    Very High) bands fired off a stale model-only signal with no posting to back
+    them up. When the underlying sample is *very stale* (>60 days old) or its age
+    is unknown AND there is no active official advisory, the model has no recent
+    evidence to justify a strong warning, so we cap the *displayed* band at
+    Moderate. The numeric ``p_exceed`` is left untouched (honest), and:
+
+      - An active advisory ALWAYS wins — the cap never suppresses a posted
+        advisory (those route to the "Advisory" band upstream regardless).
+      - Fresh / recent / stale (<= 60 days) samples are never capped, so this
+        cannot raise the false-negative rate on recent data — exactly where a
+        true lab exceedance would still be reflected.
+
+    Returns the standard band for every non-low-confidence case.
+    """
+    band = risk_band(probability)
+    if advisory_active:
+        return band
+    if band in ("High", "Very High") and (sample_recency_band in _LOW_CONFIDENCE_RECENCY_BANDS):
+        return "Moderate"
+    return band

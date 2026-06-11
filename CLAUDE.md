@@ -147,11 +147,21 @@ reproduced 0.509 for the ensemble. Root cause is the **training window, not the 
 `--winner-only` path used only the 365-day window (~24k rows). Isolation test (spatial_compare
 restricted to 365d): +marine 0.612 → 0.567 (−0.045 from the window); the rest of the gap is the
 gate's calibration + inner-validation split.
-- **Window experiment** (gate retrain @ 1095d, 84,805 rows): ensemble held-out **county AUCPR
-  0.507 → 0.590** (Brier 0.118 → 0.107), **beach 0.881 → 0.900**, decisively beating hist_gbm, which
-  does NOT benefit from more data (county 0.500 → 0.478). Ensemble passes every gate (calib slopes
-  county 1.26 / beach 1.16). 1095d captures all feature-rich post-2020 history (precip/marine
-  features only exist from 2020). CI now trains at 1095d.
+- **Window experiment** (gate retrain @ 1095d, 84,805 rows): the 1095d window genuinely lifts
+  the ensemble over hist_gbm on held-out counties; hist_gbm does NOT benefit from more data.
+  1095d captures all feature-rich post-2020 history (precip/marine features only exist from 2020).
+  CI now trains at 1095d.
+  - **⚠️ 2026-06-10 reconciliation (see `backend/METRICS_RECONCILIATION.md`):** the "county AUCPR
+    0.590 / beach 0.900, slopes 1.26/1.16" originally written here were **never reproduced by the
+    in-pipeline gate**. The daily CI run that wrote the on-disk `data/curated/system_health.json`
+    (commit `5d99a8587`, 12-county/50-beach sweep @1095d — the SAME config) actually produced
+    **held-out county AUCPR 0.499 / beach 0.871, calib slopes 0.99 / 0.88** (county persistence
+    baseline 0.370, pooled county base rate 0.175). 0.499 vs 0.590 is the **offline
+    `spatial_compare` vs in-gate** gap — calibration (isotonic on test probs), the gate's inner
+    train/valid split, and a different county-selection rule (gate picks counties by row count,
+    `spatial_compare` by positive count). The model is identical; only the eval path differs.
+    **0.499 / 0.871 are the honest, shipped numbers** — a modest but real spatial lift over
+    persistence. Slopes 0.99/0.88 are *better* calibrated than the old 1.26/1.16 claim.
 - **Gate veto limitation:** `_spatially_qualified_production_winner` keeps a *passing* incumbent
   even when a sibling is decisively better — it never auto-swaps. The ensemble is set as the
   registry winner; CI's daily `--winner-only --spatial-backtests` keeps it (preferred=ensemble,
@@ -163,7 +173,13 @@ gate's calibration + inner-validation split.
   cache. Honest result: a live first_rain_score did NOT help the GLOBAL county metric (rainfall is
   beach-specific — Searcy et al. 2018; pays off only in per-station models).
 - **Benchmark (Searcy et al. 2018, 10 CA oceanic beaches, operational):** median sensitivity 0.50
-  @ specificity 0.87 for enterococcus. Our temporal-holdout hist_gbm: sens 0.59 @ spec 0.87.
+  @ specificity 0.87 for enterococcus. **Our "sens 0.59 @ spec 0.87" comparison is UNVERIFIED**
+  (2026-06-10): nothing in the repo computed sensitivity-at-fixed-specificity, and no holdout
+  prediction artifact (label+probability rows) is persisted, so it cannot be recomputed without a
+  retrain. A reproducible `sensitivity_at_specificity()` helper now lives in
+  `app/ml/evaluation.py` (+ tests); to verify, persist the gate/temporal-test (label, prob) pairs
+  from `training.py` and run it. Until then, do not cite 0.59. See
+  `backend/METRICS_RECONCILIATION.md`.
 
 ## Key design decisions
 
@@ -172,10 +188,13 @@ gate's calibration + inner-validation split.
   they were previously computed-but-dropped) and **spatially confirmed** to help (2026-06-02).
   Remaining headroom: per-station models.
 - **Production classifier**: `xgb_undersample_ensemble` — balanced-undersample XGBoost soft-ensemble.
-  Trained on the **1095-day window** (2026-06-08) where it beats hist_gbm on held-out counties
-  (0.590 vs 0.478) and beaches (0.900 vs 0.894). CA-only; cross-region (TX) pooling tested and
-  rejected on held-out counties. Set as registry winner manually because the gate's veto wouldn't
-  swap a passing incumbent.
+  Trained on the **1095-day window** (2026-06-08) where it beats hist_gbm on held-out counties and
+  beaches. **Shipped held-out metrics (2026-06-10 reconciliation, from on-disk
+  `system_health.json`): county AUCPR 0.499 / beach 0.871, calib slopes 0.99 / 0.88** — NOT the
+  0.590/0.900 once cited (that was an offline `spatial_compare` number never reproduced by the
+  gate; see `backend/METRICS_RECONCILIATION.md`). hist_gbm on the same gate path: county 0.480 /
+  beach 0.853. CA-only; cross-region (TX) pooling tested and rejected on held-out counties. Set as
+  registry winner manually because the gate's veto wouldn't swap a passing incumbent.
 - **Forecast-safe cutoff**: 5 AM PT daily summaries; nothing leaks same-morning sample data.
 - **Shore azimuth**: SVD over 5 nearest-neighbor beaches for coastline tangent; disambiguated
   by vector toward CA inland centroid (37°N, 120.5°W).
@@ -184,6 +203,17 @@ gate's calibration + inner-validation split.
 
 ## CI
 
-`.github/workflows/daily-forecast.yml` runs at 6 AM PDT.
-Hydrology + solar-wind cache key: `hydro-${{ runner.os }}-v3`.
-Timeout: 120 min (covers 6-year initial solar-wind backfill on first run).
+`.github/workflows/daily-forecast.yml` runs at 9 AM PDT (cron `0 16 * * *`).
+Hydrology + solar-wind cache key: `hydro-${{ runner.os }}-v4`.
+Timeout: 170 min (was 120; bumped 2026-06-10 — the 1095d window's spatial sweep was
+overrunning the old budget and timing the job out before it could commit).
+
+**Daily spatial backtest folds — 6 counties / 15 beaches** (`--spatial-county-limit 6
+--spatial-beach-limit 15`, commit `153f1368a`, 2026-06-10). The full 12-county / 50-beach
+sweep at 1095d (~84k rows, ~60 retrains) overran the ML budget and timed the whole job out
+(stale forecast → `/system/health` 503). 6/15 still yields valid spatial-holdout metrics that
+pass the public-release gate. The full 12/50 sweep is kept only for the manual
+`workflow_dispatch full_comparison=true` (winner re-selection) path. NOTE: the on-disk
+`system_health.json` metrics (county 0.499 / beach 0.871) predate this trim — they were
+written by the prior 12/50 daily run; the next daily refresh at 6/15 will have noisier
+(fewer-fold) spatial numbers. Reconciliation detail: `backend/METRICS_RECONCILIATION.md`.

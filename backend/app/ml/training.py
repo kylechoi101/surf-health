@@ -42,8 +42,10 @@ from app.data.pipeline.features import (
 from app.ml.calibration import (
     HierarchicalProbabilityCalibrator,
     ProbabilityCalibrator,
+    _LOW_THRESHOLD,
     _HIGH_THRESHOLD,
     _VERY_HIGH_THRESHOLD as _CAL_VERY_HIGH,
+    confidence_capped_risk_band,
     risk_band,
 )
 from app.ml.datasets import SequenceDataset
@@ -1901,6 +1903,16 @@ def _promotion_assessment(
             baseline_brier = beach_persistence.get("brier")
             if model_brier is not None and baseline_brier is not None and model_brier >= baseline_brier:
                 blockers.append("Held-out beach Brier score does not beat persistence.")
+            # Gate: spatial calibration slope must be plausibly calibrated.
+            # Symmetric to the county-slope gate above; same 0.4 threshold —
+            # held-out-beach probabilities are no more trustworthy than
+            # held-out-county ones when the calibration slope is degenerate.
+            beach_slope = beach_model.get("calibration_slope")
+            if beach_slope is not None and beach_slope < 0.4:
+                blockers.append(
+                    f"Spatial beach calibration slope {beach_slope:.3f} is below 0.4. "
+                    "Probabilities are not trustworthy on held-out beaches."
+                )
 
     return {
         "public_release_eligible": not blockers,
@@ -2632,6 +2644,44 @@ def _export_forecasts(
             raw_probabilities,
             forecast_group_metadata,
         )
+
+    # --- Runtime serving guards (apply to EVERY winner) ----------------------
+    # The deployed xgb_undersample_ensemble (and most other branches) do NOT
+    # apply the positive-persistence floor that the dedicated guard variant
+    # does. At serve time we never want the model to underperform "yesterday
+    # exceeded → today still elevated": where the last official observation
+    # exceeded the STV, the served probability must not collapse to Low.
+    probabilities = np.asarray(probabilities, dtype=float)
+    persistence_probabilities = _persistence_probabilities(
+        baseline_forecast_features,
+        _STV_THRESHOLD,
+    )
+    # NaN/inf guard: a non-finite served probability is meaningless. Fall back
+    # to the positive-persistence signal for that row when one exists, else a
+    # safe Moderate-band default (0.20 = Low/Moderate cut), and warn loudly.
+    nonfinite_mask = ~np.isfinite(probabilities)
+    if nonfinite_mask.any():
+        n_bad = int(nonfinite_mask.sum())
+        fallback = np.where(persistence_probabilities >= 0.5, 1.0, _LOW_THRESHOLD)
+        probabilities = np.where(nonfinite_mask, fallback, probabilities)
+        print(
+            f"[serving guard] WARNING: {n_bad} forecast probabilit"
+            f"{'y' if n_bad == 1 else 'ies'} were NaN/inf; fell back to "
+            "persistence/safe default.",
+            file=sys.stderr, flush=True,
+        )
+    probabilities = np.clip(probabilities, 0.0, 1.0)
+    # Positive-persistence floor. The guard variant already applied this in its
+    # own branch (don't double-apply); every other winner gets it here. alpha=1
+    # keeps the model probability for non-persistence rows untouched and only
+    # raises rows where the prior observation exceeded the STV — a pure floor.
+    if winner != "hist_gbm_positive_persistence_guard":
+        probabilities = _positive_persistence_guarded_blend_probabilities(
+            probabilities,
+            persistence_probabilities,
+            alpha=1.0,
+        )
+
     density_predictions = regressor.predict(baseline_forecast_features)
     _VERY_HIGH_THRESHOLD = _CAL_VERY_HIGH
     _DEGENERATE_VERY_HIGH_FRACTION = 0.30
@@ -2686,15 +2736,26 @@ def _export_forecasts(
             p_upper_final = max(float(p_upper), served_p_exceed) if np.isfinite(p_upper) else None
             sample_age_value = _safe_float(latest_row.get("sample_age_days")) if latest_row is not None else None
             sample_age_days = int(sample_age_value) if sample_age_value is not None else None
+            row_recency_band = (
+                str(latest_row.get("sample_recency_band")) if latest_row is not None else "unknown"
+            )
+            # False-alarm gate (does NOT touch the public band cutpoints): a
+            # strong (High/Very High) MODEL band fired off a very-stale sample
+            # with no active advisory is low-confidence — cap the *displayed*
+            # band at Moderate. p_exceed/p_exceed_raw stay honest; an active
+            # advisory always wins (advisory_floor_trigger).
+            served_risk_band = confidence_capped_risk_band(
+                served_p_exceed,
+                sample_recency_band=row_recency_band,
+                advisory_active=bool(advisory_floor_trigger),
+            )
             forecasts.append({
                 "beach_id": beach_id,
                 "forecast_date": forecast_date.isoformat(),
-                "risk_band": risk_band(served_p_exceed),
+                "risk_band": served_risk_band,
                 "forecast_label_mode": "model",
                 "sample_age_days": sample_age_days,
-                "sample_recency_band": (
-                    latest_row.get("sample_recency_band") if latest_row is not None else "unknown"
-                ),
+                "sample_recency_band": row_recency_band,
                 "is_beta_forecast": True,
                 "advisory_floor_applied": advisory_floor_applied,
                 "p_exceed": served_p_exceed,
