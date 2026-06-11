@@ -534,8 +534,26 @@ def build_beach_day_frame(
     if observations.empty:
         return pd.DataFrame()
 
+    # Collapse multiple same-day samples to one training row using ANY-exceedance,
+    # not the chronologically-last sample. A beach sampled twice in a day where an
+    # earlier sample exceeded the STV but a later resample came back clean must be
+    # labeled EXCEEDED — this is a public-health, false-negative-averse target, so
+    # a morning exceedance is never erased by a clean afternoon reading (the prior
+    # `.tail(1)` rule flipped 1,009 such beach-days to "safe", 100% in the
+    # false-negative direction). We represent the day with its WORST sample (max
+    # exceeds_stv, then max enterococcus value) so the kept `enterococcus_value` /
+    # `exceeds_stv` and every value-derived lag/geomean feature stay mutually
+    # consistent. `sample_time` is the final tiebreak so the pick is deterministic
+    # even when same-day samples share an identical timestamp.
+    _ranked = observations.copy()
+    _ranked["_exceed_rank"] = (
+        _ranked["exceeds_stv"].fillna(False).astype(bool).astype(int)
+    )
+    _ranked["_value_rank"] = pd.to_numeric(_ranked["value"], errors="coerce").fillna(
+        float("-inf")
+    )
     per_day_observation = (
-        observations.sort_values("sample_time")
+        _ranked.sort_values(["_exceed_rank", "_value_rank", "sample_time"])
         .groupby(["beach_id", "sample_date"], as_index=False)
         .tail(1)
     )[

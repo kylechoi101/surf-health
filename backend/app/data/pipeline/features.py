@@ -586,6 +586,14 @@ def _model_feature_columns(enriched: pd.DataFrame) -> list[str]:
             "latitude",
             "longitude",
             "historical_advisory_count",
+            # Leaky: this is the beach's ALL-TIME advisory total (no date bound),
+            # broadcast onto every dated row, so a 2021 row carries advisories
+            # posted through 2026 — future, target-correlated information. Its
+            # log1p transform was slipping into the model via _spatial_context_
+            # features and, in leave-one-beach-out folds, leaked the held-out
+            # beach's own future advisory count into its features (inflating the
+            # reported spatial AUCPR). Dropped from the model feature set.
+            "historical_advisory_count_log1p",
             "cdip_distance_km",
             "erddap_distance_km",
             "cdip_station_id",
