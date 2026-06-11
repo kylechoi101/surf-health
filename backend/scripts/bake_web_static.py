@@ -78,6 +78,24 @@ def _safe(value):
     return value
 
 
+def _finite_or_none(value) -> float | None:
+    """Return value as a finite float if present and parseable (INCLUDING 0.0),
+    else None. Reuses ``_safe`` (which already maps NaN/inf/NaT -> None) so a
+    genuine raw probability of exactly 0.0 is preserved rather than treated as a
+    missing value by a truthiness check.
+    """
+    safe = _safe(value)
+    if safe is None:
+        return None
+    try:
+        f = float(safe)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(f) or math.isinf(f):
+        return None
+    return f
+
+
 def _active_advisory_set(advisories: pd.DataFrame) -> tuple[set[str], dict[str, str]]:
     """Return (set of beach_ids with currently-active advisory, beach_id->website map).
 
@@ -111,8 +129,15 @@ def _active_advisory_set(advisories: pd.DataFrame) -> tuple[set[str], dict[str, 
 def _build_forecast_block(fc_row: pd.Series, has_active_advisory: bool) -> dict:
     """Mirror curated_repository.get_forecast's override logic."""
     row = {k: _safe(v) for k, v in fc_row.items()}
-    raw_p = row.get("p_exceed_raw") or row.get("p_exceed")
-    model_band = risk_band(raw_p) if isinstance(raw_p, (int, float)) else row.get("risk_band")
+    # Prefer the genuine raw model probability whenever it is present and a
+    # finite number — INCLUDING exactly 0.0 (isotonic's lowest bin can emit it).
+    # A truthiness `or` would drop a real 0.0 through to p_exceed, which is the
+    # advisory-FLOORED served value (e.g. 0.30) and would mislabel a 'Low'
+    # forecast as 'High', diverging from the production API's None/NaN check.
+    raw_p = _finite_or_none(row.get("p_exceed_raw"))
+    if raw_p is None:
+        raw_p = _finite_or_none(row.get("p_exceed"))
+    model_band = risk_band(raw_p) if raw_p is not None else row.get("risk_band")
     if has_active_advisory:
         row["official_advisory_active"] = True
         row["model_risk_band"] = model_band

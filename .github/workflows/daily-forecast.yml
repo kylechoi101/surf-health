@@ -52,7 +52,11 @@ jobs:
           cache-dependency-path: backend/pyproject.toml
 
       - name: Install backend
-        run: pip install -e ".[training]"
+        # -c constraints.txt pins the portable scientific stack
+        # (numpy/pandas/scikit-learn/xgboost/...) to the last-validated daily-run
+        # versions so a fresh PyPI resolve can't silently shift calibrated
+        # probabilities between runs. Relative path resolves under working-directory.
+        run: pip install -e ".[training]" -c constraints.txt
         working-directory: backend
 
       - name: Restore hydrology cache
@@ -90,6 +94,17 @@ jobs:
           python scripts/fetch_safetoswim_geomeans.py \
             --output ../data/raw/safetoswim_geomeans_2020-present.csv \
             --skip-if-exists
+
+      - name: Snapshot previous serving artifacts (drift baseline + release-gate fallback)
+        # Capture the last-committed forecast + hourly BEFORE the pipeline runs.
+        # forecasts.parquet feeds validate_forecast.py's --previous drift check;
+        # hourly_forecast.parquet is restored later when the release gate blocks
+        # publication (the data pipeline regenerates hourly unconditionally, so a
+        # fresh hourly must not leak under a blocked safety forecast). || true:
+        # on the very first run these files do not exist yet.
+        run: |
+          cp data/curated/forecasts.parquet /tmp/prev_forecasts.parquet || true
+          cp data/curated/hourly_forecast.parquet /tmp/prev_hourly_forecast.parquet || true
 
       - name: Run data pipeline
         run: |
@@ -168,7 +183,29 @@ jobs:
           # Gate retrain @1095d: xgb_undersample_ensemble held-out county AUCPR
           # 0.507 -> 0.590, beach 0.881 -> 0.900 (hist_gbm does NOT benefit: 0.500 -> 0.478).
           # 1095d ~= 84k rows, all feature-rich post-2020 history.
-          python -m app.ml.training --curated --forecast-date "$FORECAST_DATE" $WINNER_FLAG $BACKTEST_FLAGS --training-window-days 1095 --forecast-min-recency-days 45
+          # --enforce-release-gate: when the promotion assessment finds the model
+          # ineligible (spatial-holdout gate fails), SKIP overwriting
+          # forecasts.parquet so the last-validated forecast keeps serving. The
+          # blockers still land in system_health.json; the verify_release_gate.py
+          # step (after the commit) then fails the job to fire the alert.
+          python -m app.ml.training --curated --forecast-date "$FORECAST_DATE" $WINNER_FLAG $BACKTEST_FLAGS --training-window-days 1095 --forecast-min-recency-days 45 --enforce-release-gate
+        working-directory: backend
+
+      - name: Honor release gate for hourly forecast
+        # When --enforce-release-gate blocked publication, training left
+        # forecasts.parquet at the previous run's values. Restore the previous
+        # hourly_forecast.parquet too so the whole last-validated serving snapshot
+        # stays coherent — the data pipeline regenerates hourly unconditionally
+        # before training, so a fresh hourly would otherwise ship under a blocked
+        # safety forecast. Best-effort restore; never fails the job here (the
+        # verify_release_gate.py step after the commit is what fails it).
+        run: |
+          if python scripts/verify_release_gate.py --curated ../data/curated/ >/dev/null 2>&1; then
+            echo "Release gate passed — keeping freshly built hourly_forecast.parquet."
+          else
+            echo "::warning::Release gate blocked publication — restoring previous hourly_forecast.parquet."
+            cp /tmp/prev_hourly_forecast.parquet ../data/curated/hourly_forecast.parquet || true
+          fi
         working-directory: backend
 
       - name: Validate forecast (abort before committing a bad/stale run)
@@ -177,8 +214,10 @@ jobs:
         # the job (exit 1) on a missing/unparseable/empty/truncated/degenerate
         # or stale forecast, so a silent training failure can never ship a
         # no-op commit of the previous run's stale data. NOT continue-on-error.
+        # --previous compares against the pre-pipeline snapshot for distribution
+        # drift (and tolerates the release-gate "unchanged forecast" case).
         run: |
-          python scripts/validate_forecast.py --curated ../data/curated/
+          python scripts/validate_forecast.py --curated ../data/curated/ --previous /tmp/prev_forecasts.parquet
         working-directory: backend
 
       - name: Forecast-time weather pull (100% wind/UV coverage)
@@ -254,10 +293,6 @@ jobs:
       # That repo's CI pulls data/curated/ from this public repo via the
       # GitHub raw URL and bakes its own static export.
 
-      - name: Verify public release gates
-        run: python scripts/verify_public_release.py
-        continue-on-error: true
-
       - name: Commit and push if changed
         run: |
           git config user.name "github-actions[bot]"
@@ -274,6 +309,15 @@ jobs:
             git pull --rebase --autostash -X theirs origin main
             git push
           fi
+
+      - name: Verify public release gate (fail the job if publication was blocked)
+        # MUST run AFTER the commit/push: when --enforce-release-gate blocks
+        # publication, the system_health.json update (with the blockers) has to
+        # reach the repo for auditability FIRST; only then does this non-zero exit
+        # fail the job so the notify-failure job opens the pipeline-failure issue.
+        # NOT continue-on-error — the whole point is to surface the block loudly.
+        run: python scripts/verify_release_gate.py --curated ../data/curated/
+        working-directory: backend
 
       - name: Trigger Render deploy
         if: success()
@@ -295,7 +339,10 @@ jobs:
   # notification with ZERO external secrets (no Slack/PagerDuty needed).
   notify-failure:
     needs: refresh
-    if: failure()
+    # A 170-min `timeout-minutes` kill records the job conclusion as CANCELLED,
+    # which failure() does NOT match — so cancelled() is included here, otherwise
+    # a timeout (a documented recurring failure mode) would fire no alert at all.
+    if: ${{ failure() || cancelled() }}
     runs-on: ubuntu-latest
     permissions:
       # contents:read so github-script can read the repo; issues:write to
@@ -377,4 +424,59 @@ jobs:
                 created = await github.rest.issues.create(base);
               }
               core.notice(`Opened failure issue #${created.data.number}`);
+            }
+
+  # Recovery alerting: notify-failure opens/comments a `pipeline-failure` issue
+  # but NOTHING closed it on a later success, so the issue state never reflected
+  # recovery and a muted long-lived thread buried new failures. This job runs on
+  # a successful refresh, comments "recovered" on every OPEN `pipeline-failure`
+  # issue, and closes it — so the issue tracker reflects the live pipeline state.
+  notify-recovery:
+    needs: refresh
+    if: ${{ success() }}
+    runs-on: ubuntu-latest
+    permissions:
+      # contents:read so github-script can read the repo; issues:write to
+      # comment on / close the recovered alert issues. Both scoped to this job.
+      contents: read
+      issues: write
+    steps:
+      - name: Close recovered pipeline-failure issues
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            // YYYY-MM-DD in UTC — same date format the failure job uses.
+            const today = new Date().toISOString().slice(0, 10);
+            const label = 'pipeline-failure';
+
+            // List ALL open issues carrying the label (paginated) and close each
+            // one — a multi-day outage may have left more than one thread.
+            const open = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: label,
+              per_page: 100,
+            });
+
+            if (open.length === 0) {
+              core.notice('No open pipeline-failure issues to close.');
+              return;
+            }
+
+            for (const issue of open) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: `Pipeline recovered — run ${runUrl} on ${today} succeeded. Closing this alert.`,
+              });
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                state: 'closed',
+              });
+              core.notice(`Closed recovered failure issue #${issue.number}`);
             }

@@ -124,6 +124,119 @@ def sensitivity_at_specificity(
     }
 
 
+def cluster_bootstrap_aucpr_ci(
+    labels: np.ndarray,
+    probabilities: np.ndarray,
+    groups: np.ndarray,
+    *,
+    n_resamples: int = 500,
+    seed: int = 12345,
+    alpha: float = 0.05,
+) -> tuple[float, float]:
+    """Cluster (group) bootstrap confidence interval for the pooled AUCPR.
+
+    Spatial holdout AUCPR is pooled across leave-one-out folds, so the rows are
+    NOT independent — every row in a held-out county/beach shares that fold's
+    draw. A naive row bootstrap would badly understate the uncertainty. The honest
+    resampling unit is the *group* (the fold id): draw the unique groups with
+    replacement, pool all rows of the drawn groups, recompute AUCPR, and read the
+    central (1 - ``alpha``) quantile interval off the bootstrap distribution.
+
+    Single-class resamples (no positives or no negatives pooled) are skipped —
+    ``average_precision_score`` is undefined there. Deterministic for a given
+    ``seed``. Returns ``(nan, nan)`` when there are fewer than two groups, the
+    inputs are empty/misaligned, or every resample degenerates.
+    """
+    labels = np.asarray(labels).astype(int)
+    probabilities = np.asarray(probabilities, dtype=float)
+    groups = np.asarray(groups)
+    n_rows = labels.shape[0]
+    if n_rows == 0 or probabilities.shape[0] != n_rows or groups.shape[0] != n_rows:
+        return (float("nan"), float("nan"))
+    unique_groups = np.unique(groups)
+    n_groups = len(unique_groups)
+    if n_groups < 2:
+        return (float("nan"), float("nan"))
+    group_to_rows = {g: np.flatnonzero(groups == g) for g in unique_groups}
+    rng = np.random.default_rng(seed)
+    samples: list[float] = []
+    for _ in range(n_resamples):
+        drawn = rng.choice(n_groups, size=n_groups, replace=True)
+        idx = np.concatenate([group_to_rows[unique_groups[g]] for g in drawn])
+        pooled_labels = labels[idx]
+        if len(np.unique(pooled_labels)) < 2:
+            continue
+        samples.append(float(average_precision_score(pooled_labels, probabilities[idx])))
+    if not samples:
+        return (float("nan"), float("nan"))
+    low = float(np.quantile(samples, alpha / 2.0))
+    high = float(np.quantile(samples, 1.0 - alpha / 2.0))
+    return (low, high)
+
+
+def paired_cluster_bootstrap_aucpr_gap_ci(
+    labels_a: np.ndarray,
+    probabilities_a: np.ndarray,
+    groups_a: np.ndarray,
+    labels_b: np.ndarray,
+    probabilities_b: np.ndarray,
+    groups_b: np.ndarray,
+    *,
+    n_resamples: int = 500,
+    seed: int = 12345,
+    alpha: float = 0.10,
+) -> tuple[float, float]:
+    """Paired cluster bootstrap CI for the pooled AUCPR gap (model A - model B).
+
+    Both models are scored on the SAME held-out folds (counties/beaches); they
+    differ only in their per-row probabilities. To test whether challenger A
+    *decisively* beats incumbent B we resample the shared folds with replacement
+    and, on each resample, compute each model's pooled AUCPR from its own
+    per-row predictions, then the gap A - B. The pairing is at the fold level —
+    the same drawn folds feed both models — which removes the between-fold
+    variance that dominates the 6-fold spatial sweep. A positive lower bound of
+    the central (1 - ``alpha``) interval means A beats B beyond resampling noise.
+
+    Resamples where either model's pooled labels are single-class are skipped.
+    Deterministic for a given ``seed``. Returns ``(nan, nan)`` when fewer than two
+    shared groups exist or every resample degenerates.
+    """
+    labels_a = np.asarray(labels_a).astype(int)
+    probabilities_a = np.asarray(probabilities_a, dtype=float)
+    groups_a = np.asarray(groups_a)
+    labels_b = np.asarray(labels_b).astype(int)
+    probabilities_b = np.asarray(probabilities_b, dtype=float)
+    groups_b = np.asarray(groups_b)
+    if labels_a.shape[0] == 0 or labels_b.shape[0] == 0:
+        return (float("nan"), float("nan"))
+    if groups_a.shape[0] != labels_a.shape[0] or groups_b.shape[0] != labels_b.shape[0]:
+        return (float("nan"), float("nan"))
+    shared_groups = np.intersect1d(np.unique(groups_a), np.unique(groups_b))
+    n_groups = len(shared_groups)
+    if n_groups < 2:
+        return (float("nan"), float("nan"))
+    a_rows = {g: np.flatnonzero(groups_a == g) for g in shared_groups}
+    b_rows = {g: np.flatnonzero(groups_b == g) for g in shared_groups}
+    rng = np.random.default_rng(seed)
+    gaps: list[float] = []
+    for _ in range(n_resamples):
+        drawn = rng.choice(n_groups, size=n_groups, replace=True)
+        idx_a = np.concatenate([a_rows[shared_groups[g]] for g in drawn])
+        idx_b = np.concatenate([b_rows[shared_groups[g]] for g in drawn])
+        ya = labels_a[idx_a]
+        yb = labels_b[idx_b]
+        if len(np.unique(ya)) < 2 or len(np.unique(yb)) < 2:
+            continue
+        aucpr_a = average_precision_score(ya, probabilities_a[idx_a])
+        aucpr_b = average_precision_score(yb, probabilities_b[idx_b])
+        gaps.append(float(aucpr_a - aucpr_b))
+    if not gaps:
+        return (float("nan"), float("nan"))
+    low = float(np.quantile(gaps, alpha / 2.0))
+    high = float(np.quantile(gaps, 1.0 - alpha / 2.0))
+    return (low, high)
+
+
 def classification_metrics(labels: np.ndarray, probabilities: np.ndarray) -> dict[str, float]:
     labels = np.asarray(labels)
     probabilities = np.asarray(probabilities, dtype=float)

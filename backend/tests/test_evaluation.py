@@ -3,7 +3,9 @@ import pandas as pd
 
 from app.ml.evaluation import (
     classification_metrics,
+    cluster_bootstrap_aucpr_ci,
     holdout_frame,
+    paired_cluster_bootstrap_aucpr_gap_ci,
     persist_holdout_predictions,
     sensitivity_at_specificity,
     sensitivity_at_specificity_record,
@@ -158,3 +160,103 @@ def test_persist_holdout_predictions_empty_is_skipped(tmp_path):
     out = persist_holdout_predictions(tmp_path / "empty.parquet", np.array([]), np.array([]))
     assert out is None
     assert not (tmp_path / "empty.parquet").exists()
+
+
+# --- cluster-bootstrap CIs (statistical rigor) -------------------------------
+
+
+def _grouped_signal(rng, n_groups, per_group, signal):
+    """n_groups folds, each per_group rows; ``signal`` sets how cleanly probs rank."""
+    labels, probs, groups = [], [], []
+    for g in range(n_groups):
+        y = (rng.random(per_group) < 0.35).astype(int)
+        p = np.clip(signal * y + rng.normal(0.0, 0.2, size=per_group) + 0.2, 0.0, 1.0)
+        labels.append(y)
+        probs.append(p)
+        groups.append(np.full(per_group, f"fold-{g}"))
+    return (
+        np.concatenate(labels),
+        np.concatenate(probs),
+        np.concatenate(groups),
+    )
+
+
+def test_cluster_bootstrap_aucpr_ci_is_deterministic_and_ordered():
+    rng = np.random.default_rng(0)
+    labels, probs, groups = _grouped_signal(rng, 6, 40, 0.8)
+    lo1, hi1 = cluster_bootstrap_aucpr_ci(labels, probs, groups, n_resamples=300, seed=42)
+    lo2, hi2 = cluster_bootstrap_aucpr_ci(labels, probs, groups, n_resamples=300, seed=42)
+    # Deterministic for a fixed seed.
+    assert (lo1, hi1) == (lo2, hi2)
+    # A real interval that brackets a plausible AUCPR.
+    assert 0.0 <= lo1 <= hi1 <= 1.0
+    assert hi1 > lo1
+
+
+def test_cluster_bootstrap_aucpr_ci_degenerate_inputs_return_nan():
+    # Fewer than two groups -> can't cluster-resample.
+    lo, hi = cluster_bootstrap_aucpr_ci(
+        np.array([0, 1, 0, 1]), np.array([0.1, 0.9, 0.2, 0.8]), np.array(["x"] * 4)
+    )
+    assert np.isnan(lo) and np.isnan(hi)
+    # Misaligned groups -> nan.
+    lo, hi = cluster_bootstrap_aucpr_ci(
+        np.array([0, 1]), np.array([0.1, 0.9]), np.array(["x"])
+    )
+    assert np.isnan(lo) and np.isnan(hi)
+
+
+def test_cluster_bootstrap_skips_single_class_resamples():
+    # All-positive labels: every resample is single-class -> no usable AUCPR -> nan,
+    # and it must not raise.
+    rng = np.random.default_rng(1)
+    groups = np.repeat([f"f{g}" for g in range(4)], 10)
+    labels = np.ones(40, dtype=int)
+    probs = rng.random(40)
+    lo, hi = cluster_bootstrap_aucpr_ci(labels, probs, groups, n_resamples=50, seed=3)
+    assert np.isnan(lo) and np.isnan(hi)
+
+
+def test_paired_gap_ci_positive_lower_bound_when_a_dominates():
+    rng = np.random.default_rng(5)
+    labels, strong, groups = _grouped_signal(rng, 6, 40, 1.4)
+    # Model B sees the SAME labels/folds but uninformative probabilities.
+    weak = np.clip(rng.normal(0.4, 0.15, size=len(labels)), 0.0, 1.0)
+    lo, hi = paired_cluster_bootstrap_aucpr_gap_ci(
+        labels, strong, groups,
+        labels, weak, groups,
+        n_resamples=400, seed=9, alpha=0.10,
+    )
+    assert lo > 0.0  # A decisively beats B across resampled folds
+    assert hi >= lo
+
+
+def test_paired_gap_ci_straddles_zero_when_models_are_noisy_tie():
+    rng = np.random.default_rng(2)
+    counties = [f"c{i}" for i in range(6)]
+    a_labels, a_probs, a_groups = [], [], []
+    b_labels, b_probs, b_groups = [], [], []
+    for i, c in enumerate(counties):
+        y = (rng.random(40) < 0.35).astype(int)
+        strong = np.clip(0.6 * y + rng.normal(0, 0.2, 40) + 0.2, 0, 1)
+        weak = np.clip(0.6 * y + rng.normal(0, 0.2, 40) + 0.2, 0, 1)
+        # Alternate which model is the strong one per fold -> pooled gap ~ 0.
+        a_p, b_p = (strong, weak) if i % 2 == 0 else (weak, strong)
+        for store, arr in ((a_labels, y), (a_probs, a_p), (a_groups, np.full(40, c))):
+            store.append(arr)
+        for store, arr in ((b_labels, y), (b_probs, b_p), (b_groups, np.full(40, c))):
+            store.append(arr)
+    lo, hi = paired_cluster_bootstrap_aucpr_gap_ci(
+        np.concatenate(a_labels), np.concatenate(a_probs), np.concatenate(a_groups),
+        np.concatenate(b_labels), np.concatenate(b_probs), np.concatenate(b_groups),
+        n_resamples=400, seed=4, alpha=0.10,
+    )
+    assert lo <= 0.0 <= hi  # cannot rule out a tie
+
+
+def test_paired_gap_ci_degenerate_returns_nan():
+    lo, hi = paired_cluster_bootstrap_aucpr_gap_ci(
+        np.array([0, 1]), np.array([0.1, 0.9]), np.array(["x", "x"]),
+        np.array([0, 1]), np.array([0.2, 0.8]), np.array(["x", "x"]),
+    )
+    assert np.isnan(lo) and np.isnan(hi)

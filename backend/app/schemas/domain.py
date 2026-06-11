@@ -16,6 +16,13 @@ ForecastLabelMode = Literal[
 ]
 SampleRecencyBand = Literal["fresh", "recent", "stale", "very_stale", "unknown"]
 
+# Serve-time staleness cap for forecast rows. Anything older than this (or of
+# unknowable age on a fallback row) is flagged is_stale=True so clients render
+# a degraded state instead of presenting a days-old band as today's answer.
+# Records are still served — degrade honestly, never refuse and never present
+# stale data as current.
+MAX_FORECAST_AGE_HOURS = 48
+
 
 def sample_recency_band(sample_age_days: int | None) -> SampleRecencyBand:
     if sample_age_days is None:
@@ -130,8 +137,16 @@ class ForecastRecord(BaseModel):
     prediction_interval_level: float | None = Field(default=None, ge=0.0, le=1.0)
     top_drivers: list[str] = Field(default_factory=list)
     model_version: str
-    forecast_generated_at: datetime
+    # None when the stored row predates the forecast_generated_at column.
+    # Never fabricated at serve time — a fabricated "now" would defeat the
+    # is_stale flag below by making every legacy row look freshly generated.
+    forecast_generated_at: datetime | None = None
     forecast_age_hours: int | None = None
+    # True when the forecast is older than MAX_FORECAST_AGE_HOURS, or when
+    # its age is unknowable on a fallback (non-requested-date) row. Additive
+    # and defaulted so existing clients that ignore unknown fields keep
+    # working.
+    is_stale: bool = False
     official_advisory_active: bool = False
     advisory_floor_applied: bool = False
     advisory_website: str | None = None

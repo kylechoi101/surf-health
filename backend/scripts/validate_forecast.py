@@ -8,7 +8,8 @@ risk bands with no alarm. This script exits non-zero on any of the failure
 conditions below so the workflow aborts before committing.
 
 Usage:
-  python scripts/validate_forecast.py --curated ../data/curated/
+  python scripts/validate_forecast.py --curated ../data/curated/ \
+      [--previous /tmp/prev_forecasts.parquet]
 
 Failure conditions (exit 1):
   - forecasts.parquet missing or unparseable.
@@ -18,7 +19,25 @@ Failure conditions (exit 1):
   - any served probability (p_exceed) is NaN/inf or outside [0, 1].
   - ALL served probabilities are identical (degenerate model / constant output).
   - the forecast date stamp is older than today in America/Los_Angeles
-    (stale forecast — training did not produce a fresh date).
+    (stale forecast — training did not produce a fresh date). EXCEPTION: when
+    THIS run's system_health.json records that --enforce-release-gate
+    deliberately blocked publication (release_gate.enforced true,
+    forecast_published false, pipeline_freshness today PT), the frozen
+    last-validated forecast is EXPECTED — the check prints a notice instead of
+    failing, so the run still commits the blockers for audit and the
+    verify_release_gate.py step (after the commit) is what fails the job.
+
+Anomaly checks (exit 1; added 2026-06-11 — see ``anomaly_failures``):
+  - all-safe collapse: EVERY p_exceed sits below the Low band threshold.
+  - distribution shift vs the run passed via ``--previous`` (skipped
+    gracefully when that file is absent/unreadable): mean p_exceed shifted
+    more than 4x in either direction, or row count below 50% of the prior run.
+  - band sanity: the non-Low band count collapsed to zero while the prior run
+    served >= MIN_PREVIOUS_NON_LOW non-Low rows.
+
+``SKIP_FORECAST_ANOMALY_CHECKS=1`` bypasses ONLY the anomaly checks (escape
+hatch for a deliberate model/calibration change) and prints a loud notice;
+the shape/freshness checks above always run.
 
 The prior-run row count is read from the version committed at git HEAD
 (``git show HEAD:<path>``). When that is unavailable (first run, shallow
@@ -30,6 +49,8 @@ from __future__ import annotations
 
 import argparse
 import io
+import json
+import os
 import subprocess
 import sys
 from datetime import datetime
@@ -52,8 +73,122 @@ MIN_PROW_FRACTION = 0.80
 # Probability column the API serves and the apps band on.
 _PROB_COLUMN = "p_exceed"
 _DATE_COLUMN = "forecast_date"
+_BAND_COLUMN = "risk_band"
 _FORECAST_FILE = "forecasts.parquet"
 _PT = ZoneInfo("America/Los_Angeles")
+
+# --- Anomaly-gate thresholds (checks added 2026-06-11) ------------------------
+# Distribution-shift bounds vs the previous run's mean p_exceed. A dependency
+# or calibration regression squashes/explodes the whole probability field at
+# once; legitimate day-to-day drift stays well inside a 4x band either way.
+MEAN_SHIFT_LOWER_RATIO = 0.25
+MEAN_SHIFT_UPPER_RATIO = 4.0
+# Reject when the new run carries fewer than this fraction of the previous
+# run's rows (looser than MIN_PROW_FRACTION because the --previous artifact
+# may be older than git HEAD).
+PREVIOUS_ROW_FRACTION = 0.50
+# The previous run must have served at least this many non-Low rows for the
+# band-sanity check to apply — avoids tripping off an already-degenerate
+# baseline. The live mix is ~28 non-Low of 211 rows.
+MIN_PREVIOUS_NON_LOW = 5
+# Escape hatch for a deliberate model/calibration change; bypasses ONLY the
+# anomaly checks, never the shape/freshness checks.
+_SKIP_ENV = "SKIP_FORECAST_ANOMALY_CHECKS"
+
+
+def _low_band_threshold() -> float:
+    """Low/Moderate cutpoint, read from the canonical banding module so this
+    gate cannot silently drift when the cutpoints are re-tuned."""
+    try:
+        from app.ml.calibration import _LOW_THRESHOLD
+
+        return float(_LOW_THRESHOLD)
+    except Exception:  # noqa: BLE001 — fall back when app deps are unavailable
+        # Mirrors app/ml/calibration.py _LOW_THRESHOLD at time of writing.
+        return 0.20
+
+
+def _finite_probs(frame: pd.DataFrame) -> np.ndarray:
+    """Finite served probabilities; empty array when the column is absent."""
+    if _PROB_COLUMN not in frame.columns:
+        return np.array([], dtype=float)
+    probs = pd.to_numeric(frame[_PROB_COLUMN], errors="coerce").to_numpy(dtype=float)
+    return probs[np.isfinite(probs)]
+
+
+def _release_gate_blocked_today(curated_dir: Path, today_pt) -> bool:
+    """True iff THIS run's training step deliberately skipped publication.
+
+    Only a FRESH system_health.json (pipeline_freshness today in PT) whose
+    release_gate block says enforced-and-not-published excuses a stale
+    forecast date. An old payload — e.g. left by a training step that crashed
+    before writing health — must never mask a genuinely stale forecast, so
+    every parse failure here returns False (the stale check then fails as
+    usual: fail-closed).
+    """
+    try:
+        payload = json.loads((curated_dir / "system_health.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        return False
+    gate = payload.get("release_gate")
+    if not isinstance(gate, dict):
+        return False
+    if not gate.get("enforced") or gate.get("forecast_published", True):
+        return False
+    try:
+        stamp = pd.Timestamp(payload.get("pipeline_freshness"))
+        if stamp.tzinfo is None:
+            stamp = stamp.tz_localize("UTC")
+        return stamp.tz_convert(_PT).date() >= today_pt
+    except (TypeError, ValueError):
+        return False
+
+
+def _non_low_count(frame: pd.DataFrame, low_threshold: float) -> int:
+    """Rows served with a band other than Low.
+
+    Prefers the served ``risk_band`` column (catches banding bugs even when
+    the probabilities look healthy); falls back to thresholding p_exceed.
+    """
+    if _BAND_COLUMN in frame.columns:
+        bands = frame[_BAND_COLUMN]
+        return int((bands.notna() & (bands.astype(str) != "Low")).sum())
+    return int((_finite_probs(frame) >= low_threshold).sum())
+
+
+def _load_previous(previous_path: Path | None) -> pd.DataFrame | None:
+    """Previous run's forecast frame, or None when unavailable.
+
+    The comparison checks are best-effort: a missing/unreadable baseline
+    (first run, expired CI artifact) skips them rather than blocking,
+    mirroring the git-HEAD baseline handling in ``_prior_committed_row_count``.
+    """
+    if previous_path is None:
+        return None
+    if not previous_path.exists():
+        print(
+            f"NOTE: previous forecast not found at {previous_path}; "
+            "skipping distribution-shift and band-sanity checks.",
+            file=sys.stderr,
+        )
+        return None
+    try:
+        previous = pd.read_parquet(previous_path)
+    except Exception as exc:  # noqa: BLE001 — any read failure means no baseline
+        print(
+            f"NOTE: previous forecast at {previous_path} is unparseable ({exc!r}); "
+            "skipping distribution-shift and band-sanity checks.",
+            file=sys.stderr,
+        )
+        return None
+    if previous.empty:
+        print(
+            f"NOTE: previous forecast at {previous_path} has zero rows; "
+            "skipping distribution-shift and band-sanity checks.",
+            file=sys.stderr,
+        )
+        return None
+    return previous
 
 
 def _prior_committed_row_count(forecast_path: Path) -> int | None:
@@ -152,10 +287,96 @@ def validate(curated_dir: Path) -> list[str]:
             newest = stamped.max().date()
             today_pt = datetime.now(_PT).date()
             if newest < today_pt:
-                failures.append(
-                    f"Forecast date {newest.isoformat()} is older than today "
-                    f"({today_pt.isoformat()} PT) — stale forecast."
-                )
+                if _release_gate_blocked_today(curated_dir, today_pt):
+                    print(
+                        f"NOTICE: forecast date {newest.isoformat()} is older than "
+                        f"today ({today_pt.isoformat()} PT) but this run's release "
+                        "gate deliberately blocked publication — the last-validated "
+                        "forecast keeps serving. Not a validation failure; "
+                        "verify_release_gate.py fails the job after the commit.",
+                        file=sys.stderr,
+                    )
+                else:
+                    failures.append(
+                        f"Forecast date {newest.isoformat()} is older than today "
+                        f"({today_pt.isoformat()} PT) — stale forecast."
+                    )
+
+    return failures
+
+
+def anomaly_failures(curated_dir: Path, previous_path: Path | None) -> list[str]:
+    """Anomaly checks (2026-06-11). Return failure messages (empty == pass).
+
+    These run AFTER ``validate``'s shape/freshness checks and close the gap
+    they leave open: a dependency-induced calibration squash that keeps
+    distinct, in-range, full-row-count probabilities but collapses every
+    beach to Low passed every check above and silently under-warned.
+    """
+    forecast_path = curated_dir / _FORECAST_FILE
+    try:
+        forecasts = pd.read_parquet(forecast_path)
+    except Exception:  # noqa: BLE001 — missing/unparseable already hard-fails in validate()
+        return []
+    if forecasts.empty:
+        return []
+
+    failures: list[str] = []
+    low_threshold = _low_band_threshold()
+    probs = _finite_probs(forecasts)
+    rows = len(forecasts)
+
+    # (1) All-safe collapse. Several Tijuana-plume stations (Imperial Beach
+    # area) run ~0.85 exceedance base rates and are essentially never
+    # legitimately Low, so a day where EVERY beach forecasts below the Low
+    # threshold means a calibration/feature collapse, not clean water
+    # statewide. (~87% of beaches below the threshold is normal; 100% is not.)
+    if len(probs) and float(probs.max()) < low_threshold:
+        failures.append(
+            f"[all-safe-collapse] every served '{_PROB_COLUMN}' value is below the "
+            f"Low band threshold {low_threshold:.2f} "
+            f"(max={float(probs.max()):.4f} over {len(probs)} rows) — implausible "
+            "given chronically contaminated stations."
+        )
+
+    previous = _load_previous(previous_path)
+    if previous is None:
+        return failures
+    prev_rows = len(previous)
+    prev_probs = _finite_probs(previous)
+
+    # (2) Distribution shift vs the previous run.
+    if rows < PREVIOUS_ROW_FRACTION * prev_rows:
+        failures.append(
+            f"[distribution-shift] row count {rows} is below "
+            f"{PREVIOUS_ROW_FRACTION:.0%} of the previous run's {prev_rows}."
+        )
+    if len(probs) and len(prev_probs):
+        mean = float(probs.mean())
+        prev_mean = float(prev_probs.mean())
+        if mean < MEAN_SHIFT_LOWER_RATIO * prev_mean:
+            failures.append(
+                f"[distribution-shift] mean '{_PROB_COLUMN}' {mean:.4f} is below "
+                f"{MEAN_SHIFT_LOWER_RATIO}x the previous run's mean {prev_mean:.4f} "
+                f"(rows {rows} vs {prev_rows}) — probability squash."
+            )
+        if mean > MEAN_SHIFT_UPPER_RATIO * prev_mean:
+            failures.append(
+                f"[distribution-shift] mean '{_PROB_COLUMN}' {mean:.4f} is above "
+                f"{MEAN_SHIFT_UPPER_RATIO}x the previous run's mean {prev_mean:.4f} "
+                f"(rows {rows} vs {prev_rows}) — probability explosion."
+            )
+
+    # (3) Band sanity: the served band column collapsing to all-Low while the
+    # previous run had a real non-Low population catches a banding/display
+    # regression even when the raw probabilities still look healthy.
+    non_low = _non_low_count(forecasts, low_threshold)
+    prev_non_low = _non_low_count(previous, low_threshold)
+    if non_low == 0 and prev_non_low >= MIN_PREVIOUS_NON_LOW:
+        failures.append(
+            f"[band-sanity] current run serves 0 non-Low rows while the previous "
+            f"run served {prev_non_low} (>= {MIN_PREVIOUS_NON_LOW}) — band collapse."
+        )
 
     return failures
 
@@ -168,9 +389,27 @@ def main(argv: list[str] | None = None) -> int:
         default=Path("../data/curated/"),
         help="Path to the curated data directory containing forecasts.parquet.",
     )
+    parser.add_argument(
+        "--previous",
+        type=Path,
+        default=None,
+        help="Prior run's forecasts.parquet for the distribution-shift and "
+        "band-sanity checks; skipped gracefully when the file is absent.",
+    )
     args = parser.parse_args(argv)
 
     failures = validate(args.curated)
+    if os.environ.get(_SKIP_ENV) == "1":
+        print(
+            "=" * 78
+            + f"\nNOTICE: {_SKIP_ENV}=1 — BYPASSING the forecast anomaly checks"
+            "\n(all-safe-collapse, distribution-shift, band-sanity)."
+            "\nOnly valid for a deliberate model/calibration change; unset it after."
+            "\n" + "=" * 78,
+            file=sys.stderr,
+        )
+    else:
+        failures.extend(anomaly_failures(args.curated, args.previous))
     if failures:
         print("FAIL: forecast validation failed:", file=sys.stderr)
         for message in failures:

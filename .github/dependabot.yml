@@ -1,8 +1,13 @@
 version: 2
 updates:
-  # GitHub Actions only. The Python ML stack (torch/xgboost/etc.) is pinned
-  # deliberately and upgraded by hand — pip updates would be high-noise and
-  # risk silent metric drift, so they are intentionally NOT automated here.
+  # GitHub Actions only. The Python ML stack is constrained via
+  # backend/constraints.txt (the portable scientific stack — numpy/pandas/
+  # scipy/scikit-learn/xgboost/pyarrow/joblib/threadpoolctl — `==`-pinned to the
+  # last-validated daily-run versions) plus upper bounds in backend/pyproject.toml.
+  # pip is NOT auto-updated by dependabot here: changing these requires a
+  # validated retrain (a silent numpy/pandas/scikit-learn bump can shift the
+  # model's calibrated probabilities), and constraints.txt must be regenerated
+  # deliberately after that retrain — not via an automated PR.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:

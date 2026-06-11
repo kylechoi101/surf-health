@@ -22,7 +22,11 @@ jobs:
           cache-dependency-path: backend/pyproject.toml
 
       - name: Install backend
-        run: pip install -e ".[dev,training]"
+        # -c constraints.txt pins the portable scientific stack to the
+        # last-validated daily-run versions (matches daily-forecast.yml), so CI
+        # tests against the same numpy/pandas/scikit-learn/xgboost the daily
+        # retrain uses. Relative path resolves under working-directory.
+        run: pip install -e ".[dev,training]" -c constraints.txt
         working-directory: backend
 
       - name: Ruff

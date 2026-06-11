@@ -24,14 +24,22 @@ def get_service(
 
 router = APIRouter()
 
+# Forecast/advisory/beach payloads come from the baked snapshot, but a 24h
+# edge TTL kept serving pre-recovery data for a full day after a stale
+# snapshot was fixed. One hour caps that exposure; stale-while-revalidate
+# keeps the edge fast while it refetches in the background.
+SNAPSHOT_CACHE_CONTROL = "public, max-age=3600, stale-while-revalidate=600"
+
 
 @router.get("/parent-beaches")
-def list_parent_beaches(service: BeachService = Depends(get_service)):
+def list_parent_beaches(response: Response, service: BeachService = Depends(get_service)):
+    response.headers["Cache-Control"] = SNAPSHOT_CACHE_CONTROL
     return service.list_parent_beaches()
 
 
 @router.get("/beaches")
-def list_beaches(service: BeachService = Depends(get_service)):
+def list_beaches(response: Response, service: BeachService = Depends(get_service)):
+    response.headers["Cache-Control"] = SNAPSHOT_CACHE_CONTROL
     return service.list_beaches()
 
 
@@ -43,19 +51,28 @@ def get_forecast(
     service: BeachService = Depends(get_service),
 ):
     payload = service.get_forecast(beach_id, date)
-    # Forecast snapshot is baked into the image at deploy time; safe to cache
-    # aggressively. Sets up Cloudflare edge caching with no further code.
-    response.headers["Cache-Control"] = "public, max-age=86400"
+    response.headers["Cache-Control"] = SNAPSHOT_CACHE_CONTROL
     return payload
 
 
 @router.get("/beaches/{beach_id}/observations")
-def get_observations(beach_id: str, service: BeachService = Depends(get_service)):
+def get_observations(
+    beach_id: str,
+    response: Response,
+    service: BeachService = Depends(get_service),
+):
+    response.headers["Cache-Control"] = SNAPSHOT_CACHE_CONTROL
     return service.get_observations(beach_id)
 
 
 @router.get("/beaches/{beach_id}/forecast/explain")
-def explain_forecast(beach_id: str, date: date, service: BeachService = Depends(get_service)):
+def explain_forecast(
+    beach_id: str,
+    date: date,
+    response: Response,
+    service: BeachService = Depends(get_service),
+):
+    response.headers["Cache-Control"] = SNAPSHOT_CACHE_CONTROL
     return service.explain_forecast(beach_id, date)
 
 

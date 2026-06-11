@@ -50,7 +50,9 @@ from app.ml.calibration import (
 from app.ml.datasets import SequenceDataset
 from app.ml.evaluation import (
     classification_metrics,
+    cluster_bootstrap_aucpr_ci,
     holdout_frame,
+    paired_cluster_bootstrap_aucpr_gap_ci,
     persist_holdout_predictions,
     regression_metrics,
     sensitivity_at_specificity_record,
@@ -96,9 +98,20 @@ SPATIAL_DIAGNOSTIC_MODEL_NAMES = (
 )
 SPATIAL_BACKTEST_MODEL_NAMES = (*PRODUCTION_MODEL_NAMES, *SPATIAL_DIAGNOSTIC_MODEL_NAMES)
 SPATIAL_BACKTEST_STRATEGIES = ("shortlist", "requested", "quick")
-# Minimum temporal-valid AUCPR gain a challenger must show over the passing
-# incumbent before the gate swaps the production winner (hysteresis vs daily churn).
+# Point-estimate floor: minimum held-out county-AUCPR gain a challenger must show
+# over the passing incumbent before the gate even considers a swap (hysteresis vs
+# daily churn). A gap below this is treated as pure backtest noise.
 _WINNER_SWAP_MARGIN = 0.01
+# Conservative no-evidence fallback: when per-row holdout predictions are NOT
+# available to run the paired cluster bootstrap (e.g. an offline/metrics-only
+# evaluation), require a county-AUCPR gap above this before swapping. ~ the
+# measured 6-fold cluster-bootstrap half-width of the pooled spatial AUCPR
+# (~0.136 full width on [0.32, 0.59]); a gap inside that band is indistinguishable
+# from noise without the paired test, so we do not churn the production winner.
+_WINNER_SWAP_LARGE_GAP_MARGIN = 0.07
+# Deterministic seed for every spatial cluster bootstrap so the daily gate is
+# reproducible run-to-run (the winner must not flip on RNG state alone).
+_SPATIAL_BOOTSTRAP_SEED = 20260611
 PERSISTENCE_BLEND_ALPHAS = tuple(float(alpha) for alpha in np.linspace(0.0, 1.0, 11))
 PERSISTENCE_BLEND_MAX_MODEL_ALPHA = 0.6
 WEATHER_DELTA_CAPS = tuple(float(cap) for cap in np.linspace(0.0, 0.3, 7))
@@ -1288,6 +1301,7 @@ def _spatial_holdout_metrics(
 
     all_labels = np.concatenate(heldout_labels)
     all_probabilities = np.concatenate(heldout_probabilities)
+    all_groups = np.concatenate(heldout_groups) if heldout_groups else np.array([])
     # Stash the pooled per-row holdout predictions so the caller can persist them
     # (a single retrain re-derives them, but nothing on disk does today). Keyed by
     # model+group_column so the production winner's pairs can be selected later.
@@ -1295,13 +1309,25 @@ def _spatial_holdout_metrics(
         predictions_sink[(model_name, group_column)] = {
             "labels": all_labels,
             "probabilities": all_probabilities,
-            "groups": np.concatenate(heldout_groups) if heldout_groups else np.array([]),
+            "groups": all_groups,
         }
     metrics = classification_metrics(all_labels, all_probabilities)
     metrics["folds"] = float(used_groups)
     metrics["eligible_groups"] = float(len(eligible_groups))
     metrics["heldout_rows"] = float(len(all_labels))
     metrics["positive_rate"] = float(all_labels.mean())
+    # Cluster-bootstrap CI for the pooled AUCPR (resampling unit = the fold). The
+    # point AUCPR over only 6 county / 15 beach folds is noisy run-to-run; shipping
+    # the CI into system_health.json makes that uncertainty visible to consumers.
+    ci_low, ci_high = cluster_bootstrap_aucpr_ci(
+        all_labels,
+        all_probabilities,
+        all_groups,
+        n_resamples=500,
+        seed=_SPATIAL_BOOTSTRAP_SEED,
+    )
+    metrics["aucpr_ci_low"] = ci_low
+    metrics["aucpr_ci_high"] = ci_high
     return metrics
 
 
@@ -1823,24 +1849,72 @@ def _two_stage_training_plan(
     )
 
 
+def _paired_county_aucpr_gap_ci(
+    challenger: str,
+    incumbent: str,
+    predictions_sink: dict | None,
+) -> tuple[float, float] | None:
+    """90% paired cluster-bootstrap CI of the held-out county-AUCPR gap.
+
+    Returns ``(low, high)`` for (challenger - incumbent) over resampled county
+    folds, or ``None`` when the per-row holdout predictions are unavailable for
+    either model (the caller then uses the conservative large-gap fallback).
+    """
+    if not predictions_sink:
+        return None
+    challenger_preds = predictions_sink.get((challenger, "county"))
+    incumbent_preds = predictions_sink.get((incumbent, "county"))
+    if not challenger_preds or not incumbent_preds:
+        return None
+    challenger_groups = challenger_preds.get("groups")
+    incumbent_groups = incumbent_preds.get("groups")
+    if (
+        challenger_groups is None
+        or incumbent_groups is None
+        or len(challenger_preds.get("labels", [])) == 0
+        or len(incumbent_preds.get("labels", [])) == 0
+    ):
+        return None
+    return paired_cluster_bootstrap_aucpr_gap_ci(
+        challenger_preds["labels"],
+        challenger_preds["probabilities"],
+        challenger_groups,
+        incumbent_preds["labels"],
+        incumbent_preds["probabilities"],
+        incumbent_groups,
+        n_resamples=500,
+        seed=_SPATIAL_BOOTSTRAP_SEED,
+        alpha=0.10,
+    )
+
+
 def _spatially_qualified_production_winner(
     metrics: dict[str, dict[str, float]],
     *,
     preferred: str,
     candidates: list[str] | tuple[str, ...] = PRODUCTION_MODEL_NAMES,
+    predictions_sink: dict | None = None,
 ) -> str:
     """Pick the best spatially-qualified model for production.
 
     First filter to candidates that clear the held-out county + beach persistence
     gates (AUCPR + Brier beat persistence, spatial calibration plausible) — serving
     probabilities must generalize, not just win the temporal split. Among the
-    *passing* set, pick the best by temporal-valid AUCPR (then lower spatial Brier).
+    *passing* set, pick the best by held-out SPATIAL AUCPR (county first — the most
+    honest generalization signal; beach holdout carries per-beach self-persistence
+    and a high base rate — then beach, then lower spatial Brier).
+
+    Ranking on the SPATIAL metric (not the temporal-valid AUCPR the earlier version
+    used) is the point: the gate FILTERS on spatial generalization, so it must also
+    SELECT on it. The prior temporal-AUCPR key meant a challenger that generalized
+    materially better to unseen counties/beaches was rejected unless it also beat
+    the incumbent on the in-distribution temporal split — so spatial improvements
+    could never drive a swap. Hysteresis (`_WINNER_SWAP_MARGIN`) is likewise on the
+    held-out county AUCPR, so the daily retrain doesn't churn on backtest noise.
 
     This replaces an earlier veto that returned the incumbent whenever it merely
     *passed* — which kept a passing-but-inferior model in production even when a
-    sibling was decisively better (the 1095d ensemble case, 2026-06-08). Hysteresis
-    (`_WINNER_SWAP_MARGIN`) keeps the incumbent unless a challenger beats it by a
-    clear margin, so the daily winner-only retrain doesn't churn on backtest noise.
+    sibling was decisively better (the 1095d ensemble case, 2026-06-08).
     """
     if not any(name.startswith("spatial_") for name in metrics):
         return preferred
@@ -1853,20 +1927,36 @@ def _spatially_qualified_production_winner(
     if not passing:
         return preferred
 
-    def _key(model_name: str) -> tuple[float, float]:
-        valid = metrics.get(f"{model_name}_valid", {})
+    def _county_aucpr(model_name: str) -> float:
+        return float(metrics.get(f"spatial_county_{model_name}", {}).get("aucpr") or 0.0)
+
+    def _key(model_name: str) -> tuple[float, float, float]:
         county = metrics.get(f"spatial_county_{model_name}", {})
         beach = metrics.get(f"spatial_beach_{model_name}", {})
+        beach_aucpr = float(beach.get("aucpr") or 0.0)
         spatial_brier = float(county.get("brier", 1.0)) + float(beach.get("brier", 1.0))
-        return (-float(valid.get("aucpr", 0.0)), spatial_brier)
+        # Maximize county AUCPR, then beach AUCPR, then minimize spatial Brier.
+        return (-_county_aucpr(model_name), -beach_aucpr, spatial_brier)
 
     best = min(passing, key=_key)
-    # Hysteresis: keep a passing incumbent unless a challenger beats it on
-    # temporal-valid AUCPR by a clear margin.
-    if preferred in passing:
-        preferred_aucpr = -_key(preferred)[0]
-        best_aucpr = -_key(best)[0]
-        if best_aucpr - preferred_aucpr <= _WINNER_SWAP_MARGIN:
+    # Noise-aware hysteresis: a challenger displaces a passing incumbent only when
+    # the county-AUCPR improvement survives both a point-estimate floor AND a
+    # paired cluster bootstrap. The pooled spatial AUCPR over 6 county folds has a
+    # cluster-bootstrap 95% half-width ~0.136 — ~14x the 0.01 floor — so the floor
+    # alone would churn the production winner on backtest noise.
+    if preferred in passing and best != preferred:
+        gap = _county_aucpr(best) - _county_aucpr(preferred)
+        # (a) Point-estimate floor: never act on a sub-noise-floor gap.
+        if gap <= _WINNER_SWAP_MARGIN:
+            return preferred
+        # (b) Paired cluster bootstrap of the gap (challenger - incumbent): swap
+        # only when its 90% lower bound clears 0. Without per-row predictions we
+        # cannot run it, so fall back to a conservative large-gap rule.
+        gap_ci = _paired_county_aucpr_gap_ci(best, preferred, predictions_sink)
+        if gap_ci is None:
+            if gap <= _WINNER_SWAP_LARGE_GAP_MARGIN:
+                return preferred
+        elif not (gap_ci[0] > 0.0):
             return preferred
     return best
 
@@ -1896,6 +1986,27 @@ def _promotion_assessment(
             blockers.append(f"Held-out beach metrics are missing for {winner}.")
         county_model = metrics.get(f"spatial_county_{winner}", {})
         county_persistence = metrics.get("spatial_county_persistence", {})
+        beach_model_present = metrics.get(f"spatial_beach_{winner}", {})
+        # Fail-CLOSED on zero-fold / empty backtests. _spatial_holdout_metrics
+        # ALWAYS sets the spatial_{county,beach}_{winner} key, but when no fold
+        # was usable (too few rows per group at the trimmed CI limits, or
+        # single-class inner splits) it returns {"folds": 0.0, ...} with NO
+        # aucpr/brier/calibration_slope. The persistence comparisons below are
+        # all `is not None`-guarded, so without this gate every comparison is
+        # silently skipped and an UNVALIDATED model passes by default. A model
+        # with zero real spatial validation must never be publicly releasable.
+        for scope, scope_metrics in (
+            ("county", county_model),
+            ("beach", beach_model_present),
+        ):
+            if not scope_metrics:
+                continue  # absence already blocked above
+            folds = scope_metrics.get("folds")
+            if scope_metrics.get("aucpr") is None or (folds is not None and folds < 1):
+                blockers.append(
+                    f"Held-out {scope} backtest produced no usable folds "
+                    f"(folds={folds!r}); the model has no spatial validation."
+                )
         if county_model and county_persistence:
             model_aucpr = county_model.get("aucpr")
             baseline_aucpr = county_persistence.get("aucpr")
@@ -2046,23 +2157,12 @@ def _persist_holdout_artifacts(
 
     # --- Spatial pooled pairs (leave-one-county-out / leave-one-beach-out) ---
     if predictions_sink:
-        spatial_frames: list[pd.DataFrame] = []
+        # Record the sensitivity@spec operating point for the WINNER only — it is
+        # the production-shipped number consumers read from system_health.json.
         for group_column in ("county", "beach_id"):
             pooled = predictions_sink.get((winner, group_column))
             if pooled is None or len(pooled.get("labels", [])) == 0:
                 continue
-            labels_arr = pooled["labels"]
-            probs_arr = pooled["probabilities"]
-            groups_arr = pooled.get("groups")
-            spatial_frames.append(
-                holdout_frame(
-                    labels_arr,
-                    probs_arr,
-                    model=winner,
-                    holdout_kind=group_column,
-                    group=groups_arr if groups_arr is not None and len(groups_arr) else None,
-                )
-            )
             # Spatial backtest metric keys use the FULL model name (variants
             # included); fall back to the base key for hist_gbm-family aliasing.
             prefix = "spatial_county_" if group_column == "county" else "spatial_beach_"
@@ -2073,9 +2173,32 @@ def _persist_holdout_artifacts(
             if spatial_key is not None:
                 metrics[spatial_key][_SENSITIVITY_AT_SPEC_KEY] = (
                     sensitivity_at_specificity_record(
-                        labels_arr, probs_arr, _SEARCY_TARGET_SPECIFICITY
+                        pooled["labels"], pooled["probabilities"], _SEARCY_TARGET_SPECIFICITY
                     )
                 )
+
+        # Persist per-row holdout pairs for EVERY backtested candidate (tagged by
+        # `model`), not just the winner, so model gaps can be paired-tested offline
+        # without a retrain. The winner's rows are still present (it is one of the
+        # sink keys), so existing winner-only consumers keep working by filtering
+        # `model == winner`. Sink keys are (model_name, group_column) tuples.
+        spatial_frames: list[pd.DataFrame] = []
+        for sink_key, pooled in predictions_sink.items():
+            if not (isinstance(sink_key, tuple) and len(sink_key) == 2):
+                continue
+            model_name, group_column = sink_key
+            if pooled is None or len(pooled.get("labels", [])) == 0:
+                continue
+            groups_arr = pooled.get("groups")
+            spatial_frames.append(
+                holdout_frame(
+                    pooled["labels"],
+                    pooled["probabilities"],
+                    model=model_name,
+                    holdout_kind=group_column,
+                    group=groups_arr if groups_arr is not None and len(groups_arr) else None,
+                )
+            )
         if spatial_frames:
             try:
                 combined = pd.concat(spatial_frames, ignore_index=True)
@@ -2306,6 +2429,273 @@ def _refresh_candidate_advisory_features(
         candidates["days_since_advisory_closed"] = np.nan
 
 
+# Base precip columns that the curation pipeline refreshes daily through the
+# forecast date in precip_daily.parquet and that the model consumes. We overwrite
+# whichever of these are present in BOTH the candidate frame and precip_daily.
+# (precip_mm_96h/192h and the *_prior columns are not in the curated training
+# allowlist today, so they simply don't intersect; listed for forward-compat.)
+_REFRESHABLE_PRECIP_COLUMNS: tuple[str, ...] = (
+    "precip_mm_1h",
+    "precip_mm_6h",
+    "precip_mm_24h",
+    "precip_mm_48h",
+    "precip_mm_72h",
+    "precip_mm_7d",
+    "precip_mm_96h",
+    "precip_mm_192h",
+    "precip_awi",
+    "first_flush_flag",
+    "first_rain_score",
+    "precip_72h_prior",
+    "precip_168h_prior",
+)
+
+# Streamflow base columns carried through the forecast date in
+# streamflow_daily.parquet and consumed by the model (the lag kernel that derives
+# from them is recomputed downstream in features._distributed_lag_hydrology_features).
+_REFRESHABLE_STREAMFLOW_COLUMNS: tuple[str, ...] = (
+    "streamflow_cfs_latest",
+    "streamflow_cfs_mean_6h",
+    "streamflow_cfs_mean_24h",
+    "streamflow_cfs_max_24h",
+    "streamflow_cfs_mean_72h",
+    "streamflow_rising_flag",
+)
+
+
+def _read_optional_parquet(path: Path) -> pd.DataFrame:
+    """Read a curated parquet, returning an empty frame if absent/unreadable.
+
+    Forecast-time hydrology refresh is best-effort: a missing artifact must leave
+    the candidate precip/streamflow features frozen rather than crash the build.
+    """
+    if not path.exists():
+        return pd.DataFrame()
+    try:
+        return pd.read_parquet(path)
+    except Exception:  # pragma: no cover - defensive: a corrupt cache must not crash training
+        print(f"[forecast-precip] WARN: could not read {path.name}; features left frozen.", file=sys.stderr, flush=True)
+        return pd.DataFrame()
+
+
+def _candidate_nearest_precip_station(
+    candidates: pd.DataFrame,
+    precip_daily: pd.DataFrame,
+    hydrologic_links: pd.DataFrame | None,
+) -> dict[str, str]:
+    """Map each candidate beach_id to its nearest precip grid station_id.
+
+    Reuses the SAME rule the curation pipeline applied to build the historical
+    precip features in beach_day (``app.data.pipeline.hydrology.
+    build_beach_hydrology_daily``): nearest precip station to the beach's
+    hydrologic pour point by haversine distance. Beaches with no pour-point link
+    fall back to their own display lat/lon, which rounds to the same 0.1° precip
+    grid cell — so a forecast row can still be refreshed rather than left stale.
+    """
+    from app.data.pipeline.external_covariates import haversine_km
+
+    if precip_daily.empty or "station_id" not in precip_daily.columns:
+        return {}
+    station_coords = (
+        precip_daily[["station_id", "latitude", "longitude"]]
+        .dropna(subset=["latitude", "longitude"])
+        .drop_duplicates("station_id")
+    )
+    if station_coords.empty:
+        return {}
+
+    coords_by_beach: dict[str, tuple[float, float]] = {}
+    if (
+        hydrologic_links is not None
+        and not hydrologic_links.empty
+        and {"beach_id", "pour_point_latitude", "pour_point_longitude"}.issubset(hydrologic_links.columns)
+    ):
+        pour = (
+            hydrologic_links[["beach_id", "pour_point_latitude", "pour_point_longitude"]]
+            .dropna(subset=["pour_point_latitude", "pour_point_longitude"])
+            .drop_duplicates("beach_id")
+        )
+        for _, row in pour.iterrows():
+            coords_by_beach[str(row["beach_id"])] = (
+                float(row["pour_point_latitude"]),
+                float(row["pour_point_longitude"]),
+            )
+    if {"beach_id", "latitude", "longitude"}.issubset(candidates.columns):
+        for _, row in candidates[["beach_id", "latitude", "longitude"]].drop_duplicates("beach_id").iterrows():
+            bid = str(row["beach_id"])
+            if bid in coords_by_beach:
+                continue
+            if pd.notna(row["latitude"]) and pd.notna(row["longitude"]):
+                coords_by_beach[bid] = (float(row["latitude"]), float(row["longitude"]))
+
+    st_ids = station_coords["station_id"].astype(str).to_numpy()
+    st_lat = station_coords["latitude"].to_numpy(dtype=float)
+    st_lon = station_coords["longitude"].to_numpy(dtype=float)
+    mapping: dict[str, str] = {}
+    for bid, (blat, blon) in coords_by_beach.items():
+        best_d = float("inf")
+        best_station: str | None = None
+        for sid, slat, slon in zip(st_ids, st_lat, st_lon, strict=False):
+            d = haversine_km(blat, blon, float(slat), float(slon))
+            if d < best_d:
+                best_d = d
+                best_station = str(sid)
+        if best_station is not None:
+            mapping[bid] = best_station
+    return mapping
+
+
+def _refresh_candidate_precip_features(
+    candidates: pd.DataFrame,
+    precip_daily: pd.DataFrame,
+    hydrologic_links: pd.DataFrame | None,
+    forecast_date: date,
+) -> None:
+    """Refresh precip-derived features on each forecast candidate to forecast-date values.
+
+    Forecast candidates are cloned from the beach's most-recent LAB sample row,
+    whose precip columns are the rainfall windows AS OF that sample day — 12-37
+    days stale by forecast time. ``precip_daily.parquet`` already carries the live
+    rainfall windows for the forecast date keyed by precip grid station, so here we
+    (1) join each candidate to its station via the same beach->station rule the
+    curation pipeline used, (2) overwrite every base precip column present in both
+    frames, and (3) recompute the rain-policy flags from the refreshed
+    ``precip_mm_72h`` via the canonical ``add_rain_policy_features``. The distributed
+    rain-lag kernel and the SD-boundary ``*_rain_interaction`` features are NOT
+    touched here: they are recomputed downstream from the refreshed bases inside
+    ``features.add_temporal_features``. Beaches/dates with no matching precip_daily
+    row keep their frozen value (env-persistence); the count is logged once. Mutates
+    ``candidates`` in place, matching ``_refresh_candidate_advisory_features``.
+    """
+    if candidates.empty or precip_daily is None or precip_daily.empty:
+        return
+    if "station_id" not in precip_daily.columns or "sample_date" not in precip_daily.columns:
+        return
+    forecast_ts = pd.Timestamp(forecast_date).normalize()
+    pr = precip_daily.copy()
+    pr["sample_date"] = pd.to_datetime(pr["sample_date"], errors="coerce")
+    pr_fc = pr.loc[pr["sample_date"].dt.normalize() == forecast_ts].copy()
+    if pr_fc.empty:
+        print(
+            f"[forecast-precip] no precip_daily rows for forecast date {forecast_date}; "
+            f"left precip features frozen for all {len(candidates)} candidates.",
+            file=sys.stderr,
+            flush=True,
+        )
+        return
+    pr_fc["station_id"] = pr_fc["station_id"].astype(str)
+    pr_fc = pr_fc.drop_duplicates("station_id", keep="last").set_index("station_id")
+
+    station_map = _candidate_nearest_precip_station(candidates, precip_daily, hydrologic_links)
+    refresh_cols = [
+        column
+        for column in _REFRESHABLE_PRECIP_COLUMNS
+        if column in candidates.columns and column in pr_fc.columns
+    ]
+    if not refresh_cols:
+        return
+
+    missing = 0
+    refreshed = 0
+    for idx in candidates.index:
+        bid = str(candidates.at[idx, "beach_id"])
+        station_id = station_map.get(bid)
+        if station_id is None or station_id not in pr_fc.index:
+            missing += 1
+            continue
+        prow = pr_fc.loc[station_id]
+        for column in refresh_cols:
+            value = prow.get(column)
+            if pd.notna(value):
+                candidates.at[idx, column] = value
+        refreshed += 1
+
+    # Recompute the regulatory rain-policy flags from the refreshed precip_mm_72h
+    # using the canonical definition so the served forecast and the training-time
+    # feature share ONE formula (no drift).
+    if "precip_mm_72h" in candidates.columns:
+        from app.data.pipeline.stormwater import add_rain_policy_features
+
+        recomputed = add_rain_policy_features(candidates)
+        for column in (
+            "rain_72h_inches",
+            "rain_72h_monitoring_pause_flag",
+            "rain_72h_general_advisory_flag",
+        ):
+            if column in candidates.columns and column in recomputed.columns:
+                candidates[column] = recomputed[column].to_numpy()
+
+    if missing:
+        print(
+            f"[forecast-precip] refreshed precip features for {refreshed} candidate(s); "
+            f"{missing} had no precip_daily row for {forecast_date} (kept frozen).",
+            file=sys.stderr,
+            flush=True,
+        )
+
+
+def _refresh_candidate_streamflow_features(
+    candidates: pd.DataFrame,
+    streamflow_daily: pd.DataFrame,
+    hydrologic_links: pd.DataFrame | None,
+    forecast_date: date,
+) -> None:
+    """Refresh streamflow_* features on each candidate to forecast-date values.
+
+    ``streamflow_daily.parquet`` carries discharge windows through the forecast
+    date keyed by USGS gage id. The curation pipeline joins it to beaches via the
+    precomputed ``nearest_stream_gage_id`` link in ``hydrologic_beach_links``
+    (``build_beach_hydrology_daily``); we reuse that exact link rather than a new
+    spatial match. Base columns are overwritten; the streamflow lag kernel derived
+    from them is recomputed downstream in ``add_temporal_features``. No-match rows
+    keep their frozen value. Mutates ``candidates`` in place.
+    """
+    if candidates.empty or streamflow_daily is None or streamflow_daily.empty:
+        return
+    if "gage_id" not in streamflow_daily.columns or "sample_date" not in streamflow_daily.columns:
+        return
+    if (
+        hydrologic_links is None
+        or hydrologic_links.empty
+        or not {"beach_id", "nearest_stream_gage_id"}.issubset(hydrologic_links.columns)
+    ):
+        return
+    forecast_ts = pd.Timestamp(forecast_date).normalize()
+    sf = streamflow_daily.copy()
+    sf["sample_date"] = pd.to_datetime(sf["sample_date"], errors="coerce")
+    sf_fc = sf.loc[sf["sample_date"].dt.normalize() == forecast_ts].copy()
+    if sf_fc.empty:
+        return
+    sf_fc["gage_id"] = sf_fc["gage_id"].astype(str)
+    sf_fc = sf_fc.drop_duplicates("gage_id", keep="last").set_index("gage_id")
+
+    gage_map = {
+        str(row["beach_id"]): str(row["nearest_stream_gage_id"])
+        for _, row in hydrologic_links[["beach_id", "nearest_stream_gage_id"]]
+        .dropna(subset=["nearest_stream_gage_id"])
+        .drop_duplicates("beach_id")
+        .iterrows()
+    }
+    refresh_cols = [
+        column
+        for column in _REFRESHABLE_STREAMFLOW_COLUMNS
+        if column in candidates.columns and column in sf_fc.columns
+    ]
+    if not refresh_cols:
+        return
+
+    for idx in candidates.index:
+        bid = str(candidates.at[idx, "beach_id"])
+        gage_id = gage_map.get(bid)
+        if gage_id is None or gage_id not in sf_fc.index:
+            continue
+        srow = sf_fc.loc[gage_id]
+        for column in refresh_cols:
+            value = srow.get(column)
+            if pd.notna(value):
+                candidates.at[idx, column] = value
+
+
 def _build_forecast_candidates(
     frame: pd.DataFrame,
     stations: pd.DataFrame,
@@ -2315,6 +2705,9 @@ def _build_forecast_candidates(
     full_frame: pd.DataFrame | None = None,
     advisories: pd.DataFrame | None = None,
     min_sample_recency_days: int | None = None,
+    precip_daily: pd.DataFrame | None = None,
+    streamflow_daily: pd.DataFrame | None = None,
+    hydrologic_links: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Build one synthetic forecast row per beach.
 
@@ -2421,6 +2814,13 @@ def _build_forecast_candidates(
         candidate_rows.append(candidate)
 
     candidates = pd.DataFrame(candidate_rows)
+    if not candidates.empty:
+        # Refresh the rain/streamflow features (frozen at the stale sample-day
+        # values when the candidate was cloned) to the forecast date BEFORE the
+        # advisory refresh — the SD-boundary advisory interactions downstream read
+        # the refreshed precip windows.
+        _refresh_candidate_precip_features(candidates, precip_daily, hydrologic_links, forecast_date)
+        _refresh_candidate_streamflow_features(candidates, streamflow_daily, hydrologic_links, forecast_date)
     if advisories is not None and not advisories.empty and not candidates.empty:
         _refresh_candidate_advisory_features(candidates, advisories, forecast_date)
     return history, candidates
@@ -2597,6 +2997,35 @@ def _write_production_model_registry(
     (curated_dir / _PRODUCTION_MODEL_REGISTRY).write_text(json.dumps(data, indent=2))
 
 
+def _publish_forecasts_unless_blocked(
+    curated_dir: Path,
+    forecasts: list[dict],
+    *,
+    release_blocked: bool,
+    blockers: list[str] | None = None,
+) -> bool:
+    """Write forecasts.parquet unless the release gate blocked publication.
+
+    Returns True when the fresh forecast was written, False when the write was
+    skipped (the previous, last-validated forecasts.parquet is left on disk and
+    keeps serving). The blockers are logged loudly so the run is auditable.
+    """
+    if release_blocked:
+        loud = blockers or ["unspecified release blocker"]
+        print(
+            "RELEASE GATE BLOCKED publication: public_release_eligible=False — "
+            "NOT overwriting forecasts.parquet (the last-validated forecast keeps "
+            "serving). Blockers:",
+            file=sys.stderr,
+            flush=True,
+        )
+        for blocker in loud:
+            print(f"  - {blocker}", file=sys.stderr, flush=True)
+        return False
+    pd.DataFrame(forecasts).to_parquet(curated_dir / "forecasts.parquet", index=False)
+    return True
+
+
 def _export_forecasts(
     curated_dir: Path,
     forecast_date: date,
@@ -2618,6 +3047,7 @@ def _export_forecasts(
     spatial_strategy: str,
     *,
     min_sample_recency_days: int | None = None,
+    enforce_release_gate: bool = False,
 ) -> "TrainingArtifacts":
     import sys
     winner = models.winner
@@ -2634,6 +3064,15 @@ def _export_forecasts(
     regression_interval_half_width = _split_conformal_half_width(
         densities[valid_idx], models.regressor_valid_predictions,
     )
+    # Forecast-time hydrology refresh: precip_daily / streamflow_daily are
+    # regenerated through the forecast date by the curation pipeline, but the
+    # cloned candidate rows freeze the rain/streamflow windows at the (12-37 day
+    # stale) sample day. Load them here so _build_forecast_candidates can overwrite
+    # those columns with the live forecast-date values. Best-effort: a missing
+    # artifact leaves the precip features frozen (current behavior).
+    precip_daily = _read_optional_parquet(curated_dir / "precip_daily.parquet")
+    streamflow_daily = _read_optional_parquet(curated_dir / "streamflow_daily.parquet")
+    hydrologic_links = _read_optional_parquet(curated_dir / "hydrologic_beach_links.parquet")
     history, forecast_candidates = _build_forecast_candidates(
         frame,
         stations,
@@ -2642,6 +3081,9 @@ def _export_forecasts(
         full_frame=full_frame,
         advisories=advisories,
         min_sample_recency_days=min_sample_recency_days,
+        precip_daily=precip_daily,
+        streamflow_daily=streamflow_daily,
+        hydrologic_links=hydrologic_links,
     )
     inference_input = (
         pd.concat([history, forecast_candidates], ignore_index=True)
@@ -2906,7 +3348,21 @@ def _export_forecasts(
                 "wind_speed_mps": _safe_float(latest_row.get("wind_speed_mps")) if latest_row is not None else None,
                 "uv_alert": uv_alert,
             })
-    pd.DataFrame(forecasts).to_parquet(curated_dir / "forecasts.parquet", index=False)
+
+    # Release gate: when --enforce-release-gate is set and the promotion
+    # assessment finds the model ineligible for public release, DO NOT overwrite
+    # forecasts.parquet — the previous (last-validated) forecast keeps serving and
+    # the serve-time staleness machinery + failure alerting take over. We still
+    # write system_health.json below (with the blockers) so the gate is auditable
+    # and the verify_release_gate.py CI step can fail the job loudly.
+    promotion = _promotion_assessment(metrics, winner)
+    release_blocked = enforce_release_gate and not promotion["public_release_eligible"]
+    _publish_forecasts_unless_blocked(
+        curated_dir,
+        forecasts,
+        release_blocked=release_blocked,
+        blockers=promotion.get("promotion_blockers"),
+    )
 
     # Write latest_env.parquet — tiny lookup for the API server so it never has to
     # load the full 446 MB beach_day.parquet at runtime (Render free-tier OOM fix).
@@ -2953,7 +3409,8 @@ def _export_forecasts(
 
     health_path = curated_dir / "system_health.json"
     health_payload = json.loads(health_path.read_text()) if health_path.exists() else {}
-    promotion = _promotion_assessment(metrics, winner)
+    # `promotion` was computed above for the release-gate decision; reuse it so the
+    # gate verdict and the persisted system_health.json can never disagree.
     health_payload["model_registry"] = {
         "production_model": _registry_model_version(winner),
         "temporal_validation_winner": _registry_model_version(plan.research_winner),
@@ -2985,6 +3442,14 @@ def _export_forecasts(
         },
         "metrics": metrics,
     }
+    # Record the release-gate verdict so the verify_release_gate.py CI step and
+    # human auditors can see whether this run actually published a fresh forecast.
+    health_payload["release_gate"] = {
+        "enforced": bool(enforce_release_gate),
+        "public_release_eligible": promotion["public_release_eligible"],
+        "forecast_published": not release_blocked,
+        "blockers": promotion["promotion_blockers"],
+    }
     health_payload["pipeline_freshness"] = datetime.now(UTC).isoformat()
     health_path.write_text(json.dumps(health_payload, indent=2))
     _write_model_card(curated_dir, health_payload)
@@ -3004,6 +3469,7 @@ def _run_winner_only(
     *,
     min_sample_recency_days: int | None = None,
     active_only_training: bool = False,
+    enforce_release_gate: bool = False,
 ) -> "TrainingArtifacts":
     import sys
     settings = get_settings()
@@ -3317,6 +3783,7 @@ def _run_winner_only(
             metrics,
             preferred=winner,
             candidates=tuple(backtest_models),
+            predictions_sink=spatial_predictions_sink,
         )
         if new_winner != winner:
             print(
@@ -3392,6 +3859,7 @@ def _run_winner_only(
         spatial_backtest_models=["persistence", winner],
         spatial_strategy=spatial_strategy,
         min_sample_recency_days=min_sample_recency_days,
+        enforce_release_gate=enforce_release_gate,
     )
 
 
@@ -3409,6 +3877,7 @@ def train_curated_and_export(
     training_window_days: int = 365,
     min_sample_recency_days: int | None = None,
     active_only_training: bool = False,
+    enforce_release_gate: bool = False,
 ) -> TrainingArtifacts:
     import sys
     if spatial_strategy not in SPATIAL_BACKTEST_STRATEGIES:
@@ -3465,6 +3934,7 @@ def train_curated_and_export(
                 registry=registry,
                 min_sample_recency_days=min_sample_recency_days,
                 active_only_training=active_only_training,
+                enforce_release_gate=enforce_release_gate,
             )
         print("production_model.json not found — running full comparison", file=sys.stderr, flush=True)
 
@@ -3670,6 +4140,7 @@ def train_curated_and_export(
         metrics,
         preferred=plan.production_winner,
         candidates=PRODUCTION_MODEL_NAMES,
+        predictions_sink=spatial_predictions_sink,
     )
     if winner != plan.production_winner:
         plan = StageTwoTrainingPlan(
@@ -3754,6 +4225,7 @@ def train_curated_and_export(
         spatial_backtest_models=spatial_backtest_models,
         spatial_strategy=spatial_strategy,
         min_sample_recency_days=min_sample_recency_days,
+        enforce_release_gate=enforce_release_gate,
     )
 
 
@@ -3772,6 +4244,7 @@ def train_all(
     training_window_days: int = 365,
     min_sample_recency_days: int | None = None,
     active_only_training: bool = False,
+    enforce_release_gate: bool = False,
 ) -> TrainingArtifacts:
     settings = get_settings()
     if curated:
@@ -3788,6 +4261,7 @@ def train_all(
             training_window_days=training_window_days,
             min_sample_recency_days=min_sample_recency_days,
             active_only_training=active_only_training,
+            enforce_release_gate=enforce_release_gate,
         )
     if not sample_fixture:
         raise NotImplementedError("Training currently expects fixture-backed development data.")
@@ -3843,6 +4317,12 @@ def main() -> None:
                              "of forecast_date (per --forecast-min-recency-days). Validation "
                              "and test slices are NOT filtered, so this can be compared head-to-"
                              "head against the full-training-set run on the same held-out samples.")
+    parser.add_argument("--enforce-release-gate", action="store_true",
+                        help="Block publication when the promotion assessment finds the model "
+                             "ineligible for public release: skip overwriting forecasts.parquet "
+                             "(the last-validated forecast keeps serving) while still writing "
+                             "system_health.json with the blockers. Off by default so local/"
+                             "exploratory runs always emit a forecast; CI passes it.")
     args = parser.parse_args()
     forecast_date = date.fromisoformat(args.forecast_date) if args.forecast_date else None
     artifacts = train_all(
@@ -3859,6 +4339,7 @@ def main() -> None:
         training_window_days=args.training_window_days,
         min_sample_recency_days=args.forecast_min_recency_days,
         active_only_training=args.active_only_training,
+        enforce_release_gate=args.enforce_release_gate,
     )
     print(json.dumps(asdict(artifacts), indent=2))
 

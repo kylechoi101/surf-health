@@ -28,6 +28,29 @@ def test_forecast_endpoint_returns_expected_contract():
     assert "top_drivers" in payload
 
 
+def test_forecast_endpoint_caps_edge_cache_with_swr():
+    """24h edge caching pinned stale data for a full day after recovery;
+    forecast responses must use the 1h + stale-while-revalidate policy."""
+    response = client.get("/beaches/scripps-pier/forecast", params={"date": date(2026, 4, 20)})
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "public, max-age=3600, stale-while-revalidate=600"
+
+
+def test_beach_and_advisory_endpoints_set_cache_control():
+    for path in ("/beaches", "/parent-beaches"):
+        response = client.get(path)
+        assert response.status_code == 200
+        assert (
+            response.headers["cache-control"]
+            == "public, max-age=3600, stale-while-revalidate=600"
+        )
+
+
+def test_system_health_has_no_snapshot_cache_control():
+    response = client.get("/system/health")
+    assert response.headers.get("cache-control") != "public, max-age=3600, stale-while-revalidate=600"
+
+
 def test_system_health_endpoint():
     # The fixture payload has public_release_eligible=false, so the guard returns 503.
     # A 503 is still a valid structured response — verify the body shape.

@@ -987,9 +987,17 @@ def test_spatially_qualified_winner_vetoes_temporal_winner_for_guard_candidate()
     assert winner == "hist_gbm_positive_persistence_guard"
 
 
-def _passing_pair_metrics(incumbent_valid_aucpr: float, challenger_valid_aucpr: float) -> dict:
+def _passing_pair_metrics(
+    incumbent_valid_aucpr: float,
+    challenger_valid_aucpr: float,
+    *,
+    incumbent_county_aucpr: float = 0.50,
+    challenger_county_aucpr: float = 0.59,
+) -> dict:
     """Both hist_gbm and the ensemble clear every spatial gate (AUCPR + Brier beat
-    persistence on county and beach); they differ only in temporal-valid AUCPR."""
+    persistence on county and beach). The swap rule ranks on held-out COUNTY AUCPR,
+    so the county figures are the levers; the temporal-valid AUCPRs are kept for
+    callers that still set them but no longer drive the decision."""
     return {
         # production test metrics (required by _promotion_assessment's first gate)
         "hist_gbm": {"aucpr": 0.62, "brier": 0.10},
@@ -998,17 +1006,48 @@ def _passing_pair_metrics(incumbent_valid_aucpr: float, challenger_valid_aucpr: 
         "xgb_undersample_ensemble_valid": {"aucpr": challenger_valid_aucpr, "brier": 0.11},
         "spatial_county_persistence": {"aucpr": 0.40, "brier": 0.18},
         "spatial_beach_persistence": {"aucpr": 0.63, "brier": 0.22},
-        "spatial_county_hist_gbm": {"aucpr": 0.50, "brier": 0.12},
+        "spatial_county_hist_gbm": {"aucpr": incumbent_county_aucpr, "brier": 0.12},
         "spatial_beach_hist_gbm": {"aucpr": 0.86, "brier": 0.14},
-        "spatial_county_xgb_undersample_ensemble": {"aucpr": 0.59, "brier": 0.11},
+        "spatial_county_xgb_undersample_ensemble": {"aucpr": challenger_county_aucpr, "brier": 0.11},
         "spatial_beach_xgb_undersample_ensemble": {"aucpr": 0.90, "brier": 0.13},
     }
 
 
+def _county_fold_sink(model_to_fold_preds: dict[str, dict[str, tuple]]) -> dict:
+    """Build a predictions_sink keyed by (model, "county").
+
+    ``model_to_fold_preds`` maps model_name -> {county: (labels, probs)}. Pools the
+    per-fold arrays into the (labels, probabilities, groups) layout that
+    _spatial_holdout_metrics stashes and the gate's paired bootstrap consumes.
+    """
+    sink: dict = {}
+    for model_name, fold_preds in model_to_fold_preds.items():
+        labels: list = []
+        probs: list = []
+        groups: list = []
+        for county, (fold_labels, fold_probs) in fold_preds.items():
+            labels.extend(list(fold_labels))
+            probs.extend(list(fold_probs))
+            groups.extend([county] * len(fold_labels))
+        sink[(model_name, "county")] = {
+            "labels": np.array(labels),
+            "probabilities": np.array(probs, dtype=float),
+            "groups": np.array(groups),
+        }
+    return sink
+
+
+def _ranked_fold(rng, n, base_rate, signal):
+    """A single county fold: ``signal`` controls how cleanly probs rank labels."""
+    labels = (rng.random(n) < base_rate).astype(int)
+    probs = np.clip(signal * labels + rng.normal(0.0, 0.2, size=n) + 0.2, 0.0, 1.0)
+    return labels, probs
+
+
 def test_spatially_qualified_winner_picks_best_passing_challenger():
-    # Both pass the gate; the challenger's temporal-valid AUCPR beats the incumbent's
-    # by a clear margin (0.75 vs 0.70). Pick-best must swap to it — the old veto would
-    # have kept the (passing) incumbent and never promoted the better model.
+    # Both pass the gate; the challenger's held-out county AUCPR clears the incumbent
+    # by 0.09 (>> the 0.07 no-predictions fallback margin). With no per-fold
+    # predictions the conservative large-gap rule still swaps to the better model.
     winner = _spatially_qualified_production_winner(
         _passing_pair_metrics(0.70, 0.75),
         preferred="hist_gbm",
@@ -1018,14 +1057,116 @@ def test_spatially_qualified_winner_picks_best_passing_challenger():
 
 
 def test_spatially_qualified_winner_keeps_incumbent_within_margin():
-    # Both pass; the challenger is only marginally better (0.005 < swap margin).
-    # Hysteresis keeps the incumbent to avoid churning the production winner on noise.
+    # Both pass; the challenger's county AUCPR edge (0.595 vs 0.59) is below the
+    # 0.01 point-estimate floor. Hysteresis keeps the incumbent — the gate must not
+    # churn the production winner on sub-noise-floor backtest jitter.
     winner = _spatially_qualified_production_winner(
-        _passing_pair_metrics(0.745, 0.750),
+        _passing_pair_metrics(
+            0.745, 0.750,
+            incumbent_county_aucpr=0.590,
+            challenger_county_aucpr=0.595,
+        ),
         preferred="hist_gbm",
         candidates=("hist_gbm", "xgb_undersample_ensemble"),
     )
     assert winner == "hist_gbm"
+
+
+def test_spatially_qualified_winner_no_swap_when_paired_bootstrap_straddles_zero():
+    # County point gap clears the 0.01 floor (0.55 vs 0.50), but the per-fold
+    # predictions are noisy: in some counties the challenger wins, in others the
+    # incumbent does, so the paired cluster bootstrap of the gap straddles 0.
+    # No swap — the improvement is not distinguishable from resampling noise.
+    rng = np.random.default_rng(7)
+    counties = ["LA", "OC", "SD", "SB", "VEN", "MON"]
+    challenger_folds = {}
+    incumbent_folds = {}
+    for i, county in enumerate(counties):
+        labels, strong = _ranked_fold(rng, 40, 0.35, 0.6)
+        _, weak = _ranked_fold(rng, 40, 0.35, 0.6)
+        # Alternate which model gets the cleanly-ranked probabilities per fold so
+        # the pooled gap has near-zero mean and wide between-fold variance.
+        if i % 2 == 0:
+            challenger_folds[county] = (labels, strong)
+            incumbent_folds[county] = (labels, weak)
+        else:
+            challenger_folds[county] = (labels, weak)
+            incumbent_folds[county] = (labels, strong)
+    sink = _county_fold_sink({
+        "xgb_undersample_ensemble": challenger_folds,
+        "hist_gbm": incumbent_folds,
+    })
+    winner = _spatially_qualified_production_winner(
+        _passing_pair_metrics(
+            0.70, 0.75,
+            incumbent_county_aucpr=0.50,
+            challenger_county_aucpr=0.55,
+        ),
+        preferred="hist_gbm",
+        candidates=("hist_gbm", "xgb_undersample_ensemble"),
+        predictions_sink=sink,
+    )
+    assert winner == "hist_gbm"
+
+
+def test_spatially_qualified_winner_swaps_on_decisive_paired_bootstrap():
+    # County point gap clears the floor AND the challenger ranks labels better in
+    # EVERY county fold, so the paired cluster bootstrap of the gap has a lower
+    # bound well above 0 — a decisive, noise-robust improvement. Swap.
+    rng = np.random.default_rng(11)
+    counties = ["LA", "OC", "SD", "SB", "VEN", "MON"]
+    challenger_folds = {}
+    incumbent_folds = {}
+    for county in counties:
+        labels, strong = _ranked_fold(rng, 40, 0.35, 1.2)
+        # Incumbent probabilities are pure noise (uninformative ranking).
+        weak = np.clip(rng.normal(0.4, 0.15, size=len(labels)), 0.0, 1.0)
+        challenger_folds[county] = (labels, strong)
+        incumbent_folds[county] = (labels, weak)
+    sink = _county_fold_sink({
+        "xgb_undersample_ensemble": challenger_folds,
+        "hist_gbm": incumbent_folds,
+    })
+    winner = _spatially_qualified_production_winner(
+        _passing_pair_metrics(
+            0.70, 0.75,
+            incumbent_county_aucpr=0.50,
+            challenger_county_aucpr=0.62,
+        ),
+        preferred="hist_gbm",
+        candidates=("hist_gbm", "xgb_undersample_ensemble"),
+        predictions_sink=sink,
+    )
+    assert winner == "xgb_undersample_ensemble"
+
+
+def test_spatially_qualified_winner_large_gap_fallback_without_predictions():
+    # No per-fold predictions available -> the paired bootstrap can't run, so the
+    # conservative large-gap fallback applies: a 0.05 county gap (between the 0.01
+    # floor and the 0.07 no-evidence margin) does NOT swap, but a 0.10 gap does.
+    keep = _spatially_qualified_production_winner(
+        _passing_pair_metrics(
+            0.70, 0.75,
+            incumbent_county_aucpr=0.50,
+            challenger_county_aucpr=0.55,
+        ),
+        preferred="hist_gbm",
+        candidates=("hist_gbm", "xgb_undersample_ensemble"),
+        predictions_sink=None,
+    )
+    assert keep == "hist_gbm"
+
+    swap = _spatially_qualified_production_winner(
+        _passing_pair_metrics(
+            0.70, 0.75,
+            incumbent_county_aucpr=0.50,
+            challenger_county_aucpr=0.60,
+        ),
+        preferred="hist_gbm",
+        candidates=("hist_gbm", "xgb_undersample_ensemble"),
+        predictions_sink=None,
+    )
+    assert swap == "xgb_undersample_ensemble"
 
 
 def test_spatial_backtest_models_do_not_duplicate_production_guard_candidate():

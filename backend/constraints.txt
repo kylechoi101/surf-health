@@ -1,0 +1,25 @@
+# Scientific-stack constraints for the surf-health ML pipeline.
+#
+# Pins the portable scientific stack to the last-validated daily-run versions
+# (the set the daily GitHub Actions retrain currently resolves and produces
+# valid forecasts with). A new numpy/pandas/scikit-learn/xgboost/etc. release
+# can silently shift calibrated probabilities between daily runs with nothing
+# detecting it; pinning here prevents that silent metric drift.
+#
+# Apply with `pip install ... -c constraints.txt` in every install of the
+# training/runtime stack (daily-forecast.yml, ci.yml, backend/Dockerfile).
+#
+# Regenerate DELIBERATELY (not automatically): after a validated retrain,
+# refresh these from `pip freeze` and re-confirm the daily-run metrics.
+#
+# torch/torchvision/torchaudio are intentionally NOT pinned here — their wheels
+# are platform-specific (macOS vs the Linux CI runner), so a hard `==` pin would
+# break the Linux runner. torch keeps its version range in pyproject.toml.
+joblib==1.5.3
+numpy==2.4.4
+pandas==3.0.2
+pyarrow==24.0.0
+scikit-learn==1.8.0
+scipy==1.17.1
+threadpoolctl==3.6.0
+xgboost==3.2.0

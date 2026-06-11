@@ -4,7 +4,7 @@ import json
 import os
 import re
 import sqlite3
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from functools import cache
 from math import isnan, log10
 from pathlib import Path
@@ -16,6 +16,7 @@ from app.ml.calibration import confidence_capped_risk_band, risk_band
 from app.repositories.base import BeachRepository
 from app.services.shore_normal import compute_shore_normal_deg
 from app.schemas.domain import (
+    MAX_FORECAST_AGE_HOURS,
     AdvisoryRecord,
     BeachSummary,
     EnvironmentalSummary,
@@ -129,11 +130,14 @@ def _derive_friendly_name(row: sqlite3.Row) -> str:
 
 
 class ServingSnapshotRepository(BeachRepository):
+    _SNAPSHOT_GENERATED_AT_UNSET = object()
+
     def __init__(self, snapshot_path: Path, stv_threshold: float) -> None:
         self.snapshot_path = Path(snapshot_path)
         self.stv_threshold = stv_threshold
         self._parent_name_by_member_id: dict[str, str] | None = None
         self._cached_beach_geometry: list[tuple[str, float, float]] | None = None
+        self._cached_snapshot_generated_at: object = self._SNAPSHOT_GENERATED_AT_UNSET
 
     def _connect(self) -> sqlite3.Connection:
         uri = f"file:{self.snapshot_path}?mode=ro"
@@ -185,32 +189,69 @@ class ServingSnapshotRepository(BeachRepository):
     # is bureaucratic, not operational.
     _ACTIVE_ADVISORY_WINDOW_DAYS = 14
 
+    def _snapshot_generated_at(self) -> datetime | None:
+        """When this serving snapshot was baked, from the metadata row the
+        snapshot builder writes. None on legacy snapshots without it."""
+        if self._cached_snapshot_generated_at is not self._SNAPSHOT_GENERATED_AT_UNSET:
+            return self._cached_snapshot_generated_at  # type: ignore[return-value]
+        generated_at: datetime | None = None
+        try:
+            row = self._fetch_one(
+                "select payload from system_health where key = 'serving_snapshot'"
+            )
+            if row is not None:
+                generated_at = _parse_datetime(json.loads(row["payload"]).get("generated_at"))
+        except (sqlite3.OperationalError, json.JSONDecodeError, ValueError):
+            generated_at = None
+        if generated_at is not None and generated_at.tzinfo is None:
+            generated_at = generated_at.replace(tzinfo=UTC)
+        self._cached_snapshot_generated_at = generated_at
+        return generated_at
+
     # Closure-class advisories (e.g. the chronic Tijuana Slough closure
     # active since 2025-10-13) describe ongoing hazards that the county
     # never explicitly lifts, so they bypass the 14-day acute window and
     # remain visible until the source feed stops listing them. Postings
     # still get the 14-day gate. Mirrors `bake_web_static._active_advisory_set`
     # so the web's baked JSON and the API agree.
-    _CLOSURE_EXEMPT_FILTER = (
-        "(lower(coalesce(advisory_type, '')) like '%closure%' "
-        f"or started_at >= datetime('now', '-{_ACTIVE_ADVISORY_WINDOW_DAYS} days'))"
-    )
+    def _closure_exempt_filter(self) -> tuple[str, tuple[object, ...]]:
+        """SQL clause + params for the active-advisory recency window.
+
+        The window is anchored to the snapshot's own generated_at, NOT
+        request-time now: the snapshot is frozen, so judging it against a
+        moving clock lets posted advisories silently age OUT of a stale
+        snapshot while new ones can never age in — staleness would decay
+        asymmetrically toward "safe". Anchoring to bake time presents the
+        advisories as-of the snapshot's own moment instead.
+        """
+        reference = self._snapshot_generated_at() or datetime.now(UTC)
+        cutoff = reference - timedelta(days=self._ACTIVE_ADVISORY_WINDOW_DAYS)
+        # started_at is stored as ISO-8601 text; compare lexicographically.
+        cutoff_iso = cutoff.astimezone(UTC).replace(tzinfo=None).isoformat(timespec="seconds")
+        return (
+            "(lower(coalesce(advisory_type, '')) like '%closure%' or started_at >= ?)",
+            (cutoff_iso,),
+        )
 
     def _active_advisory_beach_ids(self) -> set[str]:
+        clause, params = self._closure_exempt_filter()
         rows = self._fetch_all(
             "select distinct beach_id from advisories_recent "
             "where status = 'active' "
-            f"and {self._CLOSURE_EXEMPT_FILTER}"
+            f"and {clause}",
+            params,
         )
         return {str(row["beach_id"]) for row in rows}
 
     def _active_advisory_websites(self) -> dict[str, str | None]:
         """Return the most-recent active advisory URL per beach_id."""
+        clause, params = self._closure_exempt_filter()
         rows = self._fetch_all(
             "select beach_id, advisory_website from advisories_recent "
             "where status = 'active' "
-            f"and {self._CLOSURE_EXEMPT_FILTER} "
-            "order by started_at desc"
+            f"and {clause} "
+            "order by started_at desc",
+            params,
         )
         result: dict[str, str | None] = {}
         for row in rows:
@@ -484,29 +525,60 @@ class ServingSnapshotRepository(BeachRepository):
             "select * from forecasts where beach_id = ? and forecast_date = ?",
             (beach_id, forecast_date.isoformat()),
         )
+        is_fallback_row = False
         if row is None:
+            # No row for the requested date — serve the latest available row,
+            # but _build_forecast_record flags it is_stale once it ages past
+            # MAX_FORECAST_AGE_HOURS so an old band is never presented as
+            # today's answer.
             row = self._fetch_one(
                 "select * from forecasts where beach_id = ? order by forecast_date desc limit 1",
                 (beach_id,),
             )
+            is_fallback_row = True
         if row is not None:
-            return self._build_forecast_record(dict(row), beach_id)
+            return self._build_forecast_record(dict(row), beach_id, is_fallback_row=is_fallback_row)
         return self._derived_forecast(beach_id, forecast_date)
 
-    def _build_forecast_record(self, row: dict[str, object], beach_id: str) -> ForecastRecord:
+    def _build_forecast_record(
+        self, row: dict[str, object], beach_id: str, *, is_fallback_row: bool = False
+    ) -> ForecastRecord:
         env_fallback = self._latest_env(beach_id)
 
         def pick(key: str) -> float | None:
             primary = _safe_float(row.get(key))
             return primary if primary is not None else env_fallback.get(key)
 
+        now_utc = datetime.now(UTC)
         gen_at = _parse_datetime(row.get("forecast_generated_at"))
         age_hours = None
+        age_hours_exact: float | None = None
         if gen_at is not None:
-            now_utc = datetime.now(UTC)
             if gen_at.tzinfo is None:
                 gen_at = gen_at.replace(tzinfo=UTC)
-            age_hours = max(0, int((now_utc - gen_at).total_seconds() / 3600))
+            age_hours_exact = max(0.0, (now_utc - gen_at).total_seconds() / 3600)
+            age_hours = int(age_hours_exact)
+
+        # Staleness is judged off forecast_generated_at, falling back to the
+        # row's forecast_date (midnight UTC) for legacy rows without the
+        # column. A fallback row whose generation time is unknowable is
+        # flagged stale outright — fail toward warning, never toward
+        # "current". The record still serves; clients render the stale state.
+        # The UN-truncated age feeds the threshold: the display int would let a
+        # 48.9h-old forecast read as 48h and slip under the cap.
+        staleness_age_hours: float | None = age_hours_exact
+        if staleness_age_hours is None:
+            try:
+                row_date = _parse_date(row.get("forecast_date"))
+                row_start = datetime(row_date.year, row_date.month, row_date.day, tzinfo=UTC)
+                staleness_age_hours = max(0.0, (now_utc - row_start).total_seconds() / 3600)
+            except (TypeError, ValueError):
+                staleness_age_hours = None
+        is_stale = (
+            staleness_age_hours is None
+            or staleness_age_hours > MAX_FORECAST_AGE_HOURS
+            or (age_hours is None and is_fallback_row)
+        )
 
         active_set = self._active_advisory_beach_ids()
         website_map = self._active_advisory_websites()
@@ -562,8 +634,9 @@ class ServingSnapshotRepository(BeachRepository):
             prediction_interval_level=_safe_float(row.get("prediction_interval_level")),
             top_drivers=drivers,
             model_version=str(row["model_version"]),
-            forecast_generated_at=gen_at or datetime.now(UTC),
+            forecast_generated_at=gen_at,
             forecast_age_hours=age_hours,
+            is_stale=is_stale,
             official_advisory_active=active_advisory,
             forecast_label_mode=(
                 "official_advisory_override"

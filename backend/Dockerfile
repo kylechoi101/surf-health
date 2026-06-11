@@ -11,10 +11,14 @@ WORKDIR /app
 RUN pip install --upgrade pip
 
 COPY backend/pyproject.toml /app/
+COPY backend/constraints.txt /app/
 COPY backend/app/ /app/app/
 COPY backend/scripts/ /app/scripts/
 
-RUN pip install --no-cache-dir .
+# -c constraints.txt pins the portable scientific stack to the last-validated
+# daily-run versions so the served runtime uses the same numpy/pandas/
+# scikit-learn/xgboost the model was trained + calibrated against.
+RUN pip install --no-cache-dir . -c constraints.txt
 
 # Bake the curated dataset snapshot into the image (single source of truth: repo-root data/curated/).
 #

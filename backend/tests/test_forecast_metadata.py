@@ -17,6 +17,24 @@ def test_forecast_record_honest_metadata_defaults_are_backward_compatible():
     assert forecast.sample_age_days is None
     assert forecast.sample_recency_band == "unknown"
     assert forecast.is_beta_forecast is True
+    assert forecast.is_stale is False
+
+
+def test_forecast_record_generated_at_is_optional_and_never_fabricated():
+    """Legacy rows without forecast_generated_at must pass None through —
+    the API is additive-only, so the field is optional/null, not invented."""
+    forecast = ForecastRecord(
+        beach_id="alpha",
+        forecast_date=date(2026, 4, 20),
+        risk_band="Moderate",
+        p_exceed=0.34,
+        model_version="hist-gbm-curated-v0",
+    )
+
+    assert forecast.forecast_generated_at is None
+    assert forecast.forecast_age_hours is None
+    assert forecast.is_stale is False
+    assert forecast.model_dump(mode="json")["forecast_generated_at"] is None
 
 
 def test_system_health_marks_product_as_beta_by_default():
