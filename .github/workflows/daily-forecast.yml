@@ -27,7 +27,7 @@ on:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 170
     permissions:
       contents: write
     env:
@@ -139,8 +139,16 @@ jobs:
           # A manual full_comparison=true run re-selects the winner across all
           # candidates — used to promote a newly-added model into the registry.
           WINNER_FLAG="--winner-only"
+          # Daily spatial backtests are kept (the public-release eligibility gate
+          # needs spatial-holdout metrics) but at a reduced fold count: at 1095d
+          # (~84k rows) the full 12-county + 50-beach sweep is ~60 retrains and
+          # overran the 95 min of ML budget, timing the whole job out (no fresh
+          # forecast committed -> /system/health goes stale -> 503). 6 counties +
+          # 15 beaches still yields valid spatial metrics that pass the gate.
+          BACKTEST_FLAGS="--spatial-backtests --spatial-strategy shortlist --spatial-county-limit 6 --spatial-beach-limit 15"
           if [ "${{ github.event.inputs.full_comparison }}" = "true" ]; then
             WINNER_FLAG=""
+            BACKTEST_FLAGS="--spatial-backtests --spatial-strategy shortlist --spatial-county-limit 12 --spatial-beach-limit 50"
             echo "::notice::Running FULL model comparison (winner re-selection)"
           fi
           # Training window 365 -> 1095d (2026-06-08): 365d starved the SPATIAL fit.
@@ -148,7 +156,7 @@ jobs:
           # Gate retrain @1095d: xgb_undersample_ensemble held-out county AUCPR
           # 0.507 -> 0.590, beach 0.881 -> 0.900 (hist_gbm does NOT benefit: 0.500 -> 0.478).
           # 1095d ~= 84k rows, all feature-rich post-2020 history.
-          python -m app.ml.training --curated --forecast-date "$FORECAST_DATE" $WINNER_FLAG --spatial-backtests --spatial-strategy shortlist --spatial-beach-limit 50 --spatial-county-limit 12 --training-window-days 1095 --forecast-min-recency-days 45
+          python -m app.ml.training --curated --forecast-date "$FORECAST_DATE" $WINNER_FLAG $BACKTEST_FLAGS --training-window-days 1095 --forecast-min-recency-days 45
         working-directory: backend
 
       - name: Forecast-time weather pull (100% wind/UV coverage)
