@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
@@ -17,6 +18,21 @@ logger = logging.getLogger(__name__)
 
 _USGS_MISSING_VALUES = {"-999999", ""}
 _USGS_IV_MAX_DAYS = 90  # NWIS IV returns ReadTimeout for multi-site requests > ~90 days
+
+
+def _atomic_to_parquet(df: pd.DataFrame, path: Path) -> None:
+    """Write a parquet cache file atomically.
+
+    A crash mid-write with a plain ``df.to_parquet(path)`` leaves a truncated,
+    corrupt file that later reads back as garbage (or raises). Instead we write
+    to a sibling ``.tmp`` file and ``os.replace`` it into place — an atomic
+    rename on the same filesystem — so a reader only ever sees the complete
+    previous file or the complete new one, never a partial write.
+    """
+    path = Path(path)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    df.to_parquet(tmp, index=False)
+    os.replace(tmp, path)
 
 
 @dataclass
@@ -58,7 +74,7 @@ class UsgsNwisConnector:
 
         df = pd.DataFrame(all_rows)
         if not df.empty:
-            df.to_parquet(cache_file, index=False)
+            _atomic_to_parquet(df, cache_file)
         else:
             logger.warning(
                 "USGS streamflow fetch returned no rows for %d gages [%s, %s]",
@@ -169,7 +185,7 @@ class CnrfcObservedPrecipConnector:
 
         df = pd.DataFrame(rows)
         if not df.empty:
-            df.to_parquet(cache_file, index=False)
+            _atomic_to_parquet(df, cache_file)
         else:
             logger.warning(
                 "NWS precip fetch returned no rows for %d stations [%s, %s]",
@@ -282,7 +298,7 @@ class OpenMeteoHistoricalPrecipConnector:
             "elevation_m": float(payload.get("elevation", np.nan)),
             "source_name": "open_meteo",
         })
-        df.to_parquet(cache_file, index=False)
+        _atomic_to_parquet(df, cache_file)
         return df
 
     async def fetch_historical_precip(
@@ -401,7 +417,7 @@ class OpenMeteoHistoricalSolarWindConnector:
         for var in self.HOURLY_VARS:
             vals = hourly.get(var, [])
             df[var] = [float(v) if v is not None else np.nan for v in vals]
-        df.to_parquet(cache_file, index=False)
+        _atomic_to_parquet(df, cache_file)
         return df
 
     async def fetch_historical_solar_wind(
@@ -525,7 +541,7 @@ class OpenMeteoMarineForecastConnector:
         for var in self.HOURLY_VARS:
             vals = hourly.get(var, [])
             df[var] = [float(v) if v is not None else np.nan for v in vals]
-        df.to_parquet(cache_file, index=False)
+        _atomic_to_parquet(df, cache_file)
         return df
 
     async def fetch_marine_forecast(
@@ -598,7 +614,7 @@ class OpenMeteoMarineHistoricalConnector:
         for var in self.HOURLY_VARS:
             vals = hourly.get(var, [])
             df[var] = [float(v) if v is not None else np.nan for v in vals]
-        df.to_parquet(cache_file, index=False)
+        _atomic_to_parquet(df, cache_file)
         return df
 
     async def fetch_marine_history(self, locations, start: date, end: date, cache_dir: Path) -> pd.DataFrame:

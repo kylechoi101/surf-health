@@ -49,6 +49,52 @@ def test_normalize_ceden_results_keeps_enterococcus_and_tracks_source():
     assert normalized.iloc[0]["data_source"] == "CEDEN.SafeToSwim"
 
 
+def test_normalize_ceden_results_drops_negative_sentinels():
+    """Negative enterococcus results (-999/-1000 "not analyzed" sentinels) must be
+    nulled and dropped; a co-occurring positive result must survive. Enterococcus
+    is a non-negative count, so any negative is invalid (mirrors the BeachWatch
+    guard in beachwatch.normalize_beachwatch_results)."""
+    frame = pd.DataFrame(
+        [
+            {
+                "StationName": "EH-060-Coronado north beach, San Diego",
+                "StationCode": "EH-060",
+                "Analyte": "Enterococcus",
+                "MethodName": "EPA 1600",
+                "Unit": "CFU/100 mL",
+                "Result": "-1000",
+                "ResultSub": "-1000",
+                "DataSource": "CEDEN",
+                "SampleDateTime": "2026-04-21T09:00:00",
+                "TargetLatitude": "32.6855",
+                "TargetLongitude": "-117.194",
+            },
+            {
+                "StationName": "EH-060-Coronado north beach, San Diego",
+                "StationCode": "EH-060",
+                "Analyte": "Enterococcus",
+                "MethodName": "EPA 1600",
+                "Unit": "CFU/100 mL",
+                "Result": "130",
+                "ResultSub": "130",
+                "DataSource": "CEDEN",
+                "SampleDateTime": "2026-04-22T09:00:00",
+                "TargetLatitude": "32.6855",
+                "TargetLongitude": "-117.194",
+            },
+        ]
+    )
+
+    normalized = normalize_ceden_results(frame, stv_threshold=104.0)
+
+    # The -1000 sentinel row is dropped; only the positive 130 survives.
+    assert len(normalized) == 1
+    assert normalized.iloc[0]["value"] == 130.0
+    assert bool(normalized.iloc[0]["exceeds_stv"]) is True
+    # No surviving row carries a negative value.
+    assert (normalized["value"] >= 0).all()
+
+
 def test_build_ceden_station_crosswalk_matches_station_code():
     ceden_sites = normalize_ceden_sites(
         pd.DataFrame(

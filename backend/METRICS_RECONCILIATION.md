@@ -171,12 +171,18 @@ sensitivity_at_specificity(labels, probs, 0.50) -> sens 1.0  @ spec 0.75 (thr 0.
 ```
 
 Until a training run pools and persists holdout predictions, the Searcy "sens 0.59 @
-spec 0.87" claim is marked **unverified** in `CLAUDE.md` and here. To reproduce:
-have the teammate-owned `training.py` write the concatenated temporal-test
-(label, probability) pairs to an artifact, then call
-`sensitivity_at_specificity(labels, probs, 0.87)` on it. (I do not own `training.py`,
-so I did not wire the persistence step — it is a one-line addition for whoever owns
-that file.)
+spec 0.87" claim is marked **unverified** in `CLAUDE.md` and here.
+
+**Persistence wired 2026-06-11.** `training.py` now writes the production winner's
+held-out (label, probability) pairs to `data/curated/holdout_predictions_temporal.parquet`
+(temporal-test rows + `model`/`date`) and `..._spatial.parquet` (pooled county+beach rows +
+`model`/`holdout_kind`/`group`), and records `sensitivity_at_specificity(..., 0.87)` into
+`system_health.json` under `production_metrics["sensitivity_at_spec_0.87"]` plus the
+`spatial_county_<winner>` / `spatial_beach_<winner>` equivalents. After the next daily run
+these artifacts exist on disk and the Searcy operating point is a real, citable number —
+recompute any other operating point (precision@recall, per-county sensitivity) from the
+parquet with no retrain. **Until that run lands the artifacts are absent, so still do not
+cite a specific sensitivity value.**
 
 ---
 

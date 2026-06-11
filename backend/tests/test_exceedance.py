@@ -58,3 +58,54 @@ def test_preserves_index():
     units = pd.Series(["MPN/100ml", "MPN/100ml"], index=[7, 9])
     out = compute_exceeds_stv(value, method, units, stv_threshold=104.0)
     assert list(out.index) == [7, 9]
+
+
+def test_pcr_threshold_regression_copies_vs_culture():
+    """Headline data-quality correction: the SAME numeric value must be judged
+    against 1413 for PCR/copies and against 104 for culture.
+
+    1200 copies is chosen because it straddles both thresholds: it is BELOW the
+    PCR threshold (1413) so a correct PCR path returns False, but ABOVE the
+    culture STV (104) so a buggy flat-104 path would have falsely flagged it.
+    The same 1200 reported by culture must exceed (1200 > 104).
+    """
+    # PCR (MCB-ddPCR / copies): 1200 copies must NOT exceed under the 1413 threshold.
+    pcr_out = compute_exceeds_stv(
+        pd.Series([1200.0]),
+        pd.Series(["MCB-ddPCR SOP018-000"]),
+        pd.Series(["Copies/100ml"]),
+        stv_threshold=104.0,
+    )
+    assert pcr_out.tolist() == [False], "1200 copies must be judged against 1413, not 104"
+
+    # The identical numeric value reported by a culture method MUST exceed under 104.
+    culture_out = compute_exceeds_stv(
+        pd.Series([1200.0]),
+        pd.Series(["Enterolert"]),
+        pd.Series(["MPN/100ml"]),
+        stv_threshold=104.0,
+    )
+    assert culture_out.tolist() == [True], "1200 MPN must exceed the 104 culture STV"
+
+
+def test_pcr_above_molecular_threshold_exceeds():
+    """A PCR sample above 1413 copies still exceeds (proves the PCR path isn't
+    swallowing every PCR row)."""
+    out = compute_exceeds_stv(
+        pd.Series([1500.0]),
+        pd.Series(["MCB-ddPCR SOP018-000"]),
+        pd.Series(["Copies/100ml"]),
+        stv_threshold=104.0,
+    )
+    assert out.tolist() == [True]
+
+
+def test_culture_150_cfu_exceeds_under_104():
+    """A 150 CFU culture sample exceeds the 104 marine STV."""
+    out = compute_exceeds_stv(
+        pd.Series([150.0]),
+        pd.Series(["EPA 1600"]),
+        pd.Series(["CFU/100ml"]),
+        stv_threshold=104.0,
+    )
+    assert out.tolist() == [True]

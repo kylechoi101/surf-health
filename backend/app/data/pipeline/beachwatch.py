@@ -11,6 +11,7 @@ import pandas as pd
 
 from app.data.pipeline.county_corrections import correct_county
 from app.data.pipeline.exceedance import compute_exceeds_stv
+from app.data.pipeline.schema_guard import validate_beach_day
 from app.data.pipeline.spelling import correct_place_spelling
 
 
@@ -600,6 +601,11 @@ def write_curated_bundle(
     derive_parent_beaches(stations).to_parquet(curated_dir / "parent_beaches.parquet", index=False)
     observations.to_parquet(curated_dir / "observations.parquet", index=False)
     advisories.to_parquet(curated_dir / "advisories.parquet", index=False)
+    # Schema guard: hard-fail on a structurally unusable training artifact
+    # (empty / missing primary key / missing label); warn-only on absent or
+    # all-NaN feature columns (a connector outage is not a reason to break the
+    # live daily run).
+    validate_beach_day(beach_day)
     beach_day.to_parquet(curated_dir / "beach_day.parquet", index=False)
     payload = {
         "pipeline_freshness": datetime.now(UTC).isoformat(timespec="seconds"),

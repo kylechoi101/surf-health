@@ -16,6 +16,14 @@ permissions:
   contents: read
   deployments: write
 
+# Never kill a mid-flight deploy — let it finish and queue the next one.
+# cancel-in-progress: false avoids tearing down an in-progress Render webhook
+# + health-check sequence (which would leave the GitHub deployment record stuck
+# in `in_progress`).
+concurrency:
+  group: deploy-backend
+  cancel-in-progress: false
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -56,6 +64,36 @@ jobs:
           fi
           curl -fsSL -X POST "$RENDER_DEPLOY_HOOK"
           echo "Render deploy triggered."
+
+      - name: Wait for Render deploy to become healthy
+        # The Render webhook is fire-and-forget: a failed Render BUILD ships
+        # nothing and nobody notices. Poll the public health endpoint until it
+        # returns 200, then mark the deployment healthy. Render free-tier cold
+        # starts are slow, so the budget is generous: 15 tries x 20s = ~5 min.
+        # Guarded by the same RENDER_DEPLOY_HOOK presence check as the webhook
+        # step so PRs/forks (no secret) don't fail — if we never POSTed a
+        # deploy, there is nothing to health-check.
+        env:
+          RENDER_DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
+        run: |
+          if [ -z "$RENDER_DEPLOY_HOOK" ]; then
+            echo "::warning::RENDER_DEPLOY_HOOK is not set; no deploy was triggered, skipping health check."
+            exit 0
+          fi
+          HEALTH_URL="https://surf-health-api-aabr.onrender.com/system/health"
+          ATTEMPTS=15
+          SLEEP_SECS=20
+          for i in $(seq 1 "$ATTEMPTS"); do
+            CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$HEALTH_URL" || echo "000")
+            if [ "$CODE" = "200" ]; then
+              echo "Render deploy healthy: $HEALTH_URL returned 200 (attempt $i/$ATTEMPTS)."
+              exit 0
+            fi
+            echo "Attempt $i/$ATTEMPTS: $HEALTH_URL returned HTTP $CODE — retrying in ${SLEEP_SECS}s..."
+            sleep "$SLEEP_SECS"
+          done
+          echo "::error::Render deploy did not become healthy — check Render dashboard. $HEALTH_URL never returned 200 after $((ATTEMPTS * SLEEP_SECS))s."
+          exit 1
 
       - name: Mark deployment success
         if: success() && steps.deployment.outputs.deployment_id != ''

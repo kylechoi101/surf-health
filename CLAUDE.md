@@ -79,6 +79,25 @@ per-spot swell-window modeling (deferred fast-follow).
   whose sampling history spans **<90 days** as `unsupported` (one-time incidents, out of training).
 - **Negative enterococcus values** (−1000 sentinels) are dropped → NaN in normalization.
 
+### Pipeline robustness guards (2026-06-11)
+
+- **CEDEN negative-value guard** (`pipeline/ceden.py`): the CEDEN/SafeToSwim normalizer now nulls
+  negative `value`s before exceedance + `dropna`, matching the long-standing beachwatch guard
+  (`beachwatch.py:381`). Previously only beachwatch dropped −999/−1000 "not analyzed" sentinels, so
+  CEDEN-sourced negatives could leak into training. Takes effect on the next daily refresh.
+- **Atomic cache writes** (`connectors/hydrology_sources.py`): all per-coord parquet cache writes go
+  through `_atomic_to_parquet` (write `.tmp` → `os.replace`), so a crash mid-write can no longer
+  leave a corrupt cache that later reads as garbage.
+- **Output schema guard** (`pipeline/schema_guard.py`): `validate_beach_day` runs before the
+  `beach_day.parquet` write — HARD-raises only on an empty frame or missing primary keys
+  (`beach_id`, `sample_date`, `exceeds_stv`); WARN-only if an expected feature column is absent/
+  all-NaN (a connector outage legitimately yields all-NaN, so it must not fail the daily job).
+- **Holdout prediction artifacts** (`ml/training.py` + `ml/evaluation.py`): the production winner's
+  held-out (label, probability) pairs are persisted to `data/curated/holdout_predictions_temporal
+  .parquet` / `..._spatial.parquet`, and `sensitivity_at_specificity(...0.87)` is recorded into
+  `system_health.json` (`production_metrics["sensitivity_at_spec_0.87"]` + spatial equivalents) —
+  closing the long-standing "Searcy sensitivity is unverifiable" gap (appears after next daily run).
+
 ## ML training
 
 ```
@@ -162,10 +181,15 @@ gate's calibration + inner-validation split.
     `spatial_compare` by positive count). The model is identical; only the eval path differs.
     **0.499 / 0.871 are the honest, shipped numbers** — a modest but real spatial lift over
     persistence. Slopes 0.99/0.88 are *better* calibrated than the old 1.26/1.16 claim.
-- **Gate veto limitation:** `_spatially_qualified_production_winner` keeps a *passing* incumbent
-  even when a sibling is decisively better — it never auto-swaps. The ensemble is set as the
-  registry winner; CI's daily `--winner-only --spatial-backtests` keeps it (preferred=ensemble,
-  passes). TODO: make the gate pick-best among passing models.
+- **Gate picks-best among passing models (2026-06-11: was wrongly documented as a TODO).**
+  `_spatially_qualified_production_winner` (`training.py:1806`) filters candidates to those that
+  clear the held-out county+beach persistence gates, then picks the best by temporal-valid AUCPR
+  (tiebreak lower spatial Brier), with `_WINNER_SWAP_MARGIN` hysteresis so the daily winner-only
+  retrain doesn't churn on backtest noise. The earlier "keeps a passing incumbent even when a
+  sibling is decisively better — never auto-swaps" note described an OLD veto that no longer
+  exists; the swap logic landed with the 1095d ensemble case (2026-06-08) and the code at lines
+  1843-1851 already does pick-best. The ensemble remains the registry winner because it wins this
+  selection, not because of a manual override.
 - **first_rain_score cache self-heal** (`pipeline/cli.py`): the incremental `precip_daily.parquet`
   cache only re-fetched the last 7 days, so derived columns added later (first_rain_score,
   precip_*_prior, precip_mm_96h/192h) stayed NaN for all history (~0% covered). Now the pipeline
@@ -173,12 +197,15 @@ gate's calibration + inner-validation split.
   cache. Honest result: a live first_rain_score did NOT help the GLOBAL county metric (rainfall is
   beach-specific — Searcy et al. 2018; pays off only in per-station models).
 - **Benchmark (Searcy et al. 2018, 10 CA oceanic beaches, operational):** median sensitivity 0.50
-  @ specificity 0.87 for enterococcus. **Our "sens 0.59 @ spec 0.87" comparison is UNVERIFIED**
-  (2026-06-10): nothing in the repo computed sensitivity-at-fixed-specificity, and no holdout
-  prediction artifact (label+probability rows) is persisted, so it cannot be recomputed without a
-  retrain. A reproducible `sensitivity_at_specificity()` helper now lives in
-  `app/ml/evaluation.py` (+ tests); to verify, persist the gate/temporal-test (label, prob) pairs
-  from `training.py` and run it. Until then, do not cite 0.59. See
+  @ specificity 0.87 for enterococcus. The old "sens 0.59 @ spec 0.87" claim was UNVERIFIABLE
+  (2026-06-10) because no holdout prediction artifact was persisted. **Closed 2026-06-11:**
+  `training.py` now persists the winner's held-out (label, probability) pairs to
+  `data/curated/holdout_predictions_temporal.parquet` and `..._spatial.parquet`, AND pre-computes
+  the operating point via `sensitivity_at_specificity()` (`app/ml/evaluation.py`) into
+  `system_health.json` under `production_metrics["sensitivity_at_spec_0.87"]` (+ spatial county/
+  beach equivalents). After the next daily run these are real, citable numbers; recompute any other
+  operating point from the parquet with no retrain. **Until that run lands, still do not cite a
+  specific sensitivity figure** — the artifacts don't exist on disk yet. See
   `backend/METRICS_RECONCILIATION.md`.
 
 ## Key design decisions
@@ -193,8 +220,9 @@ gate's calibration + inner-validation split.
   `system_health.json`): county AUCPR 0.499 / beach 0.871, calib slopes 0.99 / 0.88** — NOT the
   0.590/0.900 once cited (that was an offline `spatial_compare` number never reproduced by the
   gate; see `backend/METRICS_RECONCILIATION.md`). hist_gbm on the same gate path: county 0.480 /
-  beach 0.853. CA-only; cross-region (TX) pooling tested and rejected on held-out counties. Set as
-  registry winner manually because the gate's veto wouldn't swap a passing incumbent.
+  beach 0.853. CA-only; cross-region (TX) pooling tested and rejected on held-out counties. It is
+  the registry winner because it wins the gate's pick-best-among-passing selection (with hysteresis),
+  not via a manual override — see the corrected "Gate picks-best" note above.
 - **Forecast-safe cutoff**: 5 AM PT daily summaries; nothing leaks same-morning sample data.
 - **Shore azimuth**: SVD over 5 nearest-neighbor beaches for coastline tangent; disambiguated
   by vector toward CA inland centroid (37°N, 120.5°W).
@@ -207,6 +235,17 @@ gate's calibration + inner-validation split.
 Hydrology + solar-wind cache key: `hydro-${{ runner.os }}-v4`.
 Timeout: 170 min (was 120; bumped 2026-06-10 — the 1095d window's spatial sweep was
 overrunning the old budget and timing the job out before it could commit).
+
+**Action versions (2026-06-11):** all workflows pinned to Node-24 runtimes
+(`checkout@v5`, `setup-python@v6`, `cache@v5`) ahead of GitHub's 2026-06-16 forced Node-20→24
+migration; a github-actions-only Dependabot keeps them current (pip is intentionally manual).
+
+**Failure alerting (2026-06-11):** daily-forecast has a `notify-failure` job (`if: failure()`)
+that opens/comments a de-duped `pipeline-failure` GitHub Issue (assigned to the repo owner, who
+gets emailed) — previously a failed run was silent until `/system/health` went 503.
+`deploy-backend.yml` now polls `/system/health` after the Render webhook (~5 min) and fails the
+deploy if it never returns 200, so a broken Render build no longer ships unnoticed. Both have
+`concurrency` with `cancel-in-progress: false` (never kill a mid-flight train/commit/deploy).
 
 **Daily spatial backtest folds — 6 counties / 15 beaches** (`--spatial-county-limit 6
 --spatial-beach-limit 15`, commit `153f1368a`, 2026-06-10). The full 12-county / 50-beach

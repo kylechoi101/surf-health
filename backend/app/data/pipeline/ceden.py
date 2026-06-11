@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import numpy as np
 import pandas as pd
 
 from app.data.pipeline.beachwatch import build_beach_day_frame
@@ -265,6 +266,12 @@ def normalize_ceden_results(frame: pd.DataFrame, stv_threshold: float) -> pd.Dat
     result_sub = pd.to_numeric(results.get("ResultSub"), errors="coerce")
     raw_result = pd.to_numeric(results.get("Result"), errors="coerce")
     results["value"] = result_sub.where(result_sub.notna(), raw_result)
+    # Enterococcus is a non-negative count (MPN/CFU/copies). Negative results are
+    # invalid sentinels (e.g. -999/-1000 "not analyzed") — drop them so they don't
+    # poison the lag/rolling features or the label. Mirrors the guard in
+    # beachwatch.normalize_beachwatch_results. The .dropna(subset=[...,"value"])
+    # below then removes these rows.
+    results.loc[results["value"] < 0, "value"] = np.nan
     results["method"] = results["MethodName"].fillna("unknown").astype(str).str.strip()
     results["units"] = results["Unit"].fillna("unknown").astype(str).str.strip()
     # Method-aware: PCR (copies) judged against the molecular threshold, not the

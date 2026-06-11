@@ -49,7 +49,13 @@ from app.ml.calibration import (
     risk_band,
 )
 from app.ml.datasets import SequenceDataset
-from app.ml.evaluation import classification_metrics, regression_metrics
+from app.ml.evaluation import (
+    classification_metrics,
+    holdout_frame,
+    persist_holdout_predictions,
+    regression_metrics,
+    sensitivity_at_specificity_record,
+)
 from app.ml.models import (
     BeachCNN, 
     BeachTCN, 
@@ -1217,6 +1223,7 @@ def _spatial_holdout_metrics(
     spatial_jobs: int = 1,
     dataset: SlidingWindowDataset | None = None,
     sequence_epochs: int = 4,
+    predictions_sink: dict | None = None,
 ) -> dict[str, float]:
     eligible_groups = _eligible_holdout_groups(metadata, group_column, min_rows=min_rows, max_groups=max_groups)
     if eligible_groups.empty:
@@ -1263,12 +1270,14 @@ def _spatial_holdout_metrics(
         ]
 
     used_groups = 0
-    for result in fold_results:
+    heldout_groups: list[np.ndarray] = []
+    for group_value, result in zip(group_values, fold_results):
         if result is None:
             continue
         fold_labels, fold_probabilities = result
         heldout_labels.append(fold_labels)
         heldout_probabilities.append(fold_probabilities)
+        heldout_groups.append(np.full(len(fold_labels), group_value))
         used_groups += 1
 
     if not heldout_labels:
@@ -1280,6 +1289,15 @@ def _spatial_holdout_metrics(
 
     all_labels = np.concatenate(heldout_labels)
     all_probabilities = np.concatenate(heldout_probabilities)
+    # Stash the pooled per-row holdout predictions so the caller can persist them
+    # (a single retrain re-derives them, but nothing on disk does today). Keyed by
+    # model+group_column so the production winner's pairs can be selected later.
+    if predictions_sink is not None:
+        predictions_sink[(model_name, group_column)] = {
+            "labels": all_labels,
+            "probabilities": all_probabilities,
+            "groups": np.concatenate(heldout_groups) if heldout_groups else np.array([]),
+        }
     metrics = classification_metrics(all_labels, all_probabilities)
     metrics["folds"] = float(used_groups)
     metrics["eligible_groups"] = float(len(eligible_groups))
@@ -1301,6 +1319,7 @@ def _spatial_backtest_metrics(
     model_types_to_run: list[str] | None = None,
     model_names_to_run: list[str] | None = None,
     sequence_epochs: int = 4,
+    predictions_sink: dict | None = None,
 ) -> dict[str, dict[str, float]]:
     metrics: dict[str, dict[str, float]] = {}
     selected_model_names = model_names_to_run
@@ -1336,6 +1355,7 @@ def _spatial_backtest_metrics(
             spatial_jobs=spatial_jobs,
             dataset=sequence_dataset,
             sequence_epochs=sequence_epochs,
+            predictions_sink=predictions_sink,
         )
         if county_backtests_enabled:
             metrics[f"spatial_county_{model_name}"] = _spatial_holdout_metrics(
@@ -1350,6 +1370,7 @@ def _spatial_backtest_metrics(
                 spatial_jobs=spatial_jobs,
                 dataset=sequence_dataset,
                 sequence_epochs=sequence_epochs,
+                predictions_sink=predictions_sink,
             )
     return metrics
 
@@ -1966,6 +1987,109 @@ def _forecast_model_version(model_name: str, scope: str = "global") -> str:
     if model_name == "logistic_hierarchical":
         return f"logistic-{scope}-curated-v0"
     return _registry_model_version(model_name)
+
+
+_HOLDOUT_TEMPORAL_ARTIFACT = "holdout_predictions_temporal.parquet"
+_HOLDOUT_SPATIAL_ARTIFACT = "holdout_predictions_spatial.parquet"
+_SEARCY_TARGET_SPECIFICITY = 0.87
+_SENSITIVITY_AT_SPEC_KEY = f"sensitivity_at_spec_{_SEARCY_TARGET_SPECIFICITY:.2f}"
+
+
+def _persist_holdout_artifacts(
+    curated_dir: Path,
+    *,
+    winner: str,
+    metrics: dict,
+    temporal_labels: np.ndarray | None = None,
+    temporal_probs: np.ndarray | None = None,
+    temporal_dates: np.ndarray | None = None,
+    predictions_sink: dict | None = None,
+) -> None:
+    """Persist held-out (label, probability) pairs and record sensitivity@spec.
+
+    Closes the metrics-honesty gap: ``training.py`` previously concatenated the
+    held-out arrays only to feed ``classification_metrics`` and then discarded
+    them, so the Searcy et al. 2018 ``sensitivity @ specificity 0.87`` benchmark
+    could not be recomputed without a retrain. This writes:
+
+      * ``holdout_predictions_temporal.parquet`` — the production winner's
+        temporal-test (label, probability[, date]) rows.
+      * ``holdout_predictions_spatial.parquet`` — the production winner's pooled
+        leave-one-out (label, probability, group) rows for county and beach
+        holdouts.
+
+    and records the sensitivity@spec operating point under the winner's metrics
+    base key (``production_metrics`` in the registry) plus the spatial keys, so
+    the number ships in ``system_health.json``. Every step is best-effort:
+    a missing/empty array logs and is skipped, never crashing the build.
+    """
+    base_key = _metrics_base_key(winner)
+
+    # --- Temporal-test pairs (the production / temporal-test eval slice) ---
+    if temporal_labels is not None and temporal_probs is not None and len(temporal_labels):
+        written = persist_holdout_predictions(
+            curated_dir / _HOLDOUT_TEMPORAL_ARTIFACT,
+            temporal_labels,
+            temporal_probs,
+            model=winner,
+            date=temporal_dates,
+        )
+        if written is None:
+            print(
+                "WARN: temporal holdout predictions not persisted (empty/unwritable)",
+                file=sys.stderr,
+                flush=True,
+            )
+        record = sensitivity_at_specificity_record(
+            temporal_labels, temporal_probs, _SEARCY_TARGET_SPECIFICITY
+        )
+        metrics.setdefault(base_key, {})[_SENSITIVITY_AT_SPEC_KEY] = record
+
+    # --- Spatial pooled pairs (leave-one-county-out / leave-one-beach-out) ---
+    if predictions_sink:
+        spatial_frames: list[pd.DataFrame] = []
+        for group_column in ("county", "beach_id"):
+            pooled = predictions_sink.get((winner, group_column))
+            if pooled is None or len(pooled.get("labels", [])) == 0:
+                continue
+            labels_arr = pooled["labels"]
+            probs_arr = pooled["probabilities"]
+            groups_arr = pooled.get("groups")
+            spatial_frames.append(
+                holdout_frame(
+                    labels_arr,
+                    probs_arr,
+                    model=winner,
+                    holdout_kind=group_column,
+                    group=groups_arr if groups_arr is not None and len(groups_arr) else None,
+                )
+            )
+            # Spatial backtest metric keys use the FULL model name (variants
+            # included); fall back to the base key for hist_gbm-family aliasing.
+            prefix = "spatial_county_" if group_column == "county" else "spatial_beach_"
+            spatial_key = next(
+                (f"{prefix}{name}" for name in (winner, base_key) if f"{prefix}{name}" in metrics),
+                None,
+            )
+            if spatial_key is not None:
+                metrics[spatial_key][_SENSITIVITY_AT_SPEC_KEY] = (
+                    sensitivity_at_specificity_record(
+                        labels_arr, probs_arr, _SEARCY_TARGET_SPECIFICITY
+                    )
+                )
+        if spatial_frames:
+            try:
+                combined = pd.concat(spatial_frames, ignore_index=True)
+                (curated_dir / _HOLDOUT_SPATIAL_ARTIFACT).parent.mkdir(
+                    parents=True, exist_ok=True
+                )
+                combined.to_parquet(curated_dir / _HOLDOUT_SPATIAL_ARTIFACT, index=False)
+            except Exception:  # pragma: no cover - artifact write must not crash training
+                print(
+                    "WARN: spatial holdout predictions not persisted",
+                    file=sys.stderr,
+                    flush=True,
+                )
 
 
 _STALE_CUTOFF_DAYS: int = 45
@@ -3157,6 +3281,7 @@ def _run_winner_only(
         production_winner=winner, research_winner=winner, spatial_backtest_models=backtest_models,
     )
 
+    spatial_predictions_sink: dict = {}
     if spatial_backtests:
         print(
             f"Running stage 2 spatial backtests for {', '.join(m.upper() for m in backtest_models)}...",
@@ -3181,6 +3306,7 @@ def _run_winner_only(
                 spatial_jobs=resolved_spatial_jobs,
                 dataset=dataset,
                 model_names_to_run=backtest_models,
+                predictions_sink=spatial_predictions_sink,
             )
         )
 
@@ -3199,6 +3325,31 @@ def _run_winner_only(
                 file=sys.stderr, flush=True,
             )
             winner = new_winner
+
+    # Persist the FINAL winner's held-out (label, probability) pairs + record the
+    # Searcy sensitivity@spec operating point. The temporal-test eval predictions
+    # for the two always-trained candidates are captured above (tree_eval /
+    # ens_eval); other winners fall back to spatial-only persistence.
+    _winner_temporal_eval = {
+        "hist_gbm": tree_eval,
+        "xgb_undersample_ensemble": ens_eval,
+    }.get(_metrics_base_key(winner))
+    _temporal_dates = None
+    if _winner_temporal_eval is not None and "sample_date" in eval_metadata.columns:
+        _temporal_dates = (
+            pd.to_datetime(eval_metadata["sample_date"], errors="coerce")
+            .dt.strftime("%Y-%m-%d")
+            .to_numpy()
+        )
+    _persist_holdout_artifacts(
+        curated_dir,
+        winner=winner,
+        metrics=metrics,
+        temporal_labels=labels[eval_idx] if _winner_temporal_eval is not None else None,
+        temporal_probs=_winner_temporal_eval,
+        temporal_dates=_temporal_dates,
+        predictions_sink=spatial_predictions_sink,
+    )
 
     # Repoint the export classifier/calibrator to the FINAL winner. The export's
     # generic branch reads models.classifier, so after a spatial swap into (or
@@ -3490,6 +3641,7 @@ def train_curated_and_export(
             effective_beach_limit = spatial_beach_limit or 5
             effective_county_limit = spatial_county_limit or 3
 
+    spatial_predictions_sink: dict = {}
     if spatial_backtests:
         print(
             "Running stage 2 spatial backtests for "
@@ -3511,6 +3663,7 @@ def train_curated_and_export(
                 dataset=dataset,
                 model_names_to_run=spatial_backtest_models,
                 sequence_epochs=sequence_epochs,
+                predictions_sink=spatial_predictions_sink,
             )
         )
 
@@ -3525,6 +3678,31 @@ def train_curated_and_export(
             research_winner=plan.research_winner,
             spatial_backtest_models=plan.spatial_backtest_models,
         )
+
+    # Persist the FINAL winner's held-out (label, probability) pairs + record the
+    # Searcy sensitivity@spec operating point (temporal-test + spatial pooled).
+    _winner_temporal_eval = {
+        "hist_gbm": tree_eval,
+        "xgb_undersample_ensemble": xgb_ens_eval,
+        "logistic": logistic_eval,
+    }.get(_metrics_base_key(winner))
+    _temporal_dates = None
+    if _winner_temporal_eval is not None and "sample_date" in eval_metadata.columns:
+        _temporal_dates = (
+            pd.to_datetime(eval_metadata["sample_date"], errors="coerce")
+            .dt.strftime("%Y-%m-%d")
+            .to_numpy()
+        )
+    _persist_holdout_artifacts(
+        curated_dir,
+        winner=winner,
+        metrics=metrics,
+        temporal_labels=labels[eval_idx] if _winner_temporal_eval is not None else None,
+        temporal_probs=_winner_temporal_eval,
+        temporal_dates=_temporal_dates,
+        predictions_sink=spatial_predictions_sink,
+    )
+
     if winner == "logistic":
         classifier, calibrator = logistic, logistic_calibrator
     elif winner == "xgb_undersample_ensemble":

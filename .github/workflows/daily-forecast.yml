@@ -24,6 +24,13 @@ on:
         type: boolean
         default: false
 
+# Never kill a mid-flight training/commit run — let it finish and queue the
+# next one. cancel-in-progress: false is deliberate: a cancelled run would
+# leave a half-written forecast (no commit) and stale /system/health -> 503.
+concurrency:
+  group: daily-forecast
+  cancel-in-progress: false
+
 jobs:
   refresh:
     runs-on: ubuntu-latest
@@ -279,3 +286,95 @@ jobs:
           else
             echo "RENDER_DEPLOY_HOOK not set — skipping (set repo secret to enable)."
           fi
+
+  # Failure alerting: the daily pipeline failing used to be silent — the only
+  # signal was someone manually checking Actions or the API serving a 503.
+  # This job opens (or, to avoid spamming a multi-day outage, comments on an
+  # already-open) GitHub Issue labelled `pipeline-failure`, assigned to the
+  # repo owner. GitHub emails issue assignees/watchers, so this is a guaranteed
+  # notification with ZERO external secrets (no Slack/PagerDuty needed).
+  notify-failure:
+    needs: refresh
+    if: failure()
+    runs-on: ubuntu-latest
+    permissions:
+      # contents:read so github-script can read the repo; issues:write to
+      # open/comment on the alert issue. Both scoped to this job only.
+      contents: read
+      issues: write
+    steps:
+      - name: Open or update pipeline-failure issue
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            // YYYY-MM-DD in UTC — stable per-day title so a same-day re-run
+            // de-dupes onto the existing issue rather than opening a new one.
+            const today = new Date().toISOString().slice(0, 10);
+            const label = 'pipeline-failure';
+            const title = `🔴 daily-forecast failed ${today}`;
+            const body = [
+              `The **Daily forecast refresh** workflow failed.`,
+              ``,
+              `- Run: ${runUrl}`,
+              `- Commit: \`${context.sha}\``,
+              `- Triggered by: \`${context.eventName}\``,
+              ``,
+              `A failed run means no fresh forecast was committed — \`/system/health\` may go stale (503). Inspect the run log above, then re-run via \`workflow_dispatch\`.`,
+            ].join('\n');
+
+            // Ensure the de-dupe label exists (idempotent — ignore "already exists").
+            try {
+              await github.rest.issues.createLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: label,
+                color: 'd73a4a',
+                description: 'Automated daily/closures pipeline failure alert',
+              });
+            } catch (e) {
+              if (e.status !== 422) throw e;
+            }
+
+            // De-dupe: if ANY open issue already carries the label, comment on
+            // the most recent one instead of opening a fresh issue. This keeps
+            // a multi-day outage to a single thread + comments, not N issues.
+            const open = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: label,
+              sort: 'created',
+              direction: 'desc',
+              per_page: 1,
+            });
+
+            if (open.data.length > 0) {
+              const existing = open.data[0];
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body: `Still failing — another run failed ${today}.\n\n${body}`,
+              });
+              core.notice(`Commented on existing failure issue #${existing.number}`);
+            } else {
+              const base = {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: [label],
+              };
+              // Assign the repo owner so GitHub emails them directly. If the
+              // owner isn't an assignable user (e.g. an org), the API 422s —
+              // fall back to an unassigned issue so the alert is never lost.
+              let created;
+              try {
+                created = await github.rest.issues.create({ ...base, assignees: [context.repo.owner] });
+              } catch (e) {
+                if (e.status !== 422) throw e;
+                created = await github.rest.issues.create(base);
+              }
+              core.notice(`Opened failure issue #${created.data.number}`);
+            }

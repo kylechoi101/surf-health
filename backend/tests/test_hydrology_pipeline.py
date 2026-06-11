@@ -5,11 +5,44 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from app.data.connectors.hydrology_sources import _atomic_to_parquet
 from app.data.pipeline.hydrology import (
     _forecast_cutoff_utc,
     aggregate_streamflow_windows,
     build_beach_hydrology_daily,
 )
+
+
+class TestAtomicToParquet:
+    def test_write_produces_readable_parquet(self, tmp_path):
+        df = pd.DataFrame({"a": [1, 2, 3], "b": ["x", "y", "z"]})
+        target = tmp_path / "cache.parquet"
+        _atomic_to_parquet(df, target)
+        assert target.exists()
+        pd.testing.assert_frame_equal(pd.read_parquet(target), df)
+
+    def test_no_leftover_tmp_after_success(self, tmp_path):
+        target = tmp_path / "cache.parquet"
+        _atomic_to_parquet(pd.DataFrame({"a": [1]}), target)
+        # The .tmp staging file is renamed away on success — it must not shadow the real file.
+        assert not (tmp_path / "cache.parquet.tmp").exists()
+        assert list(tmp_path.glob("*.tmp")) == []
+
+    def test_overwrite_replaces_atomically(self, tmp_path):
+        target = tmp_path / "cache.parquet"
+        _atomic_to_parquet(pd.DataFrame({"a": [1]}), target)
+        _atomic_to_parquet(pd.DataFrame({"a": [9, 9]}), target)
+        out = pd.read_parquet(target)
+        assert out["a"].tolist() == [9, 9]
+
+    def test_leftover_tmp_does_not_shadow_real_file(self, tmp_path):
+        """A corrupt/leftover .tmp from a prior crash must not affect reads of the real file."""
+        target = tmp_path / "cache.parquet"
+        _atomic_to_parquet(pd.DataFrame({"a": [1, 2]}), target)
+        # Simulate a leftover staging file from a crashed prior write.
+        (tmp_path / "cache.parquet.tmp").write_bytes(b"garbage-not-parquet")
+        out = pd.read_parquet(target)
+        assert out["a"].tolist() == [1, 2]
 
 
 def _make_iv_row(gage_id: str, time_utc: str, discharge_cfs: float, provisional: bool = False) -> dict:
