@@ -1,16 +1,16 @@
 {
-  "generated_at": "2026-06-08T19:34:45.070361+00:00",
-  "forecast_date": "2026-06-08",
+  "generated_at": "2026-06-11T05:58:55.198424+00:00",
+  "forecast_date": "2026-06-10",
   "model_version": "xgb-undersample-ensemble-curated-v0",
   "risk_threshold": 0.2,
-  "total_beaches": 210,
-  "active_advisories": 13,
-  "agreement_rate": 0.923,
+  "total_beaches": 211,
+  "active_advisories": 10,
+  "agreement_rate": 0.8,
   "pool_metrics": {
     "acute": {
-      "advised_beaches": 10,
-      "model_flagged": 10,
-      "agreement_rate": 1.0
+      "advised_beaches": 7,
+      "model_flagged": 6,
+      "agreement_rate": 0.857
     },
     "closure": {
       "advised_beaches": 2,
@@ -34,75 +34,76 @@
     }
   },
   "false_negatives": {
-    "count": 1,
+    "count": 2,
     "description": "Active advisory but model says Low/Moderate",
     "by_pool": {
-      "acute": 0,
+      "acute": 1,
       "closure": 0,
       "chronic": 0,
       "stale": 1,
       "unknown_duration": 0
     },
-    "worst_acute": [],
+    "worst_acute": [
+      {
+        "beach_id": "ca522676-san-mateo-lakeshore-park-lakeshore-park-rec-center",
+        "risk_band": "Low",
+        "p_exceed": 0.193,
+        "pool": "acute",
+        "advisory_age_days": 1
+      }
+    ],
     "worst_chronic": []
   },
   "false_positives": {
-    "count": 12,
+    "count": 13,
     "description": "Model says High/VeryHigh but no active advisory",
     "worst": [
       {
-        "beach_id": "ca104746-san-diego-tijuana-slough-national-wildlife-refuge-ib-030",
-        "risk_band": "High",
-        "p_exceed": 0.69,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
-        "beach_id": "ca104746-san-diego-tijuana-slough-national-wildlife-refuge-ib-040",
-        "risk_band": "High",
-        "p_exceed": 0.546,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
-        "beach_id": "ca809706-san-diego-border-field-state-park-ib-020",
-        "risk_band": "High",
-        "p_exceed": 0.444,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
-        "beach_id": "ca839312-san-diego-baja-california-mexico-bc-030",
-        "risk_band": "High",
-        "p_exceed": 0.435,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
         "beach_id": "ca562372-san-mateo-venice-state-beach-pilarcitos-creek",
         "risk_band": "High",
-        "p_exceed": 0.416,
+        "p_exceed": 0.618,
         "pool": "none",
         "advisory_age_days": null
       },
       {
-        "beach_id": "ca323807-san-mateo-montara-state-beach-san-vicente-creek",
+        "beach_id": "ca852440-san-mateo-pillar-point-harbor-pillar-point-5",
         "risk_band": "High",
-        "p_exceed": 0.398,
+        "p_exceed": 0.583,
         "pool": "none",
         "advisory_age_days": null
       },
       {
-        "beach_id": "ca809706-san-diego-border-field-state-park-ib-010",
+        "beach_id": "ca447069-san-mateo-pacifica-state-beach-linda-mar-beach-7",
         "risk_band": "High",
-        "p_exceed": 0.365,
+        "p_exceed": 0.493,
+        "pool": "none",
+        "advisory_age_days": null
+      },
+      {
+        "beach_id": "ca104746-san-diego-tijuana-slough-national-wildlife-refuge-ib-030",
+        "risk_band": "High",
+        "p_exceed": 0.434,
+        "pool": "none",
+        "advisory_age_days": null
+      },
+      {
+        "beach_id": "ca880471-santa-cruz-capitola-city-beach-o240",
+        "risk_band": "High",
+        "p_exceed": 0.433,
         "pool": "none",
         "advisory_age_days": null
       },
       {
         "beach_id": "ca534500-san-mateo-gazos-creek-access-gazos-creek-access",
         "risk_band": "High",
-        "p_exceed": 0.301,
+        "p_exceed": 0.4,
+        "pool": "none",
+        "advisory_age_days": null
+      },
+      {
+        "beach_id": "ca517375-san-mateo-fitzgerald-marine-moss-beach-fitzgerald-marine-moss-beach",
+        "risk_band": "High",
+        "p_exceed": 0.306,
         "pool": "none",
         "advisory_age_days": null
       },
@@ -114,23 +115,37 @@
         "advisory_age_days": null
       },
       {
-        "beach_id": "ca517375-san-mateo-fitzgerald-marine-moss-beach-fitzgerald-marine-moss-beach",
-        "risk_band": "Moderate",
-        "p_exceed": 0.291,
+        "beach_id": "ca735620-los-angeles-santa-monica-state-beach-smb-3-3",
+        "risk_band": "High",
+        "p_exceed": 0.3,
         "pool": "none",
         "advisory_age_days": null
       },
       {
-        "beach_id": "ca447069-san-mateo-pacifica-state-beach-linda-mar-beach-7",
+        "beach_id": "ca432205-san-mateo-san-gregorio-state-beach-san-gregorio-state-beach",
         "risk_band": "Moderate",
-        "p_exceed": 0.276,
+        "p_exceed": 0.293,
         "pool": "none",
         "advisory_age_days": null
       },
       {
-        "beach_id": "ca880471-santa-cruz-capitola-city-beach-o240",
+        "beach_id": "ca880471-santa-cruz-capitola-city-beach-o235",
         "risk_band": "Moderate",
-        "p_exceed": 0.234,
+        "p_exceed": 0.231,
+        "pool": "none",
+        "advisory_age_days": null
+      },
+      {
+        "beach_id": "ca104746-san-diego-tijuana-slough-national-wildlife-refuge-ib-040",
+        "risk_band": "Moderate",
+        "p_exceed": 0.227,
+        "pool": "none",
+        "advisory_age_days": null
+      },
+      {
+        "beach_id": "ca128038-san-luis-obispo-pismo-state-beach-pb4",
+        "risk_band": "Moderate",
+        "p_exceed": 0.212,
         "pool": "none",
         "advisory_age_days": null
       }
