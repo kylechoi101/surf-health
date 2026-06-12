@@ -105,6 +105,7 @@ async def log_requests(request: Request, call_next):
 # ---------------------------------------------------------------------------
 
 @app.get("/")
+@limiter.exempt
 def root():
     return {
         "name": "Surf Health API",
