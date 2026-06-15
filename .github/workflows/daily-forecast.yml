@@ -351,7 +351,7 @@ jobs:
       issues: write
     steps:
       - name: Open or update pipeline-failure issue
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         with:
           script: |
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
@@ -442,7 +442,7 @@ jobs:
       issues: write
     steps:
       - name: Close recovered pipeline-failure issues
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         with:
           script: |
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
