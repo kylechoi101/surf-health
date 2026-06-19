@@ -1,16 +1,16 @@
 {
-  "generated_at": "2026-06-18T19:26:12.074160+00:00",
-  "forecast_date": "2026-06-18",
+  "generated_at": "2026-06-19T18:51:54.088642+00:00",
+  "forecast_date": "2026-06-19",
   "model_version": "xgb-undersample-ensemble-curated-v0",
   "risk_threshold": 0.2,
   "total_beaches": 211,
-  "active_advisories": 13,
-  "agreement_rate": 1.0,
+  "active_advisories": 16,
+  "agreement_rate": 0.875,
   "pool_metrics": {
     "acute": {
-      "advised_beaches": 12,
-      "model_flagged": 12,
-      "agreement_rate": 1.0
+      "advised_beaches": 15,
+      "model_flagged": 13,
+      "agreement_rate": 0.867
     },
     "closure": {
       "advised_beaches": 1,
@@ -34,31 +34,39 @@
     }
   },
   "false_negatives": {
-    "count": 0,
+    "count": 2,
     "description": "Active advisory but model says Low/Moderate",
     "by_pool": {
-      "acute": 0,
+      "acute": 2,
       "closure": 0,
       "chronic": 0,
       "stale": 0,
       "unknown_duration": 0
     },
-    "worst_acute": [],
+    "worst_acute": [
+      {
+        "beach_id": "ca731234-marin-whitehouse-pool-whitehouse-pool",
+        "risk_band": "Low",
+        "p_exceed": 0.025,
+        "pool": "acute",
+        "advisory_age_days": 0
+      },
+      {
+        "beach_id": "ca331043-marin-lawson-s-landing-lawsons-landing",
+        "risk_band": "Low",
+        "p_exceed": 0.028,
+        "pool": "acute",
+        "advisory_age_days": 0
+      }
+    ],
     "worst_chronic": []
   },
   "false_positives": {
-    "count": 14,
+    "count": 12,
     "description": "Model says High/VeryHigh but no active advisory",
     "worst": [
       {
         "beach_id": "ca279698-long-beach-city-long-beach-b-5",
-        "risk_band": "Very High",
-        "p_exceed": 1.0,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
-        "beach_id": "ca279698-long-beach-city-long-beach-b-7",
         "risk_band": "Very High",
         "p_exceed": 1.0,
         "pool": "none",
@@ -79,13 +87,6 @@
         "advisory_age_days": null
       },
       {
-        "beach_id": "ca993851-san-luis-obispo-oceano-dunes-state-rec-area-ocb12",
-        "risk_band": "Very High",
-        "p_exceed": 1.0,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
         "beach_id": "ca104746-san-diego-tijuana-slough-national-wildlife-refuge-ib-030",
         "risk_band": "Very High",
         "p_exceed": 1.0,
@@ -100,7 +101,7 @@
         "advisory_age_days": null
       },
       {
-        "beach_id": "ca900091-san-mateo-sharp-park-beach-sharp-park-beach-3",
+        "beach_id": "ca993851-san-luis-obispo-oceano-dunes-state-rec-area-ocb12",
         "risk_band": "Very High",
         "p_exceed": 1.0,
         "pool": "none",
@@ -121,9 +122,16 @@
         "advisory_age_days": null
       },
       {
+        "beach_id": "ca900091-san-mateo-sharp-park-beach-sharp-park-beach-3",
+        "risk_band": "Very High",
+        "p_exceed": 1.0,
+        "pool": "none",
+        "advisory_age_days": null
+      },
+      {
         "beach_id": "ca880471-santa-cruz-capitola-city-beach-o240",
         "risk_band": "High",
-        "p_exceed": 0.436,
+        "p_exceed": 0.353,
         "pool": "none",
         "advisory_age_days": null
       },
@@ -135,16 +143,9 @@
         "advisory_age_days": null
       },
       {
-        "beach_id": "ca809706-san-diego-border-field-state-park-ib-020",
-        "risk_band": "Moderate",
-        "p_exceed": 0.203,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
         "beach_id": "ca880471-santa-cruz-capitola-city-beach-o235",
         "risk_band": "Moderate",
-        "p_exceed": 0.201,
+        "p_exceed": 0.202,
         "pool": "none",
         "advisory_age_days": null
       }

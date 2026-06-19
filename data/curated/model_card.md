@@ -1,7 +1,7 @@
 # Model Card: Shorelife `xgb-undersample-ensemble-curated-v0`
 
 ## Deployment Status
-- **Generated at**: 2026-06-18T19:26:03.040782+00:00
+- **Generated at**: 2026-06-19T18:51:45.731153+00:00
 - **Deployment stage**: candidate_ready
 - **Public release eligible**: true
 - **Promotion blocker (latest)**: None
@@ -34,7 +34,7 @@ Active advisories are decomposed into three pools by age. The overall agreement 
 - **Chronic** (15-365 d, geomean postings): agreement —
 - **Stale** (>365 d, admin zombies the model is not expected to flag): agreement —
 
-- **Active-advisory agreement rate** (legacy overall metric, dominated by stale pool): 1.000
+- **Active-advisory agreement rate** (legacy overall metric, dominated by stale pool): 0.875
 
 ## Notes
 - Forecasts are decision support and are not official lab results.
