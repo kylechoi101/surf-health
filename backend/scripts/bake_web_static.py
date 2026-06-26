@@ -225,58 +225,161 @@ def bake(curated: Path, out: Path) -> None:
           f"{sum(1 for r in beach_rows if r['has_active_advisory'])} with active advisory",
           file=sys.stderr)
 
-    # parent_beaches.json — group stations by leading beach_id segment (12 hex chars)
-    parents: dict[str, dict] = {}
-    for r in beach_rows:
-        parent_key = "parent-" + r["id"].split("-")[0]
-        p = parents.setdefault(parent_key, {
-            "id": parent_key,
-            "name": r["name"].rsplit(" (", 1)[0],
-            "county": r["county"],
-            "region": r["region"],
-            "support_status": r["support_status"],
-            "station_count": 0,
-            "member_beach_ids": [],
-            "member_beach_names": [],
-            "member_station_codes": [],
-            "latest_official_sample_at": None,
-            "latitude": r["latitude"],
-            "longitude": r["longitude"],
-            "has_active_advisory": False,
-            "advisory_website": None,
-            "risk_band": None,
-            "p_exceed": None,
-            "_band_priority": -1,
-        })
-        p["station_count"] += 1
-        p["member_beach_ids"].append(r["id"])
-        p["member_beach_names"].append(r["station_name"] or r["name"])
-        p["member_station_codes"].append(r["station_code"] or "")
-        if r["has_active_advisory"]:
-            p["has_active_advisory"] = True
-            p["advisory_website"] = p["advisory_website"] or r["advisory_website"]
-        last = r["latest_official_sample_at"]
-        if last and (p["latest_official_sample_at"] is None or last > p["latest_official_sample_at"]):
-            p["latest_official_sample_at"] = last
+    # parent_beaches.json — the authoritative parent grouping (ids + membership)
+    # comes from the curated parent_beaches.parquet, which is the EXACT source the
+    # live API serves from (see app.repositories.serving_repository). Re-deriving
+    # parent ids here from the leading beach_id segment used to DIVERGE from the
+    # API's geographic sub-cluster split: derive_parent_beaches DBSCAN-splits any
+    # usepa_id group spanning >5 km into directional parents (e.g. "La Jolla Shores
+    # Beach · North" -> parent-ca876094-1 / "· South" -> parent-ca876094-2), while
+    # this script collapsed all of them into a single parent-ca876094. The static
+    # site's generateStaticParams baked only the collapsed id, so every split
+    # parent the directory's live API refresh linked to (parent-ca876094-1, -2)
+    # 404'd. Reading the parquet keeps the baked ids — and therefore the prebuilt
+    # /parent/<id> pages — in lockstep with the API feed. The per-station roll-up
+    # fields the web expects (member names/codes, advisory, worst risk band) are
+    # aggregated here from beach_rows.
+    beach_by_id = {r["id"]: r for r in beach_rows}
+    order = {"Low": 1, "Moderate": 2, "High": 3, "Very High": 4, "Advisory": 5}
 
-        # Worst-band aggregation; Advisory outranks every model band
-        order = {"Low": 1, "Moderate": 2, "High": 3, "Very High": 4, "Advisory": 5}
-        fc = r["forecast"] or {}
-        band = fc.get("risk_band")
-        pri = order.get(band, 0)
-        if pri > p["_band_priority"]:
-            p["_band_priority"] = pri
-            p["risk_band"] = band
-            p["p_exceed"] = fc.get("p_exceed")
+    def _member_ids(raw) -> list[str]:
+        """Normalize the parquet member_beach_ids cell (numpy array / list /
+        JSON string) to a list of str."""
+        if raw is None:
+            return []
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except (ValueError, TypeError):
+                return [raw]
+        try:
+            return [str(x) for x in list(raw)]
+        except TypeError:
+            return []
 
     parent_rows = []
-    for p in parents.values():
-        p.pop("_band_priority", None)
-        parent_rows.append(p)
+    parents_path = curated / "parent_beaches.parquet"
+    if parents_path.exists():
+        parent_df = pd.read_parquet(parents_path)
+        for _, pr in parent_df.iterrows():
+            member_ids = _member_ids(pr.get("member_beach_ids"))
+            members = [beach_by_id[mid] for mid in member_ids if mid in beach_by_id]
+
+            has_adv = any(m["has_active_advisory"] for m in members)
+            advisory_website = next(
+                (m["advisory_website"] for m in members
+                 if m["has_active_advisory"] and m["advisory_website"]),
+                None,
+            )
+
+            # Worst-band aggregation; Advisory outranks every model band.
+            band_priority, risk_band_val, p_exceed_val = -1, None, None
+            for m in members:
+                fc = m["forecast"] or {}
+                band = fc.get("risk_band")
+                pri = order.get(band, 0)
+                if pri > band_priority:
+                    band_priority = pri
+                    risk_band_val = band
+                    p_exceed_val = fc.get("p_exceed")
+
+            # Latest official sample across members (obs-derived, matching
+            # beaches.json), falling back to the parquet's own value.
+            latest = None
+            for m in members:
+                last = m["latest_official_sample_at"]
+                if last and (latest is None or last > latest):
+                    latest = last
+            if latest is None:
+                latest = _safe(pr.get("latest_official_sample_at"))
+
+            parent_rows.append({
+                "id": str(pr["parent_beach_id"]),
+                "name": str(pr["name"]),
+                "county": _safe(pr.get("county")),
+                "region": _safe(pr.get("region")),
+                "support_status": _safe(pr.get("support_status")) or "unsupported",
+                "station_count": (
+                    int(pr["station_count"]) if pd.notna(pr.get("station_count"))
+                    else len(member_ids)
+                ),
+                "member_beach_ids": member_ids,
+                "member_beach_names": [
+                    (beach_by_id[mid]["station_name"] or beach_by_id[mid]["name"])
+                    if mid in beach_by_id else mid
+                    for mid in member_ids
+                ],
+                "member_station_codes": [
+                    (beach_by_id[mid]["station_code"] or "") if mid in beach_by_id else ""
+                    for mid in member_ids
+                ],
+                "latest_official_sample_at": latest,
+                "latitude": _safe(pr.get("latitude")),
+                "longitude": _safe(pr.get("longitude")),
+                "has_active_advisory": has_adv,
+                "advisory_website": advisory_website,
+                "risk_band": risk_band_val,
+                "p_exceed": p_exceed_val,
+            })
+        print(f"  parent_beaches.json: {len(parent_rows)} parents "
+              f"(from parent_beaches.parquet)", file=sys.stderr)
+    else:
+        # Legacy fallback — keep the bake alive if the parquet is unavailable,
+        # but warn loudly: this path re-derives parent ids by beach_id prefix
+        # and CANNOT reproduce the API's geographic split, so split-parent
+        # pages will 404. Deploy should always supply parent_beaches.parquet.
+        print("::warning::parent_beaches.parquet missing — falling back to "
+              "prefix grouping; split-parent ids will NOT match the API",
+              file=sys.stderr)
+        parents: dict[str, dict] = {}
+        for r in beach_rows:
+            parent_key = "parent-" + r["id"].split("-")[0]
+            p = parents.setdefault(parent_key, {
+                "id": parent_key,
+                "name": r["name"].rsplit(" (", 1)[0],
+                "county": r["county"],
+                "region": r["region"],
+                "support_status": r["support_status"],
+                "station_count": 0,
+                "member_beach_ids": [],
+                "member_beach_names": [],
+                "member_station_codes": [],
+                "latest_official_sample_at": None,
+                "latitude": r["latitude"],
+                "longitude": r["longitude"],
+                "has_active_advisory": False,
+                "advisory_website": None,
+                "risk_band": None,
+                "p_exceed": None,
+                "_band_priority": -1,
+            })
+            p["station_count"] += 1
+            p["member_beach_ids"].append(r["id"])
+            p["member_beach_names"].append(r["station_name"] or r["name"])
+            p["member_station_codes"].append(r["station_code"] or "")
+            if r["has_active_advisory"]:
+                p["has_active_advisory"] = True
+                p["advisory_website"] = p["advisory_website"] or r["advisory_website"]
+            last = r["latest_official_sample_at"]
+            if last and (p["latest_official_sample_at"] is None or last > p["latest_official_sample_at"]):
+                p["latest_official_sample_at"] = last
+
+            fc = r["forecast"] or {}
+            band = fc.get("risk_band")
+            pri = order.get(band, 0)
+            if pri > p["_band_priority"]:
+                p["_band_priority"] = pri
+                p["risk_band"] = band
+                p["p_exceed"] = fc.get("p_exceed")
+
+        for p in parents.values():
+            p.pop("_band_priority", None)
+            parent_rows.append(p)
+        print(f"  parent_beaches.json: {len(parent_rows)} parents "
+              f"(LEGACY prefix grouping)", file=sys.stderr)
 
     with (out / "parent_beaches.json").open("w") as f:
         json.dump(parent_rows, f, separators=(",", ":"), default=str)
-    print(f"  parent_beaches.json: {len(parent_rows)} parents", file=sys.stderr)
 
     # regional_summary.json — counts by region
     region_summary: dict[str, dict] = {}

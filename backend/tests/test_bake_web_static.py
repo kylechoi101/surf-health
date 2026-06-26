@@ -11,6 +11,9 @@ the canonical cutpoints and forgets the copy. These tests fail CI on drift
 """
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pandas as pd
 
 from app.ml import calibration as canon
@@ -98,3 +101,99 @@ def test_no_advisory_clears_model_band():
     block = bake._build_forecast_block(fc_row, has_active_advisory=False)
     assert block["official_advisory_active"] is False
     assert block["model_risk_band"] is None
+
+
+def _write_min_curated(curated: Path, parent_beaches: pd.DataFrame) -> None:
+    """Write the minimal curated parquets bake() reads, plus a caller-supplied
+    parent_beaches frame."""
+    beaches = pd.DataFrame(
+        [
+            {
+                "beach_id": "ca999-north-a", "name": "Spot A", "beach_name": "Big Beach",
+                "station_code": "AA-1", "county": "Test", "region": "RB1",
+                "latitude": 34.0, "longitude": -119.0, "support_status": "production",
+                "water_body_type": "Open Coast",
+            },
+            {
+                "beach_id": "ca999-south-b", "name": "Spot B", "beach_name": "Big Beach",
+                "station_code": "BB-2", "county": "Test", "region": "RB1",
+                "latitude": 33.9, "longitude": -119.0, "support_status": "beta",
+                "water_body_type": "Open Coast",
+            },
+        ]
+    )
+    beaches.to_parquet(curated / "beaches.parquet", index=False)
+    pd.DataFrame(
+        [{"beach_id": "ca999-north-a", "p_exceed_raw": 0.05, "p_exceed": 0.05,
+          "risk_band": "Low", "top_drivers": []}]
+    ).to_parquet(curated / "forecasts.parquet", index=False)
+    pd.DataFrame(
+        columns=["beach_id", "status", "started_at", "advisory_type", "advisory_website"]
+    ).to_parquet(curated / "advisories.parquet", index=False)
+    parent_beaches.to_parquet(curated / "parent_beaches.parquet", index=False)
+
+
+def test_parent_ids_come_from_parquet_not_prefix(tmp_path):
+    """Regression for the La Jolla "down" bug: the bake MUST emit the parent
+    ids from parent_beaches.parquet (the API's geographic sub-cluster split),
+    NOT a re-derived beach_id-prefix grouping. Otherwise the directory's live
+    API refresh links to split-parent pages (parent-...-1/-2) that the static
+    export never generated -> 404."""
+    curated = tmp_path / "curated"
+    curated.mkdir()
+    out = tmp_path / "out"
+    # usepa_id ca999 split into North/South sub-clusters by the pipeline.
+    parents = pd.DataFrame(
+        [
+            {
+                "parent_beach_id": "parent-ca999-1", "usepa_id": "ca999",
+                "name": "Big Beach \u00b7 North", "county": "Test", "region": "RB1",
+                "support_status": "production", "latitude": 34.0, "longitude": -119.0,
+                "station_count": 1, "member_beach_ids": ["ca999-north-a"],
+                "latest_official_sample_at": None,
+            },
+            {
+                "parent_beach_id": "parent-ca999-2", "usepa_id": "ca999",
+                "name": "Big Beach \u00b7 South", "county": "Test", "region": "RB1",
+                "support_status": "beta", "latitude": 33.9, "longitude": -119.0,
+                "station_count": 1, "member_beach_ids": ["ca999-south-b"],
+                "latest_official_sample_at": None,
+            },
+        ]
+    )
+    _write_min_curated(curated, parents)
+
+    bake.bake(curated, out)
+    baked = json.loads((out / "parent_beaches.json").read_text())
+    ids = {p["id"] for p in baked}
+
+    # The split ids from the parquet must be present...
+    assert "parent-ca999-1" in ids
+    assert "parent-ca999-2" in ids
+    # ...and the collapsed prefix id must NOT (that was the 404 bug).
+    assert "parent-ca999" not in ids
+
+    north = next(p for p in baked if p["id"] == "parent-ca999-1")
+    assert north["member_beach_ids"] == ["ca999-north-a"]
+    assert north["member_station_codes"] == ["AA-1"]
+    assert north["risk_band"] == "Low"  # rolled up from the member forecast
+
+
+def test_parent_fallback_when_parquet_missing(tmp_path):
+    """Without parent_beaches.parquet the bake degrades to prefix grouping
+    (kept so the bake never hard-fails) instead of crashing."""
+    curated = tmp_path / "curated"
+    curated.mkdir()
+    out = tmp_path / "out"
+    parents = pd.DataFrame(
+        [{"parent_beach_id": "parent-ca999-1", "usepa_id": "ca999", "name": "x",
+          "county": "Test", "region": "RB1", "support_status": "production",
+          "latitude": 34.0, "longitude": -119.0, "station_count": 1,
+          "member_beach_ids": ["ca999-north-a"], "latest_official_sample_at": None}]
+    )
+    _write_min_curated(curated, parents)
+    (curated / "parent_beaches.parquet").unlink()  # force the fallback path
+
+    bake.bake(curated, out)
+    baked = json.loads((out / "parent_beaches.json").read_text())
+    assert len(baked) >= 1  # produced *something* rather than crashing
