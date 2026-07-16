@@ -51,6 +51,17 @@ ERDDAP_POINT_DATASETS = [
 ]
 
 
+def concat_non_empty(frames: list[pd.DataFrame]) -> pd.DataFrame:
+    """Concatenate frames, tolerating a list where every frame is empty.
+
+    A full upstream outage (e.g. ERDDAP 500s on every dataset) yields a
+    non-empty list of empty frames; ``pd.concat`` on the filtered list would
+    raise ``ValueError: No objects to concatenate``.
+    """
+    non_empty = [frame for frame in frames if not frame.empty]
+    return pd.concat(non_empty, ignore_index=True) if non_empty else pd.DataFrame()
+
+
 def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     radius_km = 6371.0
     dlat = radians(lat2 - lat1)
@@ -474,7 +485,7 @@ async def enrich_beach_day_with_external_covariates(
                         pd.to_datetime(row["max"]).date(),
                     )
                 )
-            cdip_daily = pd.concat([frame for frame in frames if not frame.empty], ignore_index=True) if frames else pd.DataFrame()
+            cdip_daily = concat_non_empty(frames)
             if not cdip_daily.empty:
                 beach_day = beach_day.merge(
                     cdip_daily,
@@ -513,8 +524,13 @@ async def enrich_beach_day_with_external_covariates(
                 if dataset.source_name not in set(erddap_assignments["erddap_source_name"]):
                     continue
                 frames.append(await fetch_erddap_daily_covariates(client, dataset, start_date, end_date))
-            erddap_daily = pd.concat([frame for frame in frames if not frame.empty], ignore_index=True) if frames else pd.DataFrame()
-            if not erddap_daily.empty:
+            erddap_daily = concat_non_empty(frames)
+            if erddap_daily.empty:
+                log.warning(
+                    "[erddap] ALL dataset fetches returned empty — "
+                    "ERDDAP covariates will be NaN for this run."
+                )
+            else:
                 beach_day = beach_day.merge(
                     erddap_daily,
                     left_on=["erddap_source_name", "sample_date"],

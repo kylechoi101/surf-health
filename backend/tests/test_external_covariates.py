@@ -5,6 +5,7 @@ import pandas as pd
 from app.data.pipeline.external_covariates import (
     assign_nearest_cdip_station,
     assign_nearest_erddap_source,
+    concat_non_empty,
     fetch_epa_uv_daily,
     parse_cdip_summary,
 )
@@ -89,3 +90,13 @@ def test_fetch_epa_uv_daily_uses_validated_endpoint_and_parses_payload():
     assert frame.iloc[0]["zip_code"] == "92037"
     assert frame.iloc[0]["uv_index"] == 9.0
     assert frame.iloc[0]["forecast_date"] == "2026-04-20"
+
+
+def test_concat_non_empty_tolerates_all_empty_frames():
+    # Regression: a full ERDDAP outage (500 on every dataset) produced a
+    # non-empty list of empty frames, and pd.concat([]) crashed the daily run.
+    assert concat_non_empty([pd.DataFrame(), pd.DataFrame()]).empty
+    assert concat_non_empty([]).empty
+
+    mixed = concat_non_empty([pd.DataFrame(), pd.DataFrame({"a": [1, 2]})])
+    assert list(mixed["a"]) == [1, 2]
