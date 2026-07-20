@@ -48,17 +48,30 @@ jobs:
           git config user.email "bot@shorelife.app"
           # Only the public feed — never the re-scraped advisories.parquet
           # (that belongs to the daily pipeline; avoids churn/conflicts).
-          git add -f data/curated/closures.json
-          if git diff --cached --quiet; then
-            echo "no closure changes"; exit 0
-          fi
-          git commit -m "chore(closures): hourly feed refresh [skip ci]"
-          # Rebase + retry: the daily/scraper bots push concurrently, so the
-          # first push can be rejected (non-fast-forward). closures.json is the
-          # only change here, so the rebase is conflict-free.
+          #
+          # The daily/scraper bots push to main concurrently, so our push can be
+          # rejected (non-fast-forward). We must NOT `git pull --rebase` here: a
+          # concurrent run edits the SAME file (closures.json), so the rebase
+          # hits a content conflict, drops into a detached/unmerged state, and
+          # every retry then fails ("Pulling is not possible... unmerged files").
+          #
+          # Instead, each attempt re-bases our freshly-built feed on top of the
+          # latest origin/main by reset+reapply. There is nothing to merge — our
+          # just-generated feed simply wins (it reflects this run's scrape, which
+          # is at least as fresh as any concurrent run's), so no conflict is
+          # possible no matter how many bots race us.
+          ours="$RUNNER_TEMP/closures.ours.json"
+          cp data/curated/closures.json "$ours"
           for attempt in 1 2 3 4 5; do
+            git fetch origin main
+            git reset --hard origin/main
+            cp "$ours" data/curated/closures.json
+            git add -f data/curated/closures.json
+            if git diff --cached --quiet; then
+              echo "no closure changes"; exit 0
+            fi
+            git commit -m "chore(closures): hourly feed refresh [skip ci]"
             if git push; then echo "pushed (attempt $attempt)"; exit 0; fi
-            echo "push rejected, rebasing (attempt $attempt)"
-            git pull --rebase --autostash origin main || true
+            echo "push rejected, re-basing on latest main (attempt $attempt)"
           done
           echo "::error::could not push closures feed after retries"; exit 1
