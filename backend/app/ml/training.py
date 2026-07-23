@@ -66,6 +66,13 @@ from app.ml.models import (
     XGBUndersampleEnsemble,
     make_baselines
 )
+from app.ml.served_metrics import (
+    append_forecast_history,
+    apply_serving_calibration,
+    fit_serving_calibration,
+    save_serving_calibration,
+    served_performance,
+)
 from app.ml.stale_evaluation import (
     RECENCY_COLUMN as _STALE_RECENCY_COL,
     censor_bacteria_history_for_cutoff,
@@ -3247,6 +3254,51 @@ def _export_forecasts(
             alpha=1.0,
         )
 
+    # --- Serving-regime recalibration (model_truth.md audit, 2026-07-23) -----
+    # The calibrators above are fit on sample-days (fresh risk history); the
+    # served regime is between-sample days, where those probabilities ran hot
+    # up top (served ~0.98 -> ~0.36 realized — largely the persistence floor
+    # just above) and lost to a flat base rate on Brier. Refit daily: isotonic
+    # map from what the product previously served (forecast_history.parquet)
+    # to the lab outcomes that followed. Monotone, so rank order (the part
+    # that held up forward, AUROC ~0.8) is untouched. Falls back to the
+    # uncalibrated probabilities whenever served history is too thin.
+    probabilities_precal = probabilities.copy()
+    serving_calibration = None
+    try:
+        serving_calibration = fit_serving_calibration(curated_dir)
+    except Exception as exc:  # noqa: BLE001 — accountability layer must never kill the run
+        print(
+            f"[serving calibration] WARNING: fit failed ({exc!r}); serving "
+            "uncalibrated probabilities.",
+            file=sys.stderr, flush=True,
+        )
+    if serving_calibration is not None:
+        probabilities = apply_serving_calibration(probabilities, serving_calibration)
+        # Same probability-scale map keeps the served interval bounds coherent.
+        probability_lower = apply_serving_calibration(probability_lower, serving_calibration)
+        probability_upper = apply_serving_calibration(probability_upper, serving_calibration)
+        # The positive-persistence invariant survives recalibration: a beach
+        # whose last official sample exceeded is never displayed Low. The
+        # realized rate on those rows is ~0.36 (well above the Low cut), so
+        # this floor only binds if a future refit degenerates.
+        persistence_floor_mask = persistence_probabilities >= 0.5
+        probabilities = np.where(
+            persistence_floor_mask,
+            np.maximum(probabilities, _LOW_THRESHOLD),
+            probabilities,
+        )
+        save_serving_calibration(curated_dir, serving_calibration)
+        print(
+            "[serving calibration] active: "
+            f"{serving_calibration['n_pairs']} pairs / "
+            f"{serving_calibration['n_positive']} positives over "
+            f"{serving_calibration['window_days']}d, Brier "
+            f"{serving_calibration['brier_before']:.4f} -> "
+            f"{serving_calibration['brier_after']:.4f}.",
+            file=sys.stderr, flush=True,
+        )
+
     density_predictions = regressor.predict(baseline_forecast_features)
     _VERY_HIGH_THRESHOLD = _CAL_VERY_HIGH
     _DEGENERATE_VERY_HIGH_FRACTION = 0.30
@@ -3325,6 +3377,7 @@ def _export_forecasts(
                 "advisory_floor_applied": advisory_floor_applied,
                 "p_exceed": served_p_exceed,
                 "p_exceed_raw": p_raw,
+                "p_exceed_precal": float(probabilities_precal[i]),
                 "p_exceed_lower": p_lower_final,
                 "p_exceed_upper": p_upper_final,
                 "predicted_log_enterococcus": float(density_prediction),
@@ -3363,6 +3416,22 @@ def _export_forecasts(
         release_blocked=release_blocked,
         blockers=promotion.get("promotion_blockers"),
     )
+
+    # Append-only log of what is actually serving (the fresh forecast, or the
+    # release-gate-frozen previous one — whose rows are already logged, so the
+    # append de-dupes to a no-op). served_performance scores this log against
+    # subsequent lab results: the audit's Test-4 loop, run daily.
+    try:
+        appended_rows = append_forecast_history(curated_dir)
+        print(
+            f"[served metrics] forecast history +{appended_rows} rows.",
+            file=sys.stderr, flush=True,
+        )
+    except Exception as exc:  # noqa: BLE001 — accountability layer must never kill the run
+        print(
+            f"[served metrics] WARNING: history append failed ({exc!r}).",
+            file=sys.stderr, flush=True,
+        )
 
     # Write latest_env.parquet — tiny lookup for the API server so it never has to
     # load the full 446 MB beach_day.parquet at runtime (Render free-tier OOM fix).
@@ -3442,6 +3511,26 @@ def _export_forecasts(
         },
         "metrics": metrics,
     }
+    # Served-regime accountability (model_truth.md follow-up #1): the REAL
+    # forecast-vs-outcome numbers for what shipped, next to the backtest
+    # metrics above. Consumers should treat these as the deployment truth —
+    # the backtest figures describe fresh sample-days the product never serves.
+    try:
+        served_metrics_payload = served_performance(curated_dir)
+    except Exception as exc:  # noqa: BLE001 — accountability layer must never kill the run
+        served_metrics_payload = None
+        print(
+            f"[served metrics] WARNING: scoring failed ({exc!r}).",
+            file=sys.stderr, flush=True,
+        )
+    health_payload["served_metrics"] = served_metrics_payload or {
+        "status": "insufficient_served_history"
+    }
+    health_payload["serving_calibration"] = (
+        {"active": True, **{k: v for k, v in serving_calibration.items() if k not in ("x", "y")}}
+        if serving_calibration is not None
+        else {"active": False, "reason": "insufficient_served_history"}
+    )
     # Record the release-gate verdict so the verify_release_gate.py CI step and
     # human auditors can see whether this run actually published a fresh forecast.
     health_payload["release_gate"] = {

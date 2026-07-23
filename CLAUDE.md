@@ -144,6 +144,34 @@ findings were fixed in this round:
   winner swap needs gap > 0.01 AND a paired cluster-bootstrap 90% CI of the county-AUCPR gap
   excluding 0 (fallback without per-row preds: gap > 0.07 ≈ measured cluster half-width).
 
+### Served-forecast accountability loop (2026-07-22, `model_truth.md` audit response)
+
+A reliability audit (`model_truth.md`) proved the backtest metrics measure a regime the product
+never serves: backtests score sample-days (fresh lagged risk-history features) while the product
+serves between-sample days (median 9-day-stale features, 95% of served rows). Scored against the
+lab results that followed, the served forecast ran **AUCPR ≈0.24 (vs 0.63–0.70 backtest)** and its
+probabilities lost to a flat base-rate constant on Brier (served ~0.98 → ~0.38 realized — mostly
+the positive-persistence floor). Fixes shipped in `app/ml/served_metrics.py` + `_export_forecasts`:
+
+- **`data/curated/forecast_history.parquet`** — append-only log of what actually served (post
+  release-gate), keyed by (beach_id, forecast_date, forecast_generated_at). Seeded from 189 git
+  commits by `scripts/backfill_forecast_history.py`; the daily run appends in place.
+- **`system_health.json["served_metrics"]`** — daily forecast-vs-outcome scoring (same-day +
+  strictly-forward D+1..D+3, 90d/30d windows, band operating point, reliability bins,
+  `verifiable_fraction`). These are the deployment-truth numbers; cite them, not the backtest
+  figures, for "how good is the product".
+- **Serving-regime recalibration** — daily isotonic refit (trailing 120d of served/lab pairs,
+  guards: ≥500 pairs & ≥25 positives else identity) applied to `p_exceed` + interval bounds before
+  banding; `p_exceed_precal` persists the pre-calibration probability for future refits. First
+  fit: Brier 0.0603 → 0.0464, beating flat base rate 0.0521; monotone so AUROC (the part that held
+  up, ~0.80–0.86) is untouched; persistence rows keep a ≥`_LOW_THRESHOLD` floor (never display
+  Low). Stats in `system_health.json["serving_calibration"]`. Band cutpoints unchanged — honest
+  probabilities restore their published meaning. Anomaly-gate impact simulated safe (mean ratio
+  0.66, no band collapse); expect Very High to mostly vanish until real skill supports ≥0.70.
+- **Known remaining gap (model-side):** train/serve staleness mismatch itself — candidate fix is
+  staleness-augmented training (censor risk-history features to the serving age distribution +
+  days-since-sample feature), validated offline via `scripts/diagnose_spatial_brier.py` first.
+
 ## ML training
 
 ```
