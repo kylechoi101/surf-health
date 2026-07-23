@@ -1,8 +1,23 @@
+"""Bacteria-history feature detection + smoothed per-beach base-rate priors.
+
+Originally the helper module for the `hist_gbm_no_bacteria_weather_delta`
+candidate (an environment-only model blended toward a base-rate prior). That
+model was removed 2026-07-22 — it was the worst candidate in the registry
+(held-out county AUCPR 0.224 vs 0.437 persistence, calibration slope −0.577,
+i.e. anti-correlated), and its daily backtest folds cost CI time on a job that
+has timed out before. What survives is used elsewhere:
+
+- ``is_bacteria_history_feature`` — the live stale-censoring path
+  (`app/ml/stale_evaluation.py`), which zeroes risk-history features on
+  between-sample serving rows.
+- ``fit_smoothed_rate_prior`` — the offline spatial diagnostic
+  (`scripts/diagnose_spatial_brier.py`) baseline.
+"""
+
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from collections.abc import Iterable
 
 import numpy as np
 import pandas as pd
@@ -20,11 +35,6 @@ BACTERIA_HISTORY_PATTERNS = (
 
 def is_bacteria_history_feature(column: str) -> bool:
     return any(pattern.search(column) for pattern in BACTERIA_HISTORY_PATTERNS)
-
-
-def select_no_bacteria_features(features: pd.DataFrame) -> pd.DataFrame:
-    keep_columns = [column for column in features.columns if not is_bacteria_history_feature(column)]
-    return features.loc[:, keep_columns].copy()
 
 
 @dataclass(frozen=True)
@@ -81,35 +91,3 @@ def fit_smoothed_rate_prior(
         county_rates=county_rates,
         beach_rates=beach_rates,
     )
-
-
-def clip_weather_delta(
-    weather_probabilities: np.ndarray,
-    prior_probabilities: np.ndarray,
-    *,
-    max_delta: float,
-) -> np.ndarray:
-    weather = np.asarray(weather_probabilities, dtype=float)
-    prior = np.asarray(prior_probabilities, dtype=float)
-    delta = np.clip(weather - prior, -float(max_delta), float(max_delta))
-    return np.clip(prior + delta, 0.0, 1.0)
-
-
-def select_delta_cap(
-    labels: np.ndarray,
-    weather_probabilities: np.ndarray,
-    prior_probabilities: np.ndarray,
-    *,
-    caps: Iterable[float],
-) -> float:
-    labels_array = np.asarray(labels, dtype=float)
-    candidate_caps = [float(cap) for cap in caps]
-    if not candidate_caps:
-        return 0.0
-
-    def score(cap: float) -> tuple[float, float]:
-        clipped = clip_weather_delta(weather_probabilities, prior_probabilities, max_delta=cap)
-        brier = float(np.mean((clipped - labels_array) ** 2))
-        return brier, cap
-
-    return min(candidate_caps, key=score)

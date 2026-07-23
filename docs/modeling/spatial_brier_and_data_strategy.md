@@ -506,5 +506,11 @@ to LSTM (lower Brier); county-level fallbacks stay on hist_gbm. Treat
 this as a per-beach router decision, similar to the existing
 `hist_gbm_no_bacteria_weather_delta` route for stable beaches.
 
+> **Superseded 2026-07-22:** `hist_gbm_no_bacteria_weather_delta` has been
+> REMOVED from the codebase (worst candidate in the registry — held-out county
+> AUCPR 0.224 vs 0.437 persistence, calibration slope −0.577). There is no
+> weather-delta route to imitate. The analysis above stands as a historical
+> record; do not implement a router against a model that no longer exists.
+
 Until that ships, LSTM lives as `research_winner` and the daily forecast
 remains `hist-gbm-curated-v0`.
