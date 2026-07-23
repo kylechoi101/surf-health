@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from datetime import date
 
 import numpy as np
@@ -69,6 +69,79 @@ def censor_bacteria_history_for_cutoff(
         elif is_bacteria_history_feature(column):
             censored[column] = 0.0
     return censored
+
+
+# Serving sample-age distribution used to age the augmented rows. Sourced from
+# the 2026-07-23 reliability audit (model_truth.md, Test 3): served forecasts
+# carry a last-sample age of min 4 / median 9 / mean 15 / max 37 days, with 95%
+# in the 8-44 day "middle band". Drawing augmented ages across that band makes
+# the training recency distribution match what the product actually serves.
+SERVING_SAMPLE_AGE_DAYS: tuple[int, ...] = (7, 9, 11, 14, 18, 21, 28, 35, 44)
+
+
+def augment_training_with_staleness(
+    features: pd.DataFrame,
+    labels: np.ndarray,
+    *,
+    fraction: float = 1.0,
+    sample_ages: Sequence[int | float] = SERVING_SAMPLE_AGE_DAYS,
+    recency_column: str = RECENCY_COLUMN,
+    random_state: int | np.random.Generator | None = None,
+) -> tuple[pd.DataFrame, np.ndarray]:
+    """Append stale-censored duplicate rows to a *training* feature/label set.
+
+    The model's strongest signal is the lagged bacteria-history features (rolling
+    geomeans + last-observed value). They are fresh on every sample-day training
+    row but stale on ~95% of served forecasts (median 9-day-old last sample).
+    Trained only on fresh rows, the model over-relies on that signal and, when it
+    is absent at serve time, defaults to "safe" — the low-side bias documented in
+    model_truth.md Tests 4/5.
+
+    This augmentation duplicates a ``fraction`` of the rows with their
+    bacteria-history features zeroed (via :func:`censor_bacteria_history_for_cutoff`,
+    the same transform the serve-time stale path applies) and their recency
+    feature set to an age drawn from ``sample_ages``. Labels are preserved, so
+    each duplicate teaches "with no recent risk signal and a sample this old, this
+    environment still produced this outcome" — forcing the model onto the daily
+    environmental drivers and a recency-aware base rate instead of defaulting
+    safe. The original fresh rows are kept unchanged, so the sample-day regime is
+    still learned and ``days_since_enterococcus_value_obs`` becomes an informative
+    conditioning feature.
+
+    Returns the concatenated ``(features, labels)`` for the caller to fit on. Only
+    ever call this on rows destined for training — never on validation, test, or
+    spatial-holdout rows, or the augmented duplicates leak synthetic rows into
+    evaluation.
+    """
+    labels_arr = np.asarray(labels)
+    if recency_column not in features.columns:
+        return features, labels_arr
+    n = len(features)
+    if n == 0 or fraction <= 0.0:
+        return features, labels_arr
+
+    rng = (
+        random_state
+        if isinstance(random_state, np.random.Generator)
+        else np.random.default_rng(random_state)
+    )
+    k = min(int(round(n * min(float(fraction), 1.0))), n)
+    if k <= 0:
+        return features, labels_arr
+
+    pick = np.arange(n) if k >= n else rng.choice(n, size=k, replace=False)
+    ages = np.asarray(sample_ages, dtype=float)
+    if ages.size == 0:
+        return features, labels_arr
+
+    censored = censor_bacteria_history_for_cutoff(
+        features.iloc[pick], cutoff_days=float(ages.min())
+    )
+    censored[recency_column] = rng.choice(ages, size=k, replace=True)
+
+    augmented_features = pd.concat([features, censored], ignore_index=True)
+    augmented_labels = np.concatenate([labels_arr, labels_arr[pick]])
+    return augmented_features, augmented_labels
 
 
 def build_stale_censoring_variants(

@@ -75,6 +75,7 @@ from app.ml.served_metrics import (
 )
 from app.ml.stale_evaluation import (
     RECENCY_COLUMN as _STALE_RECENCY_COL,
+    augment_training_with_staleness,
     censor_bacteria_history_for_cutoff,
 )
 from app.schemas.domain import sample_recency_band
@@ -1112,7 +1113,7 @@ def _spatial_holdout_fold_result(
 
     if model_name == "hist_gbm_persistence_blend":
         classifier = _fit_classifier_for_name(features, "hist_gbm")
-        classifier.fit(features.iloc[inner_train_rows], labels[inner_train_rows])
+        classifier.fit(*_augmented_fit_inputs(features, labels, inner_train_rows))
         valid_raw = classifier.predict_proba(features.iloc[inner_valid_rows])[:, 1]
         _, calibrator = _identity_or_calibrated(
             valid_raw,
@@ -1141,7 +1142,7 @@ def _spatial_holdout_fold_result(
 
     if model_name == "hist_gbm_positive_persistence_guard":
         classifier = _fit_classifier_for_name(features, "hist_gbm")
-        classifier.fit(features.iloc[inner_train_rows], labels[inner_train_rows])
+        classifier.fit(*_augmented_fit_inputs(features, labels, inner_train_rows))
         valid_raw = classifier.predict_proba(features.iloc[inner_valid_rows])[:, 1]
         _, calibrator = _identity_or_calibrated(
             valid_raw,
@@ -1162,7 +1163,7 @@ def _spatial_holdout_fold_result(
         )
 
     classifier = _fit_classifier_for_name(features, model_name)
-    classifier.fit(features.iloc[inner_train_rows], labels[inner_train_rows])
+    classifier.fit(*_augmented_fit_inputs(features, labels, inner_train_rows))
     valid_raw = classifier.predict_proba(features.iloc[inner_valid_rows])[:, 1]
     _, calibrator = _identity_or_calibrated(
         valid_raw,
@@ -2168,6 +2169,49 @@ def _persist_holdout_artifacts(
 
 
 _STALE_CUTOFF_DAYS: int = 45
+
+# Staleness augmentation (model_truth.md follow-up #1). Training rows are all
+# fresh sample-days; served rows are a median 9 days stale (95% in the 8-44 day
+# band), so a model trained only on fresh rows over-relies on the recent-risk
+# features and defaults "safe" when they are gone. Augmentation appends
+# stale-censored duplicates of the training rows (labels preserved) so the model
+# learns to degrade onto the daily environmental drivers instead. Applied to the
+# TRAIN subset only; validation/test/holdout rows are never augmented.
+#
+# Default OFF: model_truth.md mandates validating this offline (Test 5) before it
+# changes the shipped daily model, since regularizing away the recent-risk signal
+# can lower the fresh-regime held-out county AUCPR the release gate checks. Enable
+# with STALE_AUGMENTATION=1 once the offline gate impact is confirmed acceptable.
+_STALE_AUGMENTATION_ENABLED: bool = os.getenv(
+    "STALE_AUGMENTATION", "0"
+).strip().lower() not in ("0", "false", "no", "off")
+_STALE_AUGMENTATION_FRACTION: float = float(
+    os.getenv("STALE_AUGMENTATION_FRACTION", "0.5")
+)
+_STALE_AUGMENTATION_SEED: int = 20260723
+
+
+def _augmented_fit_inputs(
+    features: pd.DataFrame,
+    labels: np.ndarray,
+    train_rows: np.ndarray,
+) -> tuple[pd.DataFrame, np.ndarray]:
+    """Return the (X, y) to fit on for a training-row subset, with staleness
+    augmentation applied when enabled.
+
+    Split-safe by construction: it only ever receives the explicit train-row
+    indices, so validation, test, and spatial-holdout rows can never be augmented.
+    """
+    train_features = features.iloc[train_rows]
+    train_labels = labels[train_rows]
+    if not _STALE_AUGMENTATION_ENABLED or _STALE_AUGMENTATION_FRACTION <= 0.0:
+        return train_features, train_labels
+    return augment_training_with_staleness(
+        train_features,
+        train_labels,
+        fraction=_STALE_AUGMENTATION_FRACTION,
+        random_state=_STALE_AUGMENTATION_SEED,
+    )
 
 
 def _apply_stale_censoring(features: pd.DataFrame) -> pd.DataFrame:
@@ -3602,7 +3646,7 @@ def _run_winner_only(
 
     # hist_gbm is always trained — local drivers always use it
     print("Training hist GBM model...", file=sys.stderr, flush=True)
-    tree_classifier = baselines.tree_classifier.fit(features.iloc[train_idx], labels[train_idx])
+    tree_classifier = baselines.tree_classifier.fit(*_augmented_fit_inputs(features, labels, train_idx))
     tree_cal_raw = tree_classifier.predict_proba(features.iloc[cal_idx])[:, 1]
     tree_metric_raw = tree_classifier.predict_proba(features.iloc[val_metric_idx])[:, 1]
     _, tree_calibrator = _identity_or_calibrated(tree_cal_raw, labels[cal_idx], cal_metadata)
@@ -3627,7 +3671,7 @@ def _run_winner_only(
     # validation selected it over hist_gbm (+0.069 AUCPR / 0.100 vs 0.114 Brier
     # on held-out counties); see scripts/spatial_compare.py + spatial_incumbent.py.
     print("Training XGB undersample ensemble model...", file=sys.stderr, flush=True)
-    ensemble_classifier = XGBUndersampleEnsemble().fit(features.iloc[train_idx], labels[train_idx])
+    ensemble_classifier = XGBUndersampleEnsemble().fit(*_augmented_fit_inputs(features, labels, train_idx))
     ens_cal_raw = ensemble_classifier.predict_proba(features.iloc[cal_idx])[:, 1]
     ens_metric_raw = ensemble_classifier.predict_proba(features.iloc[val_metric_idx])[:, 1]
     _, ensemble_calibrator = _identity_or_calibrated(ens_cal_raw, labels[cal_idx], cal_metadata)
@@ -4035,7 +4079,7 @@ def train_curated_and_export(
     metrics["logistic_hierarchical"] = classification_metrics(labels[eval_idx], hierarchical_eval)
 
     print("Training hist GBM model...", file=sys.stderr, flush=True)
-    tree_classifier = baselines.tree_classifier.fit(features.iloc[train_idx], labels[train_idx])
+    tree_classifier = baselines.tree_classifier.fit(*_augmented_fit_inputs(features, labels, train_idx))
     tree_valid_raw = tree_classifier.predict_proba(features.iloc[valid_idx])[:, 1]
     metrics["hist_gbm_valid"] = classification_metrics(labels[valid_idx], tree_valid_raw)
     _, tree_calibrator = _identity_or_calibrated(tree_valid_raw, labels[valid_idx], valid_metadata)
@@ -4049,7 +4093,7 @@ def train_curated_and_export(
     # validation selected it over hist_gbm (+0.069 AUCPR / 0.100 vs 0.114 Brier);
     # see scripts/spatial_compare.py + scripts/spatial_incumbent.py.
     print("Training XGB undersample ensemble model...", file=sys.stderr, flush=True)
-    xgb_ens_classifier = XGBUndersampleEnsemble().fit(features.iloc[train_idx], labels[train_idx])
+    xgb_ens_classifier = XGBUndersampleEnsemble().fit(*_augmented_fit_inputs(features, labels, train_idx))
     xgb_ens_valid_raw = xgb_ens_classifier.predict_proba(features.iloc[valid_idx])[:, 1]
     metrics["xgb_undersample_ensemble_valid"] = classification_metrics(labels[valid_idx], xgb_ens_valid_raw)
     _, xgb_ens_calibrator = _identity_or_calibrated(xgb_ens_valid_raw, labels[valid_idx], valid_metadata)

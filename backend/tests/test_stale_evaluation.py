@@ -2,6 +2,8 @@ import numpy as np
 import pandas as pd
 
 from app.ml.stale_evaluation import (
+    SERVING_SAMPLE_AGE_DAYS,
+    augment_training_with_staleness,
     build_stale_prior_router,
     build_serving_stale_sample_set,
     build_stale_censoring_variants,
@@ -11,6 +13,86 @@ from app.ml.stale_evaluation import (
     stale_row_label,
     stale_row_mask,
 )
+
+
+def _augmentation_frame() -> tuple[pd.DataFrame, np.ndarray]:
+    features = pd.DataFrame(
+        {
+            "enterococcus_geomean_30d_lagged": [50.0, 60.0, 70.0, 80.0],
+            "enterococcus_value_last_obs": [10.0, 20.0, 30.0, 40.0],
+            "days_since_enterococcus_value_obs": [2.0, 3.0, 4.0, 5.0],
+            "precip_mm_24h": [1.0, 2.0, 3.0, 4.0],
+        }
+    )
+    labels = np.array([0, 1, 0, 1])
+    return features, labels
+
+
+def test_augment_training_appends_censored_duplicates_preserving_drivers_and_labels():
+    features, labels = _augmentation_frame()
+
+    aug_features, aug_labels = augment_training_with_staleness(
+        features, labels, fraction=1.0, random_state=0
+    )
+
+    # Originals kept unchanged, one censored duplicate appended per row.
+    assert len(aug_features) == 2 * len(features)
+    assert len(aug_labels) == 2 * len(labels)
+    pd.testing.assert_frame_equal(aug_features.iloc[: len(features)], features)
+
+    duplicates = aug_features.iloc[len(features) :]
+    # Bacteria-history features zeroed on the duplicates...
+    assert (duplicates["enterococcus_geomean_30d_lagged"] == 0.0).all()
+    assert (duplicates["enterococcus_value_last_obs"] == 0.0).all()
+    # ...environmental drivers preserved...
+    assert duplicates["precip_mm_24h"].tolist() == features["precip_mm_24h"].tolist()
+    # ...recency aged into the serving band, and labels carried over verbatim.
+    assert set(duplicates["days_since_enterococcus_value_obs"]).issubset(
+        set(float(age) for age in SERVING_SAMPLE_AGE_DAYS)
+    )
+    assert aug_labels[len(labels) :].tolist() == labels.tolist()
+
+
+def test_augment_training_fraction_controls_duplicate_count():
+    features, labels = _augmentation_frame()
+
+    half, half_labels = augment_training_with_staleness(
+        features, labels, fraction=0.5, random_state=1
+    )
+
+    assert len(half) == len(features) + 2
+    assert len(half_labels) == len(labels) + 2
+
+
+def test_augment_training_noop_when_fraction_zero_or_recency_absent():
+    features, labels = _augmentation_frame()
+
+    zero_features, zero_labels = augment_training_with_staleness(
+        features, labels, fraction=0.0
+    )
+    assert len(zero_features) == len(features)
+    assert zero_labels.tolist() == labels.tolist()
+
+    no_recency = features.drop(columns=["days_since_enterococcus_value_obs"])
+    same_features, same_labels = augment_training_with_staleness(
+        no_recency, labels, fraction=1.0, random_state=0
+    )
+    assert len(same_features) == len(no_recency)
+    assert same_labels.tolist() == labels.tolist()
+
+
+def test_augment_training_is_deterministic_for_fixed_seed():
+    features, labels = _augmentation_frame()
+
+    first, first_labels = augment_training_with_staleness(
+        features, labels, fraction=0.5, random_state=7
+    )
+    second, second_labels = augment_training_with_staleness(
+        features, labels, fraction=0.5, random_state=7
+    )
+
+    pd.testing.assert_frame_equal(first, second)
+    assert first_labels.tolist() == second_labels.tolist()
 
 
 def test_censor_bacteria_history_for_cutoff_hides_direct_biology_features():
