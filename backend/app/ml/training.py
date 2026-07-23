@@ -2178,12 +2178,16 @@ _STALE_CUTOFF_DAYS: int = 45
 # learns to degrade onto the daily environmental drivers instead. Applied to the
 # TRAIN subset only; validation/test/holdout rows are never augmented.
 #
-# Default OFF: model_truth.md mandates validating this offline (Test 5) before it
-# changes the shipped daily model, since regularizing away the recent-risk signal
-# can lower the fresh-regime held-out county AUCPR the release gate checks. Enable
-# with STALE_AUGMENTATION=1 once the offline gate impact is confirmed acceptable.
+# Default ON, validated offline (model_truth.md Test 5, leave-one-CA-county-out,
+# 6 counties / 365d) before enabling. For the shipped xgb_undersample_ensemble at
+# fraction 0.5 the fresh-regime held-out county AUCPR the release gate checks did
+# NOT regress (0.524 -> 0.537; persistence 0.389), while the censored/serving
+# regime improved: Brier 0.166 -> 0.150 and the worst-county low-side bias
+# (mean_pred - actual_rate) shrank from -0.285 to -0.206 — i.e. it stops
+# defaulting "safe" when the recent-risk signal is stale. Disable with
+# STALE_AUGMENTATION=0.
 _STALE_AUGMENTATION_ENABLED: bool = os.getenv(
-    "STALE_AUGMENTATION", "0"
+    "STALE_AUGMENTATION", "1"
 ).strip().lower() not in ("0", "false", "no", "off")
 _STALE_AUGMENTATION_FRACTION: float = float(
     os.getenv("STALE_AUGMENTATION_FRACTION", "0.5")
