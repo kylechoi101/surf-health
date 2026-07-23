@@ -1,16 +1,16 @@
 {
-  "generated_at": "2026-07-22T18:12:49.736875+00:00",
+  "generated_at": "2026-07-23T04:24:47.554431+00:00",
   "forecast_date": "2026-07-22",
   "model_version": "xgb-undersample-ensemble-curated-v0",
   "risk_threshold": 0.2,
   "total_beaches": 284,
-  "active_advisories": 6,
-  "agreement_rate": 1.0,
+  "active_advisories": 5,
+  "agreement_rate": 0.8,
   "pool_metrics": {
     "acute": {
-      "advised_beaches": 6,
-      "model_flagged": 6,
-      "agreement_rate": 1.0
+      "advised_beaches": 5,
+      "model_flagged": 4,
+      "agreement_rate": 0.8
     },
     "closure": {
       "advised_beaches": 0,
@@ -34,110 +34,97 @@
     }
   },
   "false_negatives": {
-    "count": 0,
+    "count": 1,
     "description": "Active advisory but model says Low/Moderate",
     "by_pool": {
-      "acute": 0,
+      "acute": 1,
       "closure": 0,
       "chronic": 0,
       "stale": 0,
       "unknown_duration": 0
     },
-    "worst_acute": [],
+    "worst_acute": [
+      {
+        "beach_id": "ca674364-los-angeles-inner-cabrillo-beach-cb-02",
+        "risk_band": "Low",
+        "p_exceed": 0.192,
+        "pool": "acute",
+        "advisory_age_days": 1
+      }
+    ],
     "worst_chronic": []
   },
   "false_positives": {
-    "count": 17,
+    "count": 12,
     "description": "Model says High/VeryHigh but no active advisory",
     "worst": [
       {
-        "beach_id": "ca674364-los-angeles-inner-cabrillo-beach-cb-02",
-        "risk_band": "Very High",
-        "p_exceed": 1.0,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
-        "beach_id": "ca852440-san-mateo-pillar-point-harbor-pillar-point-7",
-        "risk_band": "Very High",
-        "p_exceed": 1.0,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
         "beach_id": "ca735620-los-angeles-santa-monica-state-beach-smb-3-3",
-        "risk_band": "Very High",
-        "p_exceed": 1.0,
+        "risk_band": "High",
+        "p_exceed": 0.402,
         "pool": "none",
         "advisory_age_days": null
       },
       {
         "beach_id": "ca351889-marin-bolinas-beach-bolinas",
-        "risk_band": "Very High",
-        "p_exceed": 1.0,
+        "risk_band": "High",
+        "p_exceed": 0.402,
         "pool": "none",
         "advisory_age_days": null
       },
       {
         "beach_id": "ca447750-marin-schoonmaker-beach-schoonmaker-beach",
-        "risk_band": "Very High",
-        "p_exceed": 1.0,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
-        "beach_id": "ca104746-san-diego-tijuana-slough-national-wildlife-refuge-ib-040",
-        "risk_band": "Very High",
-        "p_exceed": 1.0,
+        "risk_band": "High",
+        "p_exceed": 0.402,
         "pool": "none",
         "advisory_age_days": null
       },
       {
         "beach_id": "ca412549-orange-huntington-harbour-bhh13",
-        "risk_band": "Very High",
-        "p_exceed": 1.0,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
-        "beach_id": "ca674616-san-mateo-kiteboard-beach-kiteboard-beach",
-        "risk_band": "Very High",
-        "p_exceed": 1.0,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
-        "beach_id": "ca104746-san-diego-tijuana-slough-national-wildlife-refuge-ib-030",
-        "risk_band": "Very High",
-        "p_exceed": 1.0,
+        "risk_band": "High",
+        "p_exceed": 0.402,
         "pool": "none",
         "advisory_age_days": null
       },
       {
         "beach_id": "ca852440-san-mateo-pillar-point-harbor-pillar-point-5",
-        "risk_band": "Very High",
-        "p_exceed": 1.0,
+        "risk_band": "High",
+        "p_exceed": 0.402,
+        "pool": "none",
+        "advisory_age_days": null
+      },
+      {
+        "beach_id": "ca104746-san-diego-tijuana-slough-national-wildlife-refuge-ib-040",
+        "risk_band": "High",
+        "p_exceed": 0.402,
+        "pool": "none",
+        "advisory_age_days": null
+      },
+      {
+        "beach_id": "ca104746-san-diego-tijuana-slough-national-wildlife-refuge-ib-030",
+        "risk_band": "High",
+        "p_exceed": 0.402,
+        "pool": "none",
+        "advisory_age_days": null
+      },
+      {
+        "beach_id": "ca674616-san-mateo-kiteboard-beach-kiteboard-beach",
+        "risk_band": "High",
+        "p_exceed": 0.402,
+        "pool": "none",
+        "advisory_age_days": null
+      },
+      {
+        "beach_id": "ca852440-san-mateo-pillar-point-harbor-pillar-point-7",
+        "risk_band": "High",
+        "p_exceed": 0.402,
         "pool": "none",
         "advisory_age_days": null
       },
       {
         "beach_id": "ca447069-san-mateo-pacifica-state-beach-linda-mar-beach-7",
-        "risk_band": "Very High",
-        "p_exceed": 1.0,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
-        "beach_id": "ca852440-san-mateo-pillar-point-harbor-pillar-point-9",
         "risk_band": "High",
-        "p_exceed": 0.562,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
-        "beach_id": "ca626051-san-mateo-dunes-state-beach-dunes-state-beach",
-        "risk_band": "High",
-        "p_exceed": 0.3,
+        "p_exceed": 0.402,
         "pool": "none",
         "advisory_age_days": null
       },
@@ -149,23 +136,9 @@
         "advisory_age_days": null
       },
       {
-        "beach_id": "ca517375-san-mateo-fitzgerald-marine-moss-beach-fitzgerald-marine-moss-beach",
-        "risk_band": "Moderate",
-        "p_exceed": 0.254,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
-        "beach_id": "ca826873-east-bay-parks-district-keller-beach-contra-costa-co-keller-north-beach",
-        "risk_band": "Moderate",
-        "p_exceed": 0.247,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
-        "beach_id": "ca845616-orange-newport-bay-bnb24n",
-        "risk_band": "Moderate",
-        "p_exceed": 0.204,
+        "beach_id": "ca626051-san-mateo-dunes-state-beach-dunes-state-beach",
+        "risk_band": "High",
+        "p_exceed": 0.3,
         "pool": "none",
         "advisory_age_days": null
       }
