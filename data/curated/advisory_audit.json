@@ -1,16 +1,16 @@
 {
-  "generated_at": "2026-07-23T05:10:23.113000+00:00",
-  "forecast_date": "2026-07-22",
+  "generated_at": "2026-07-23T18:18:10.267911+00:00",
+  "forecast_date": "2026-07-23",
   "model_version": "xgb-undersample-ensemble-curated-v0",
   "risk_threshold": 0.2,
   "total_beaches": 284,
-  "active_advisories": 5,
-  "agreement_rate": 0.8,
+  "active_advisories": 4,
+  "agreement_rate": 1.0,
   "pool_metrics": {
     "acute": {
-      "advised_beaches": 5,
+      "advised_beaches": 4,
       "model_flagged": 4,
-      "agreement_rate": 0.8
+      "agreement_rate": 1.0
     },
     "closure": {
       "advised_beaches": 0,
@@ -34,24 +34,16 @@
     }
   },
   "false_negatives": {
-    "count": 1,
+    "count": 0,
     "description": "Active advisory but model says Low/Moderate",
     "by_pool": {
-      "acute": 1,
+      "acute": 0,
       "closure": 0,
       "chronic": 0,
       "stale": 0,
       "unknown_duration": 0
     },
-    "worst_acute": [
-      {
-        "beach_id": "ca674364-los-angeles-inner-cabrillo-beach-cb-02",
-        "risk_band": "Low",
-        "p_exceed": 0.192,
-        "pool": "acute",
-        "advisory_age_days": 1
-      }
-    ],
+    "worst_acute": [],
     "worst_chronic": []
   },
   "false_positives": {
