@@ -64,7 +64,6 @@ from app.ml.models import (
     BeachTransformer, 
     BeachPINN_MultiTask,
     XGBUndersampleEnsemble,
-    XGBUndersampleOffsetEnsemble,
     make_baselines
 )
 from app.ml.served_metrics import (
@@ -96,20 +95,9 @@ PRODUCTION_MODEL_NAMES = (
 SEQUENCE_MODEL_NAMES = ("tcn", "cnn", "lstm", "transformer", "pinn")
 SPATIAL_DIAGNOSTIC_MODEL_NAMES = (
     "hist_gbm_persistence_blend",
-    # Two-tier (level+deviation) challenger: per-beach base_margin offset +
-    # staleness augmentation. Spatially backtested against the incumbent so the
-    # retrain reports its held-out within-beach skill; not force-trained
-    # temporally every run until it proves out on the served-regime metrics.
-    "xgb_undersample_offset",
 )
 SPATIAL_BACKTEST_MODEL_NAMES = (*PRODUCTION_MODEL_NAMES, *SPATIAL_DIAGNOSTIC_MODEL_NAMES)
 SPATIAL_BACKTEST_STRATEGIES = ("shortlist", "requested", "quick")
-# Median served sample age (model_truth.md Test 3). Spatial folds re-score the
-# held-out rows with the anchor censored to this age so the within-beach metric
-# reflects the between-sample regime the product serves — the leave-one-beach-out
-# rows are otherwise fresh sample-days (lag ~7) where the served ~0.50 failure is
-# invisible. This is the regime on which the two-tier offset model is judged.
-_SERVING_STALE_CUTOFF_DAYS: int = 14
 # Point-estimate floor: minimum held-out county-AUCPR gain a challenger must show
 # over the passing incumbent before the gate even considers a swap (hysteresis vs
 # daily churn). A gap below this is treated as pure backtest noise.
@@ -174,11 +162,6 @@ class _TrainedModels:
     ensemble_weights: object  # np.ndarray or None
     regressor: object
     regressor_valid_predictions: object  # np.ndarray
-    # Two-tier offset model + its calibrator, trained alongside the winner for
-    # regime routing at serve time (fresh beaches → winner, stale → offset). None
-    # when the two-tier router is not wired for this run.
-    offset_classifier: object = None
-    offset_calibrator: object = None
 
 
 @dataclass
@@ -771,26 +754,7 @@ def _fit_classifier_for_name(features: pd.DataFrame, model_name: str):
         return baselines.tree_classifier
     if model_name == "xgb_undersample_ensemble":
         return XGBUndersampleEnsemble()
-    if model_name == "xgb_undersample_offset":
-        return XGBUndersampleOffsetEnsemble()
     raise ValueError(f"Unsupported classifier model '{model_name}'")
-
-
-def _fit_classifier(classifier, X, y, beach_ids=None):
-    """Fit, passing beach_ids only to classifiers that accept them (the two-tier
-    offset model). Everything else keeps the plain sklearn ``fit(X, y)``."""
-    if getattr(classifier, "accepts_beach_ids", False):
-        classifier.fit(X, y, beach_ids=beach_ids)
-    else:
-        classifier.fit(X, y)
-    return classifier
-
-
-def _predict_pos(classifier, X, beach_ids=None):
-    """predict_proba positive column, threading beach_ids to offset-aware models."""
-    if getattr(classifier, "accepts_beach_ids", False):
-        return classifier.predict_proba(X, beach_ids=beach_ids)[:, 1]
-    return classifier.predict_proba(X)[:, 1]
 
 
 def _fit_group_logistic_models(
@@ -1198,38 +1162,20 @@ def _spatial_holdout_fold_result(
         )
 
     classifier = _fit_classifier_for_name(features, model_name)
-    _beach = metadata["beach_id"].to_numpy() if "beach_id" in metadata.columns else None
-    _fit_classifier(
-        classifier,
-        features.iloc[inner_train_rows],
-        labels[inner_train_rows],
-        beach_ids=_beach[inner_train_rows] if _beach is not None else None,
-    )
-    valid_raw = _predict_pos(
-        classifier,
-        features.iloc[inner_valid_rows],
-        beach_ids=_beach[inner_valid_rows] if _beach is not None else None,
-    )
+    classifier.fit(features.iloc[inner_train_rows], labels[inner_train_rows])
+    valid_raw = classifier.predict_proba(features.iloc[inner_valid_rows])[:, 1]
     _, calibrator = _identity_or_calibrated(
         valid_raw,
         labels[inner_valid_rows],
         metadata.iloc[inner_valid_rows].reset_index(drop=True),
     )
-    _test_meta = metadata.iloc[test_rows].reset_index(drop=True)
-    _test_beach = _beach[test_rows] if _beach is not None else None
-    test_probabilities = _predict_pos(classifier, features.iloc[test_rows], beach_ids=_test_beach)
-    test_probabilities = _apply_calibrator(calibrator, test_probabilities, _test_meta)
-    # Stale-regime (served-day) eval: re-score the SAME held-out rows with the
-    # anchor censored to serving age, so the pooled within-beach metric reflects
-    # the between-sample regime the product serves (model_truth.md) rather than the
-    # fresh sample-day the leave-one-out backtest otherwise measures. Calibration is
-    # monotonic, so within-beach AUROC is unaffected by reusing the fresh calibrator.
-    test_stale = censor_bacteria_history_for_cutoff(
-        features.iloc[test_rows], cutoff_days=_SERVING_STALE_CUTOFF_DAYS
+    test_probabilities = classifier.predict_proba(features.iloc[test_rows])[:, 1]
+    test_probabilities = _apply_calibrator(
+        calibrator,
+        test_probabilities,
+        metadata.iloc[test_rows].reset_index(drop=True),
     )
-    test_probabilities_stale = _predict_pos(classifier, test_stale, beach_ids=_test_beach)
-    test_probabilities_stale = _apply_calibrator(calibrator, test_probabilities_stale, _test_meta)
-    return labels[test_rows], test_probabilities, test_probabilities_stale
+    return labels[test_rows], test_probabilities
 
 
 def _spatial_holdout_metrics(
@@ -1293,22 +1239,13 @@ def _spatial_holdout_metrics(
 
     used_groups = 0
     heldout_groups: list[np.ndarray] = []
-    heldout_probabilities_stale: list[np.ndarray] = []
-    all_folds_have_stale = True
     for group_value, result in zip(group_values, fold_results):
         if result is None:
             continue
-        fold_labels, fold_probabilities = result[0], result[1]
+        fold_labels, fold_probabilities = result
         heldout_labels.append(fold_labels)
         heldout_probabilities.append(fold_probabilities)
         heldout_groups.append(np.full(len(fold_labels), group_value))
-        # 3rd element (present on the generic-classifier path) is the same rows
-        # re-scored with the anchor censored to serving age — the served regime.
-        fold_stale = result[2] if len(result) > 2 else None
-        if fold_stale is not None:
-            heldout_probabilities_stale.append(fold_stale)
-        else:
-            all_folds_have_stale = False
         used_groups += 1
 
     if not heldout_labels:
@@ -1325,16 +1262,11 @@ def _spatial_holdout_metrics(
     # (a single retrain re-derives them, but nothing on disk does today). Keyed by
     # model+group_column so the production winner's pairs can be selected later.
     if predictions_sink is not None:
-        sink_entry = {
+        predictions_sink[(model_name, group_column)] = {
             "labels": all_labels,
             "probabilities": all_probabilities,
             "groups": all_groups,
         }
-        if heldout_probabilities_stale and all_folds_have_stale:
-            stale_pooled = np.concatenate(heldout_probabilities_stale)
-            if len(stale_pooled) == len(all_labels):
-                sink_entry["probabilities_stale"] = stale_pooled
-        predictions_sink[(model_name, group_column)] = sink_entry
     metrics = classification_metrics(all_labels, all_probabilities)
     metrics["folds"] = float(used_groups)
     metrics["eligible_groups"] = float(len(eligible_groups))
@@ -2134,8 +2066,6 @@ def _persist_holdout_artifacts(
     temporal_labels: np.ndarray | None = None,
     temporal_probs: np.ndarray | None = None,
     temporal_dates: np.ndarray | None = None,
-    temporal_beach_ids: np.ndarray | None = None,
-    temporal_lags: np.ndarray | None = None,
     predictions_sink: dict | None = None,
 ) -> None:
     """Persist held-out (label, probability) pairs and record sensitivity@spec.
@@ -2166,8 +2096,6 @@ def _persist_holdout_artifacts(
             temporal_probs,
             model=winner,
             date=temporal_dates,
-            beach_id=temporal_beach_ids,
-            lag=temporal_lags,
         )
         if written is None:
             print(
@@ -2237,240 +2165,6 @@ def _persist_holdout_artifacts(
                     file=sys.stderr,
                     flush=True,
                 )
-
-
-def _record_within_beach_diagnostics(
-    metrics: dict,
-    *,
-    winner: str,
-    temporal_labels: np.ndarray | None = None,
-    temporal_probs: np.ndarray | None = None,
-    temporal_beach_ids: np.ndarray | None = None,
-    temporal_lags: np.ndarray | None = None,
-    predictions_sink: dict | None = None,
-) -> None:
-    """Record within-beach AUROC — the daily-skill metric global AUCPR is blind to.
-
-    model_truth.md (2026-07-23) proved the shipped model's *served* within-beach
-    AUROC is ~0.50: it ranks dirty beaches over clean ones (global AUROC ~0.82)
-    but cannot tell a bad day from a normal day at the *same* beach. Global
-    AUCPR/AUROC are dominated by between-beach variance and never surfaced this.
-    This writes the number — temporal-test (same beaches, future dates) and
-    leave-one-beach-out (a genuinely new beach) — plus its lag/staleness
-    breakdown into ``metrics["two_tier_diagnostics"]`` so it ships in
-    system_health.json. Best-effort: any failure logs nothing and is skipped,
-    never crashing the build.
-    """
-    try:
-        from app.ml.two_tier import within_beach_auroc, within_beach_auroc_by_lag
-    except Exception:  # pragma: no cover - diagnostics must never break training
-        return
-
-    diagnostics: dict = {}
-    if (
-        temporal_labels is not None
-        and temporal_probs is not None
-        and temporal_beach_ids is not None
-        and len(temporal_labels)
-    ):
-        try:
-            auroc, n_beaches, n_rows = within_beach_auroc(
-                temporal_labels, temporal_probs, temporal_beach_ids
-            )
-            block = {
-                "within_beach_auroc": auroc,
-                "n_beaches": float(n_beaches),
-                "n_rows": float(n_rows),
-            }
-            if temporal_lags is not None:
-                block["by_lag"] = within_beach_auroc_by_lag(
-                    temporal_labels, temporal_probs, temporal_beach_ids, temporal_lags
-                )
-            diagnostics["temporal"] = block
-        except Exception:  # pragma: no cover
-            pass
-
-    # Leave-one-beach-out: the pooled beach-holdout sink's `groups` ARE beach_ids,
-    # so within-beach skill for an UNSEEN beach is computable per candidate. Record
-    # EVERY backtested model so the two-tier offset challenger can be compared
-    # head-to-head with the incumbent in system_health.json.
-    if predictions_sink:
-        base_key = _metrics_base_key(winner)
-        by_model: dict = {}
-        by_model_stale: dict = {}
-        for sink_key, pooled in predictions_sink.items():
-            if not (isinstance(sink_key, tuple) and len(sink_key) == 2):
-                continue
-            model_name, group_column = sink_key
-            if group_column != "beach_id":
-                continue
-            if not (
-                pooled
-                and len(pooled.get("labels", []))
-                and pooled.get("groups") is not None
-                and len(pooled.get("groups", []))
-            ):
-                continue
-            try:
-                auroc, n_beaches, n_rows = within_beach_auroc(
-                    pooled["labels"], pooled["probabilities"], pooled["groups"]
-                )
-                by_model[model_name] = {
-                    "within_beach_auroc": auroc,
-                    "n_beaches": float(n_beaches),
-                    "n_rows": float(n_rows),
-                }
-            except Exception:  # pragma: no cover
-                pass
-            # Served-regime within-beach (anchor censored to serving age) — the
-            # regime the two-tier offset model targets; the fresh number above is
-            # blind to it (leave-one-out rows are fresh sample-days).
-            stale = pooled.get("probabilities_stale")
-            if stale is not None and len(stale) == len(pooled["labels"]):
-                try:
-                    s_auroc, s_beaches, s_rows = within_beach_auroc(
-                        pooled["labels"], stale, pooled["groups"]
-                    )
-                    by_model_stale[model_name] = {
-                        "within_beach_auroc": s_auroc,
-                        "n_beaches": float(s_beaches),
-                        "n_rows": float(s_rows),
-                    }
-                except Exception:  # pragma: no cover
-                    pass
-        if by_model:
-            diagnostics["spatial_beach_by_model"] = by_model
-            winner_block = by_model.get(winner) or by_model.get(base_key)
-            if winner_block is not None:
-                diagnostics["spatial_beach"] = winner_block
-        if by_model_stale:
-            diagnostics["spatial_beach_stale_by_model"] = by_model_stale
-            winner_stale = by_model_stale.get(winner) or by_model_stale.get(base_key)
-            if winner_stale is not None:
-                diagnostics["spatial_beach_stale"] = winner_stale
-
-    if diagnostics:
-        metrics["two_tier_diagnostics"] = diagnostics
-
-
-def _temporal_stale_offset_comparison(
-    features: pd.DataFrame,
-    labels: np.ndarray,
-    metadata: pd.DataFrame,
-    *,
-    train_idx: np.ndarray,
-    valid_idx: np.ndarray,
-    eval_idx: np.ndarray,
-    cutoff_days: int = _SERVING_STALE_CUTOFF_DAYS,
-    min_samples: int = 15,
-) -> dict:
-    """Deployment-accurate CA comparison: incumbent vs two-tier offset on KNOWN
-    beaches over FUTURE dates, in the FRESH and SERVED (anchor-censored) regimes.
-
-    Unlike leave-one-beach-out, every eval beach is in training, so the offset
-    holds its OWN historical baseline — the real deployment condition for a fixed
-    CA beach set. Reports within-beach AUROC (the "which day" skill) plus AUCPR /
-    Brier / mean-prediction (the "level correct + calibrated" skill, where keeping
-    the per-beach level fresh — the offset's structural advantage over a stale
-    lagged-geomean — actually shows). Both models are calibrated identically
-    (isotonic on the valid slice) so Brier/bias are comparable.
-    """
-    from sklearn.metrics import average_precision_score
-
-    from app.ml.two_tier import within_beach_auroc
-
-    if "beach_id" not in metadata.columns:
-        return {}
-    beach = metadata["beach_id"].to_numpy()
-    y = labels[eval_idx]
-    b_eval = beach[eval_idx]
-    eval_meta = metadata.iloc[eval_idx].reset_index(drop=True)
-    valid_meta = metadata.iloc[valid_idx].reset_index(drop=True)
-    x_eval = features.iloc[eval_idx]
-    x_eval_stale = censor_bacteria_history_for_cutoff(x_eval, cutoff_days=cutoff_days)
-
-    out: dict = {"actual_exceedance_rate": float(np.mean(y)) if len(y) else float("nan")}
-    for name in ("xgb_undersample_ensemble", "xgb_undersample_offset"):
-        classifier = _fit_classifier_for_name(features, name)
-        _fit_classifier(
-            classifier, features.iloc[train_idx], labels[train_idx], beach_ids=beach[train_idx]
-        )
-        valid_p = _predict_pos(classifier, features.iloc[valid_idx], beach_ids=beach[valid_idx])
-        _, calibrator = _identity_or_calibrated(valid_p, labels[valid_idx], valid_meta)
-        regimes: dict = {}
-        for regime, frame in (("fresh", x_eval), ("stale", x_eval_stale)):
-            p = _predict_pos(classifier, frame, beach_ids=b_eval)
-            p = np.asarray(_apply_calibrator(calibrator, p, eval_meta), dtype=float)
-            wb_auroc, wb_beaches, wb_rows = within_beach_auroc(y, p, b_eval, min_samples=min_samples)
-            regimes[regime] = {
-                "within_beach_auroc": wb_auroc,
-                "aucpr": float(average_precision_score(y, p)) if len(np.unique(y)) > 1 else float("nan"),
-                "brier": float(np.mean((p - y) ** 2)),
-                "mean_pred": float(np.mean(p)),
-                "n_beaches": float(wb_beaches),
-                "n_rows": float(wb_rows),
-            }
-        out[name] = regimes
-    return out
-
-
-def _persist_and_diagnose_holdouts(
-    curated_dir: Path,
-    *,
-    winner: str,
-    metrics: dict,
-    temporal_probs: np.ndarray | None,
-    labels: np.ndarray,
-    eval_idx: np.ndarray,
-    eval_metadata: pd.DataFrame,
-    features: pd.DataFrame,
-    predictions_sink: dict | None,
-) -> None:
-    """Persist holdout artifacts (now carrying beach_id + lag) and record the
-    within-beach diagnostics. Shared by the winner-only and full training paths so
-    the two never drift. beach_id + the staleness feature (days-since-sample) are
-    threaded onto the temporal holdout rows so within-beach skill is computable on
-    disk without a retrain (previously the artifacts carried neither)."""
-    temporal_labels = labels[eval_idx] if temporal_probs is not None else None
-    temporal_dates = None
-    temporal_beach_ids = None
-    temporal_lags = None
-    if temporal_probs is not None:
-        if "sample_date" in eval_metadata.columns:
-            temporal_dates = (
-                pd.to_datetime(eval_metadata["sample_date"], errors="coerce")
-                .dt.strftime("%Y-%m-%d")
-                .to_numpy()
-            )
-        if "beach_id" in eval_metadata.columns:
-            temporal_beach_ids = eval_metadata["beach_id"].to_numpy()
-        if _STALE_RECENCY_COL in features.columns:
-            try:
-                temporal_lags = pd.to_numeric(
-                    features.iloc[eval_idx][_STALE_RECENCY_COL], errors="coerce"
-                ).to_numpy()
-            except Exception:  # pragma: no cover - lag is best-effort
-                temporal_lags = None
-    _persist_holdout_artifacts(
-        curated_dir,
-        winner=winner,
-        metrics=metrics,
-        temporal_labels=temporal_labels,
-        temporal_probs=temporal_probs,
-        temporal_dates=temporal_dates,
-        temporal_beach_ids=temporal_beach_ids,
-        temporal_lags=temporal_lags,
-        predictions_sink=predictions_sink,
-    )
-    _record_within_beach_diagnostics(
-        metrics,
-        winner=winner,
-        temporal_labels=temporal_labels,
-        temporal_probs=temporal_probs,
-        temporal_beach_ids=temporal_beach_ids,
-        temporal_lags=temporal_lags,
-        predictions_sink=predictions_sink,
-    )
 
 
 _STALE_CUTOFF_DAYS: int = 45
@@ -3285,81 +2979,6 @@ def _publish_forecasts_unless_blocked(
     return True
 
 
-# Serve-time regime router cutoff: beaches whose last lab sample is this many days
-# old or fresher keep the ensemble (it wins at low lag, where the anchor is live);
-# staler beaches get the offset (it holds each beach's never-stale baseline and
-# degrades gracefully). 3d matches the measured fresh/stale crossover; the served
-# population is almost entirely staler (min age ~4d), so the offset serves most rows.
-_FRESH_ROUTE_CUTOFF_DAYS: int = 3
-# End of the fresh→stale blend ramp. Between the cutoff and here the served
-# probability is a linear mix of ensemble→offset, so a beach crossing the boundary
-# as its sample ages doesn't jump bands in a single day (the hard switch moved the
-# probability ~0.07 mean / 0.19 p90). Short by design (days 3→5).
-_ROUTE_BLEND_END_DAYS: int = 5
-
-
-def _route_offset_weight(
-    age: np.ndarray,
-    fresh_cutoff_days: int = _FRESH_ROUTE_CUTOFF_DAYS,
-    blend_end_days: int = _ROUTE_BLEND_END_DAYS,
-) -> np.ndarray:
-    """Offset blend weight from sample age: 0 (pure ensemble) at/below the fresh
-    cutoff, ramping linearly to 1 (pure offset) by ``blend_end_days``. Unknown age
-    (no prior sample) → 1, so the offset's per-beach level holds rather than the
-    ensemble leaning on an absent fresh anchor."""
-    age = np.asarray(age, dtype=float)
-    span = max(blend_end_days - fresh_cutoff_days, 1)
-    weight = np.clip((age - fresh_cutoff_days) / span, 0.0, 1.0)
-    return np.where(np.isfinite(age), weight, 1.0)
-
-
-def _route_fresh_stale_probabilities(
-    ensemble_probabilities: np.ndarray,
-    ensemble_lower: np.ndarray,
-    ensemble_upper: np.ndarray,
-    *,
-    offset_classifier: object,
-    offset_calibrator: object,
-    features: pd.DataFrame,
-    metadata: pd.DataFrame,
-    fresh_cutoff_days: int = _FRESH_ROUTE_CUTOFF_DAYS,
-    blend_end_days: int = _ROUTE_BLEND_END_DAYS,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict]:
-    """Two-tier serve-time router. Fresh beaches (last sample ≤ cutoff days) keep
-    the ensemble; stale beaches get the offset; a short age-based ramp blends the
-    two across the boundary so no beach jumps bands in a single day. Returns the
-    routed (probability, lower, upper) arrays plus a diagnostic dict — the
-    fresh/blended/stale split and the raw handoff delta (how far the two models
-    disagree on the same rows, i.e. the un-blended jump the ramp smooths)."""
-    beach_ids = metadata["beach_id"].to_numpy() if "beach_id" in metadata.columns else None
-    offset_raw = offset_classifier.predict_proba(features, beach_ids=beach_ids)[:, 1]
-    offset_probs = np.asarray(_apply_calibrator(offset_calibrator, offset_raw, metadata), dtype=float)
-    offset_lower, offset_upper = _calibration_interval(offset_calibrator, offset_raw, metadata)
-
-    if _STALE_RECENCY_COL in features.columns:
-        age = pd.to_numeric(features[_STALE_RECENCY_COL], errors="coerce").to_numpy()
-    else:
-        age = np.full(len(features), np.inf)
-    w = _route_offset_weight(age, fresh_cutoff_days, blend_end_days)
-
-    ensemble_probabilities = np.asarray(ensemble_probabilities, dtype=float)
-    routed = (1.0 - w) * ensemble_probabilities + w * offset_probs
-    routed_lower = (1.0 - w) * np.asarray(ensemble_lower, dtype=float) + w * np.asarray(offset_lower, dtype=float)
-    routed_upper = (1.0 - w) * np.asarray(ensemble_upper, dtype=float) + w * np.asarray(offset_upper, dtype=float)
-
-    delta = np.abs(ensemble_probabilities - offset_probs)
-    diagnostics = {
-        "fresh_beaches": int((w <= 0.0).sum()),
-        "blended_beaches": int(((w > 0.0) & (w < 1.0)).sum()),
-        "stale_beaches": int((w >= 1.0).sum()),
-        "fresh_cutoff_days": int(fresh_cutoff_days),
-        "blend_end_days": int(blend_end_days),
-        "handoff_mean_abs_delta": float(np.nanmean(delta)) if len(delta) else float("nan"),
-        "handoff_p90_abs_delta": float(np.nanpercentile(delta, 90)) if len(delta) else float("nan"),
-    }
-    return routed, routed_lower, routed_upper, diagnostics
-
-
 def _export_forecasts(
     curated_dir: Path,
     forecast_date: date,
@@ -3543,37 +3162,6 @@ def _export_forecasts(
             raw_probabilities,
             forecast_group_metadata,
         )
-        # Two-tier router: hand stale (between-sample) beaches to the offset model;
-        # fresh beaches keep the ensemble. Only when the offset was trained this run
-        # and the winner is the ensemble (this generic branch). Health/anomaly/
-        # release gates downstream still guard the routed output.
-        if (
-            winner == "xgb_undersample_ensemble"
-            and models.offset_classifier is not None
-            and models.offset_calibrator is not None
-            and not baseline_forecast_features.empty
-        ):
-            probabilities, probability_lower, probability_upper, _route_diag = (
-                _route_fresh_stale_probabilities(
-                    probabilities,
-                    probability_lower,
-                    probability_upper,
-                    offset_classifier=models.offset_classifier,
-                    offset_calibrator=models.offset_calibrator,
-                    features=baseline_forecast_features,
-                    metadata=forecast_group_metadata,
-                )
-            )
-            metrics.setdefault("two_tier_diagnostics", {})["serving_router"] = _route_diag
-            print(
-                f"[two-tier router] {_route_diag['stale_beaches']} stale→offset, "
-                f"{_route_diag['blended_beaches']} blended, "
-                f"{_route_diag['fresh_beaches']} fresh→ensemble; raw handoff Δ mean "
-                f"{_route_diag['handoff_mean_abs_delta']:.3f} "
-                f"(p90 {_route_diag['handoff_p90_abs_delta']:.3f}), smoothed over "
-                f"days {_route_diag['fresh_cutoff_days']}–{_route_diag['blend_end_days']}.",
-                file=sys.stderr, flush=True,
-            )
 
     # --- Runtime serving guards (apply to EVERY winner) ----------------------
     # The deployed xgb_undersample_ensemble (and most other branches) do NOT
@@ -4044,34 +3632,6 @@ def _run_winner_only(
     ens_metric_raw = ensemble_classifier.predict_proba(features.iloc[val_metric_idx])[:, 1]
     _, ensemble_calibrator = _identity_or_calibrated(ens_cal_raw, labels[cal_idx], cal_metadata)
     _record_valid_metrics("xgb_undersample_ensemble", ens_metric_raw, ensemble_calibrator)
-
-    # Two-tier offset model — trained alongside the ensemble so the serve-time
-    # router can hand stale (between-sample) beaches to the offset, which holds
-    # each beach's never-stale historical baseline. CA deployment eval: served
-    # AUCPR 0.38 → 0.62 and the under-warning bias is fixed (see two_tier.py).
-    print("Training XGB undersample offset model (two-tier)...", file=sys.stderr, flush=True)
-    _beach_all = metadata["beach_id"].to_numpy() if "beach_id" in metadata.columns else None
-    offset_classifier = XGBUndersampleOffsetEnsemble().fit(
-        features.iloc[train_idx],
-        labels[train_idx],
-        beach_ids=_beach_all[train_idx] if _beach_all is not None else None,
-    )
-    off_cal_raw = _predict_pos(
-        offset_classifier,
-        features.iloc[cal_idx],
-        beach_ids=_beach_all[cal_idx] if _beach_all is not None else None,
-    )
-    _, offset_calibrator = _identity_or_calibrated(off_cal_raw, labels[cal_idx], cal_metadata)
-    _record_valid_metrics(
-        "xgb_undersample_offset",
-        _predict_pos(
-            offset_classifier,
-            features.iloc[val_metric_idx],
-            beach_ids=_beach_all[val_metric_idx] if _beach_all is not None else None,
-        ),
-        offset_calibrator,
-    )
-
     ens_eval = ensemble_classifier.predict_proba(features.iloc[eval_idx])[:, 1]
     if len(test_idx):
         ens_eval = _apply_calibrator(ensemble_calibrator, ens_eval, eval_metadata)
@@ -4212,10 +3772,6 @@ def _run_winner_only(
             # The spatially-validated challenger — must be backtested so the gate
             # can swap it in over the temporal winner on held-out counties.
             "xgb_undersample_ensemble",
-            # Two-tier level+deviation challenger (base_margin offset + staleness
-            # augmentation) — backtested to compare its held-out within-beach skill
-            # against the incumbent on the served regime.
-            "xgb_undersample_offset",
         ]))
     else:
         backtest_models = [winner]
@@ -4278,40 +3834,22 @@ def _run_winner_only(
         "hist_gbm": tree_eval,
         "xgb_undersample_ensemble": ens_eval,
     }.get(_metrics_base_key(winner))
-    _persist_and_diagnose_holdouts(
+    _temporal_dates = None
+    if _winner_temporal_eval is not None and "sample_date" in eval_metadata.columns:
+        _temporal_dates = (
+            pd.to_datetime(eval_metadata["sample_date"], errors="coerce")
+            .dt.strftime("%Y-%m-%d")
+            .to_numpy()
+        )
+    _persist_holdout_artifacts(
         curated_dir,
         winner=winner,
         metrics=metrics,
+        temporal_labels=labels[eval_idx] if _winner_temporal_eval is not None else None,
         temporal_probs=_winner_temporal_eval,
-        labels=labels,
-        eval_idx=eval_idx,
-        eval_metadata=eval_metadata,
-        features=features,
+        temporal_dates=_temporal_dates,
         predictions_sink=spatial_predictions_sink,
     )
-
-    # Deployment-accurate CA comparison (known beaches, future dates, fresh + served
-    # regimes) where the offset holds each beach's real baseline. Gated to spatial
-    # runs so fast dev retrains skip the extra offset fit; guarded so it can never
-    # break the build. Lands in system_health.json two_tier_diagnostics.
-    if spatial_backtests:
-        try:
-            metrics.setdefault("two_tier_diagnostics", {})["temporal_ca_by_model"] = (
-                _temporal_stale_offset_comparison(
-                    features,
-                    labels,
-                    metadata,
-                    train_idx=train_idx,
-                    valid_idx=valid_idx,
-                    eval_idx=eval_idx,
-                )
-            )
-        except Exception as _ca_exc:  # pragma: no cover - diagnostic must not crash
-            print(
-                f"WARN: temporal_ca offset comparison skipped: {_ca_exc}",
-                file=sys.stderr,
-                flush=True,
-            )
 
     # Repoint the export classifier/calibrator to the FINAL winner. The export's
     # generic branch reads models.classifier, so after a spatial swap into (or
@@ -4347,8 +3885,6 @@ def _run_winner_only(
             ensemble_weights=ensemble_weights,
             regressor=regressor,
             regressor_valid_predictions=regressor_valid_predictions,
-            offset_classifier=offset_classifier,
-            offset_calibrator=offset_calibrator,
         ),
         plan=plan,
         metrics=metrics,
@@ -4654,15 +4190,20 @@ def train_curated_and_export(
         "xgb_undersample_ensemble": xgb_ens_eval,
         "logistic": logistic_eval,
     }.get(_metrics_base_key(winner))
-    _persist_and_diagnose_holdouts(
+    _temporal_dates = None
+    if _winner_temporal_eval is not None and "sample_date" in eval_metadata.columns:
+        _temporal_dates = (
+            pd.to_datetime(eval_metadata["sample_date"], errors="coerce")
+            .dt.strftime("%Y-%m-%d")
+            .to_numpy()
+        )
+    _persist_holdout_artifacts(
         curated_dir,
         winner=winner,
         metrics=metrics,
+        temporal_labels=labels[eval_idx] if _winner_temporal_eval is not None else None,
         temporal_probs=_winner_temporal_eval,
-        labels=labels,
-        eval_idx=eval_idx,
-        eval_metadata=eval_metadata,
-        features=features,
+        temporal_dates=_temporal_dates,
         predictions_sink=spatial_predictions_sink,
     )
 
