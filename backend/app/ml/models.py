@@ -185,6 +185,153 @@ class XGBUndersampleEnsemble:
         return (self.predict_proba(X)[:, 1] >= 0.5).astype(int)
 
 
+class XGBUndersampleOffsetEnsemble:
+    """XGBUndersampleEnsemble + per-beach base_margin offset + staleness augmentation.
+
+    The 'level + deviation' (two-tier) model. Each beach's shrunk historical
+    log-odds is supplied to XGBoost as a fixed ``base_margin`` so the trees can
+    only reduce loss by explaining WITHIN-beach departures from that level — the
+    served-regime skill the plain ensemble fails to learn (model_truth.md: served
+    within-beach AUROC ~0.50). Training rows are additionally augmented with a
+    stale ('served-day') copy of themselves (bacteria-history features censored)
+    so the model degrades gracefully instead of defaulting to "safe" when the
+    anchor is stale.
+
+    Validated 2026-07-23 (scratchpad isolate_phase1*.py) on the censored/served
+    regime vs the deployed ensemble: AUCPR 0.535 -> 0.668, Brier 0.119 -> 0.085,
+    low-side bias -0.102 -> +0.004, at ~no cost to the fresh regime. base_margin
+    beat the same offset as a plain feature (+0.05 AUCPR), which is why this uses
+    the low-level DMatrix path and accepts ``beach_ids`` at fit/predict.
+
+    ``accepts_beach_ids`` flags the extended signature so the training dispatch
+    passes beach_ids; without them it falls back to a single global margin.
+    """
+
+    accepts_beach_ids = True
+
+    def __init__(
+        self,
+        *,
+        n_estimators_ensemble: int = 12,
+        negative_ratio: float = 2.0,
+        n_estimators: int = 250,
+        max_depth: int = 6,
+        learning_rate: float = 0.05,
+        subsample: float = 0.8,
+        colsample_bytree: float = 0.8,
+        random_state: int = 42,
+        n_jobs: int = 12,
+        augment_stale_cutoff_days: int | None = 14,
+        prior_strength: float = 4.0,
+    ) -> None:
+        self.n_estimators_ensemble = n_estimators_ensemble
+        self.negative_ratio = negative_ratio
+        self.n_estimators = n_estimators
+        self.max_depth = max_depth
+        self.learning_rate = learning_rate
+        self.subsample = subsample
+        self.colsample_bytree = colsample_bytree
+        self.random_state = random_state
+        self.n_jobs = n_jobs
+        self.augment_stale_cutoff_days = augment_stale_cutoff_days
+        self.prior_strength = prior_strength
+        self.boosters_: list = []
+        self.beach_margins_: dict = {}
+        self.global_margin_: float = 0.0
+        self.classes_ = np.array([0, 1])
+
+    def _numeric(self, X: pd.DataFrame) -> pd.DataFrame:
+        frame = X if isinstance(X, pd.DataFrame) else pd.DataFrame(X)
+        return frame.select_dtypes(include=["number"]).fillna(0.0)
+
+    def _params(self, seed: int) -> dict:
+        return {
+            "objective": "binary:logistic",
+            "eta": self.learning_rate,
+            "max_depth": self.max_depth,
+            "subsample": self.subsample,
+            "colsample_bytree": self.colsample_bytree,
+            "eval_metric": "aucpr",
+            "tree_method": "hist",
+            "nthread": self.n_jobs,
+            "seed": seed,
+        }
+
+    def fit(self, X: pd.DataFrame, y, beach_ids=None) -> "XGBUndersampleOffsetEnsemble":
+        import xgboost as xgb
+
+        from app.ml.two_tier import (
+            beach_baseline_margin,
+            margins_for,
+            staleness_augmented_frame,
+        )
+
+        labels = np.asarray(y).astype(int)
+        self.beach_margins_, self.global_margin_ = beach_baseline_margin(
+            labels, beach_ids, prior_strength=self.prior_strength
+        ) if beach_ids is not None else ({}, beach_baseline_margin(labels, np.zeros(len(labels)))[1])
+
+        features = self._numeric(X).reset_index(drop=True)
+        self.feature_names_ = list(features.columns)
+        beach_arr = (
+            np.asarray(beach_ids, dtype=object)
+            if beach_ids is not None
+            else np.array([None] * len(features), dtype=object)
+        )
+
+        if self.augment_stale_cutoff_days:
+            features, is_stale = staleness_augmented_frame(
+                features, cutoff_days=self.augment_stale_cutoff_days
+            )
+            labels = np.concatenate([labels, labels])
+            beach_arr = np.concatenate([beach_arr, beach_arr])
+
+        margins = margins_for(beach_arr, self.beach_margins_, self.global_margin_)
+        pos = np.flatnonzero(labels == 1)
+        neg = np.flatnonzero(labels == 0)
+        rng = np.random.default_rng(self.random_state)
+        self.boosters_ = []
+        if len(pos) < 1 or len(neg) < 1:
+            dtrain = xgb.DMatrix(features, label=labels)
+            dtrain.set_base_margin(margins)
+            self.boosters_.append(
+                xgb.train(self._params(self.random_state), dtrain, self.n_estimators)
+            )
+            return self
+        k = min(int(len(pos) * self.negative_ratio), len(neg))
+        for i in range(self.n_estimators_ensemble):
+            draw = rng.choice(neg, size=k, replace=False)
+            idx = np.concatenate([pos, draw])
+            dtrain = xgb.DMatrix(features.iloc[idx], label=labels[idx])
+            dtrain.set_base_margin(margins[idx])
+            self.boosters_.append(
+                xgb.train(self._params(self.random_state + i), dtrain, self.n_estimators)
+            )
+        return self
+
+    def predict_proba(self, X: pd.DataFrame, beach_ids=None) -> np.ndarray:
+        import xgboost as xgb
+
+        from app.ml.two_tier import margins_for
+
+        if not self.boosters_:
+            raise RuntimeError("XGBUndersampleOffsetEnsemble is not fitted")
+        features = self._numeric(X)
+        features = features.reindex(columns=self.feature_names_, fill_value=0.0)
+        beach_arr = (
+            np.asarray(beach_ids, dtype=object)
+            if beach_ids is not None
+            else np.array([None] * len(features), dtype=object)
+        )
+        dmatrix = xgb.DMatrix(features)
+        dmatrix.set_base_margin(margins_for(beach_arr, self.beach_margins_, self.global_margin_))
+        positive = np.mean([b.predict(dmatrix) for b in self.boosters_], axis=0)
+        return np.column_stack([1.0 - positive, positive])
+
+    def predict(self, X: pd.DataFrame, beach_ids=None) -> np.ndarray:
+        return (self.predict_proba(X, beach_ids=beach_ids)[:, 1] >= 0.5).astype(int)
+
+
 class TemporalBlock(nn.Module):
     def __init__(self, channels: int, dilation: int) -> None:
         super().__init__()
