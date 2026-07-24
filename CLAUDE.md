@@ -172,6 +172,46 @@ the positive-persistence floor). Fixes shipped in `app/ml/served_metrics.py` + `
   staleness-augmented training (censor risk-history features to the serving age distribution +
   days-since-sample feature), validated offline via `scripts/diagnose_spatial_brier.py` first.
 
+### Two-tier serve-time router (2026-07-23, resolves the staleness gap above — LOCAL, not deployed)
+
+The gap above is now addressed by a **level+deviation two-tier model served by a regime router**
+(`app/ml/two_tier.py`, `app/ml/models.py::XGBUndersampleOffsetEnsemble`, router in
+`training.py::_route_fresh_stale_probabilities`). Motivation (`model_truth.md`): the deployed
+ensemble is skilful on fresh sample-days but **collapses between samples** — on the CA
+deployment eval (known beaches, future dates, anchor censored to serving age) served AUCPR falls
+**0.696 → 0.379** and it under-predicts (mean 0.037 vs 0.139 actual — "defaults to safe").
+
+- **The offset model** (`XGBUndersampleOffsetEnsemble`) is the incumbent's undersample EasyEnsemble
+  **plus** two things: each beach's shrunk historical log-odds supplied as XGBoost `base_margin`
+  (the trees learn only the *within-beach deviation*; the level comes from a never-stale historical
+  rate), and **staleness augmentation** (train on fresh + anchor-censored copies). On the same CA
+  eval it **holds**: served AUCPR 0.621, mean pred 0.181 (calibrated), Brier 0.121→0.083. The
+  offset is a training-time change (`base_margin` alters the fit gradient) — it cannot be derived
+  from the trained ensemble by reweighting.
+- **Both models are trained** every winner-only run (offset alongside the ensemble winner). Serving
+  **routes by sample age**: beaches with a lab sample ≤`_FRESH_ROUTE_CUTOFF_DAYS` (3d) keep the
+  ensemble (it wins at low lag); staler beaches get the offset; a short linear ramp
+  (`_route_offset_weight`, days 3→`_ROUTE_BLEND_END_DAYS`=5) blends the two so no beach jumps bands
+  in a single day (raw handoff Δ mean 0.074 / p90 0.186, halved by the ramp). Served population is
+  ~98% stale (min age ~4d), so the offset serves nearly everyone; the ensemble is the fresh-day
+  specialist (mostly San Diego same-day ddPCR). Diagnostics: `system_health.json`
+  `two_tier_diagnostics.serving_router`.
+- **Gates unchanged / promotion gate KEPT** (2026-07-24 decision): the router serves *under* the
+  existing health/anomaly/release gates (`--enforce-release-gate` still on in CI). The single-winner
+  promotion selection still runs and still picks the ensemble as the registry "winner"; routing is a
+  serving-path layer, not a gate bypass. Offset registered as `SPATIAL_DIAGNOSTIC_MODEL_NAMES` +
+  shortlist backtest (not `PRODUCTION_MODEL_NAMES`).
+- **Honest metrics wired:** `two_tier_diagnostics` records within-beach AUROC per candidate on the
+  fresh AND served (censored) regimes (`spatial_beach{,_stale}_by_model`, `temporal_ca_by_model`);
+  holdout artifacts now carry `beach_id`+`lag`. Within-beach AUROC (not global AUCPR) is the
+  primary metric — global AUCPR is blind to daily skill (it stayed ~0.65 while served within-beach
+  was ~0.50).
+- **Status:** local-validated end-to-end (winner-only run: router fires, forecasts sane, tests
+  green); the daily GitHub Action needs **no YAML change** (already `--winner-only`, the router
+  rides along). NOT committed/deployed. Caveats: served numbers are the censored proxy (optimistic
+  vs true forward-scored ~0.24 incumbent baseline — the *relative* gap + bias fix are the solid
+  signals); no cluster-bootstrap CI on the served gap yet. See [[project_two_tier_model]] memory.
+
 ## ML training
 
 ```
