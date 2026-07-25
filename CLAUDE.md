@@ -377,6 +377,37 @@ gets emailed) — previously a failed run was silent until `/system/health` went
 deploy if it never returns 200, so a broken Render build no longer ships unnoticed. Both have
 `concurrency` with `cancel-in-progress: false` (never kill a mid-flight train/commit/deploy).
 
+**Invalid JSON froze every publisher (2026-07-25 root cause).** `two_tier.within_beach_auroc`
+returns `float("nan")` when no beach qualifies in a bucket — a legitimate "undefined", but
+`json.dumps` writes it as a bare `NaN` token, which is **not valid JSON** (RFC 8259). It first
+appeared in `17acde4` (the 2026-07-24 daily run, the first refresh after the two-tier router
+merged in `00612cae`), under
+`model_registry.metrics.two_tier_diagnostics.temporal.by_lag.lag_8_14d`. Consequences:
+the private **shorelife-web** build died prerendering `/research`
+(`SyntaxError: Unexpected token 'N'` from `JSON.parse`) and its static export froze at the last
+good bake — which is what actually showed users a "47 hours ago" timestamp; and the same NaN
+sits in `serving.sqlite`'s health row, where Starlette's `allow_nan=False` renderer would turn
+`/system/health` into a **500** once that snapshot deployed. Fix: `app/core/json_safe.py`
+(`json_safe` scrubs non-finite floats → `null`; `dumps_strict` then serialises with
+`allow_nan=False` so a future producer fails loudly at the write instead of shipping an
+unparseable document). Every published JSON now goes through it — `system_health.json`
+(training + beachwatch), `production_model_registry`, `serving_calibration.json`, and the
+sqlite health row. NaN metrics are legitimate; publishing them as `NaN` is not.
+
+**Deploy verification — committed ≠ served (2026-07-25 hardening).** The API serves a snapshot
+**baked into the Docker image** (`backend/Dockerfile` COPYs `data/curated/`), so a fresh data
+commit changes nothing users see until a Render **build** finishes. Both workflows POSTed the
+Render deploy hook fire-and-forget; a 200 from the hook only means Render *accepted* the request,
+and the last **verified** build (`deploy-backend` #111, 2026-07-24 18:04, sha `00612cae`) baked
+the 2026-07-23 forecast, so nothing proves the 19:13 daily commit (`17acde4`) ever went live.
+The user-visible "47 hours ago" traced to the frozen web export above, not to Render — but the
+backend had the identical blind spot: a failed Render build leaves the previous image serving
+while CI stays green. Both workflows now run `backend/scripts/verify_deploy.py`, which
+polls the public health endpoint until the **served** `pipeline_freshness` is ≥ the one just
+committed (40 × 30 s) and fails the job otherwise → `notify-failure` opens the `pipeline-failure`
+issue. `deploy-backend.yml`'s old bare "returns 200" poll could not catch this (the previous
+image answers 200 too), so it was replaced by the same check.
+
 **Daily spatial backtest folds — 6 counties / 15 beaches** (`--spatial-county-limit 6
 --spatial-beach-limit 15`, commit `153f1368a`, 2026-06-10). The full 12-county / 50-beach
 sweep at 1095d (~84k rows, ~60 retrains) overran the ML budget and timed the whole job out

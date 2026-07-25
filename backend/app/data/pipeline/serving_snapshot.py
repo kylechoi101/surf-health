@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from app.core.json_safe import dumps_strict
 from app.services.shore_normal import compute_shore_normal_deg
 
 OBSERVATION_LIMIT = 25
@@ -212,7 +213,9 @@ def _write_system_health(conn: sqlite3.Connection, curated_dir: Path) -> None:
     conn.execute("create table system_health (key text primary key, payload text not null)")
     conn.execute(
         "insert into system_health (key, payload) values (?, ?)",
-        ("health", json.dumps(payload)),
+        # Strict: the API reads this row and re-serialises it through Starlette,
+        # which renders with allow_nan=False — a NaN here would 500 /system/health.
+        ("health", dumps_strict(payload, indent=None)),
     )
 
     audit_path = curated_dir / "advisory_audit.json"

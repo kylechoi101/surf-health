@@ -9,6 +9,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from app.core.json_safe import write_json
 from app.data.pipeline.county_corrections import correct_county
 from app.data.pipeline.exceedance import compute_exceeds_stv
 from app.data.pipeline.schema_guard import validate_beach_day
@@ -635,4 +636,4 @@ def write_curated_bundle(
         "model_registry": model_registry
         or {"production_model": "derived-persistence-v0", "candidate_models": [], "metrics": {}},
     }
-    (curated_dir / "system_health.json").write_text(json.dumps(payload, indent=2))
+    write_json(curated_dir / "system_health.json", payload)
