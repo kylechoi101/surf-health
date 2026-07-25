@@ -7,8 +7,16 @@ consumer rejects the whole document:
   * ``JSON.parse`` throws ``SyntaxError: Unexpected token 'N'`` — this took down
     the shorelife-web static export on 2026-07-24, which prerenders /research
     from ``system_health.json`` and failed the build outright;
-  * Starlette renders responses with ``allow_nan=False``, so a single NaN in the
-    health payload turns ``/system/health`` into a 500.
+  * anything else that reads the file or the sqlite health row with a strict
+    parser (jq, Go, Rust, a browser) rejects the whole document, not just the
+    offending field.
+
+The API happens to survive it: FastAPI's ``jsonable_encoder`` runs the response
+model through pydantic v2's ``model_dump(mode="json")``, whose default
+``ser_json_inf_nan="null"`` already maps non-finite floats to ``null`` before
+Starlette's ``allow_nan=False`` renderer sees them (verified against the pinned
+FastAPI: ``/system/health`` returned 200 while serving a NaN-carrying snapshot).
+That is luck downstream of the bug, not a reason to publish invalid JSON.
 
 A NaN metric is a legitimate result — an AUROC over a bucket where no beach
 qualified is genuinely undefined (see ``two_tier.within_beach_auroc``). What is
