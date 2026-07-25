@@ -32,6 +32,7 @@ from torch import nn
 from torch.utils.data import DataLoader, Subset
 
 from app.core.config import get_settings
+from app.core.json_safe import write_json
 from app.data.pipeline.features import (
     MARINE_MICROBIOLOGY_NUMERIC_COLUMNS,
     STORMWATER_EXPERT_NUMERIC_COLUMNS,
@@ -3253,7 +3254,7 @@ def _write_production_model_registry(
     data: dict[str, object] = {"winner": winner, "regressor": regressor}
     if ensemble_weights is not None:
         data["ensemble_weights"] = ensemble_weights
-    (curated_dir / _PRODUCTION_MODEL_REGISTRY).write_text(json.dumps(data, indent=2))
+    write_json(curated_dir / _PRODUCTION_MODEL_REGISTRY, data)
 
 
 def _publish_forecasts_unless_blocked(
@@ -3898,7 +3899,11 @@ def _export_forecasts(
         "blockers": promotion["promotion_blockers"],
     }
     health_payload["pipeline_freshness"] = datetime.now(UTC).isoformat()
-    health_path.write_text(json.dumps(health_payload, indent=2))
+    # dumps_strict, not json.dumps: a NaN metric (e.g. an AUROC over a bucket
+    # where no beach qualified) serialises as a bare `NaN` token, which is not
+    # valid JSON and breaks every non-Python consumer — it failed the
+    # shorelife-web static export outright on 2026-07-24.
+    write_json(health_path, health_payload)
     _write_model_card(curated_dir, health_payload)
     return TrainingArtifacts(winner=winner, metrics=metrics)
 

@@ -29,6 +29,7 @@ import pandas as pd
 from sklearn.isotonic import IsotonicRegression
 from sklearn.metrics import average_precision_score, brier_score_loss, roc_auc_score
 
+from app.core.json_safe import write_json
 from app.ml.evaluation import sensitivity_at_specificity
 
 HISTORY_FILE = "forecast_history.parquet"
@@ -368,4 +369,4 @@ def apply_serving_calibration(probabilities: np.ndarray, mapping: dict) -> np.nd
 
 
 def save_serving_calibration(curated_dir: Path, mapping: dict) -> None:
-    (curated_dir / CALIBRATION_FILE).write_text(json.dumps(mapping, indent=2))
+    write_json(curated_dir / CALIBRATION_FILE, mapping)
