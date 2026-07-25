@@ -385,9 +385,14 @@ merged in `00612cae`), under
 `model_registry.metrics.two_tier_diagnostics.temporal.by_lag.lag_8_14d`. Consequences:
 the private **shorelife-web** build died prerendering `/research`
 (`SyntaxError: Unexpected token 'N'` from `JSON.parse`) and its static export froze at the last
-good bake — which is what actually showed users a "47 hours ago" timestamp; and the same NaN
-sits in `serving.sqlite`'s health row, where Starlette's `allow_nan=False` renderer would turn
-`/system/health` into a **500** once that snapshot deployed. Fix: `app/core/json_safe.py`
+good bake — which is what actually showed users a "47 hours ago" timestamp. The same NaN sits in
+`serving.sqlite`'s health row, but the **API survives it**: FastAPI's `jsonable_encoder` runs the
+response model through pydantic v2's `model_dump(mode="json")`, whose default
+`ser_json_inf_nan="null"` maps non-finite floats to `null` before Starlette's `allow_nan=False`
+renderer sees them — `/system/health` returned 200 throughout while serving the NaN-carrying
+2026-07-25 snapshot (`verify_deploy` confirmed it live at 18:47 and 19:00 UTC). Any *other*
+strict consumer of the file or that sqlite row still rejects the whole document. Fix:
+`app/core/json_safe.py`
 (`json_safe` scrubs non-finite floats → `null`; `dumps_strict` then serialises with
 `allow_nan=False` so a future producer fails loudly at the write instead of shipping an
 unparseable document). Every published JSON now goes through it — `system_health.json`

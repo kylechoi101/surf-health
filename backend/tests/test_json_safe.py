@@ -4,6 +4,10 @@ Regression guard for 2026-07-24: ``within_beach_auroc`` returns NaN for a lag
 bucket where no beach qualified, ``json.dumps`` wrote it as a bare ``NaN``
 token, and the shorelife-web static export died on
 ``SyntaxError: Unexpected token 'N'`` while prerendering /research.
+
+The API is not the affected consumer — pydantic v2 already serialises non-finite
+floats to null in the response path — but every strict reader of the published
+file or the sqlite health row is.
 """
 
 from __future__ import annotations
