@@ -31,6 +31,10 @@ jobs:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
+      # Needed by the verification step below: it compares the SERVED snapshot
+      # against the data/curated/system_health.json of the commit being deployed.
+      - uses: actions/checkout@v5
+
       - name: Create GitHub deployment record
         id: deployment
         env:
@@ -67,12 +71,15 @@ jobs:
 
       - name: Wait for Render deploy to become healthy
         # The Render webhook is fire-and-forget: a failed Render BUILD ships
-        # nothing and nobody notices. Poll the public health endpoint until it
-        # returns 200, then mark the deployment healthy. Render free-tier cold
-        # starts are slow, so the budget is generous: 15 tries x 20s = ~5 min.
-        # Guarded by the same RENDER_DEPLOY_HOOK presence check as the webhook
-        # step so PRs/forks (no secret) don't fail — if we never POSTed a
-        # deploy, there is nothing to health-check.
+        # nothing and nobody notices. A bare "did it return 200" poll was not
+        # enough — the PREVIOUS image also returns 200, so a build that never
+        # shipped looked identical to a successful deploy (2026-07-25: the app
+        # served a 47 h-old snapshot while main held a 22 h-old one). Poll until
+        # the SERVED pipeline_freshness matches the commit being deployed.
+        # Budget: 40 x 30s = 20 min, covering a full image rebuild plus a
+        # free-tier cold start. Guarded by the same RENDER_DEPLOY_HOOK presence
+        # check as the webhook step so PRs/forks (no secret) don't fail — if we
+        # never POSTed a deploy, there is nothing to health-check.
         env:
           RENDER_DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
         run: |
@@ -80,20 +87,7 @@ jobs:
             echo "::warning::RENDER_DEPLOY_HOOK is not set; no deploy was triggered, skipping health check."
             exit 0
           fi
-          HEALTH_URL="https://surf-health-api-aabr.onrender.com/system/health"
-          ATTEMPTS=15
-          SLEEP_SECS=20
-          for i in $(seq 1 "$ATTEMPTS"); do
-            CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$HEALTH_URL" || echo "000")
-            if [ "$CODE" = "200" ]; then
-              echo "Render deploy healthy: $HEALTH_URL returned 200 (attempt $i/$ATTEMPTS)."
-              exit 0
-            fi
-            echo "Attempt $i/$ATTEMPTS: $HEALTH_URL returned HTTP $CODE — retrying in ${SLEEP_SECS}s..."
-            sleep "$SLEEP_SECS"
-          done
-          echo "::error::Render deploy did not become healthy — check Render dashboard. $HEALTH_URL never returned 200 after $((ATTEMPTS * SLEEP_SECS))s."
-          exit 1
+          python3 backend/scripts/verify_deploy.py --curated data/curated/
 
       - name: Mark deployment success
         if: success() && steps.deployment.outputs.deployment_id != ''

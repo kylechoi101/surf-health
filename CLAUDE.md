@@ -377,6 +377,20 @@ gets emailed) — previously a failed run was silent until `/system/health` went
 deploy if it never returns 200, so a broken Render build no longer ships unnoticed. Both have
 `concurrency` with `cancel-in-progress: false` (never kill a mid-flight train/commit/deploy).
 
+**Deploy verification — committed ≠ served (2026-07-25 incident).** The API serves a snapshot
+**baked into the Docker image** (`backend/Dockerfile` COPYs `data/curated/`), so a fresh data
+commit changes nothing users see until a Render **build** finishes. Both workflows POSTed the
+Render deploy hook fire-and-forget; a 200 from the hook only means Render *accepted* the request.
+On 2026-07-24 the daily run succeeded end-to-end and committed fresh forecasts at 19:13 UTC
+(`17acde4`), but the deploy never went live — the last image that actually shipped was the
+18:04 push deploy of `00612cae`, which baked the **2026-07-23** forecast. Result: the app read
+"47 hours ago" while main held 22-hour-old data, `/system/health` was 503ing (>36 h limit), and
+CI was green the whole time. Both workflows now run `backend/scripts/verify_deploy.py`, which
+polls the public health endpoint until the **served** `pipeline_freshness` is ≥ the one just
+committed (40 × 30 s) and fails the job otherwise → `notify-failure` opens the `pipeline-failure`
+issue. `deploy-backend.yml`'s old bare "returns 200" poll could not catch this (the previous
+image answers 200 too), so it was replaced by the same check.
+
 **Daily spatial backtest folds — 6 counties / 15 beaches** (`--spatial-county-limit 6
 --spatial-beach-limit 15`, commit `153f1368a`, 2026-06-10). The full 12-county / 50-beach
 sweep at 1095d (~84k rows, ~60 retrains) overran the ML budget and timed the whole job out

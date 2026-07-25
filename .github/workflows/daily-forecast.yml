@@ -320,6 +320,7 @@ jobs:
         working-directory: backend
 
       - name: Trigger Render deploy
+        id: render_deploy
         if: success()
         env:
           RENDER_DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
@@ -327,9 +328,25 @@ jobs:
           if [ -n "$RENDER_DEPLOY_HOOK" ]; then
             curl -fsSL -X POST "$RENDER_DEPLOY_HOOK"
             echo "Render deploy triggered."
+            echo "triggered=true" >> "$GITHUB_OUTPUT"
           else
             echo "RENDER_DEPLOY_HOOK not set — skipping (set repo secret to enable)."
+            echo "triggered=false" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Verify the fresh data actually went live
+        # The POST above is fire-and-forget: a 200 from the deploy hook means
+        # Render ACCEPTED the request, not that the build shipped. Because the
+        # image bakes data/curated/ (see backend/Dockerfile), a failed Render
+        # build leaves the previous snapshot serving while this workflow stays
+        # green and the commit sits in main — the app then shows a "last
+        # updated" that silently falls a day behind (2026-07-25: 47 h stale).
+        # Poll until the SERVED pipeline_freshness catches up to the one we just
+        # committed; a non-zero exit here fails the job so notify-failure opens
+        # the pipeline-failure issue.
+        if: steps.render_deploy.outputs.triggered == 'true'
+        run: python scripts/verify_deploy.py --curated ../data/curated/
+        working-directory: backend
 
   # Failure alerting: the daily pipeline failing used to be silent — the only
   # signal was someone manually checking Actions or the API serving a 503.
