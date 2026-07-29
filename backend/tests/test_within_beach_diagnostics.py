@@ -82,6 +82,48 @@ def test_route_offset_weight_ramp():
     assert np.all(np.diff(ramp) >= 0)
 
 
+def test_router_returns_the_blend_weight_it_actually_used():
+    """The 5th return is the per-row provenance logged as served_offset_weight.
+
+    model_version records the registry winner (the ensemble) even on rows the
+    offset model produced, so this weight is the ONLY thing that attributes a
+    served prediction to a model. It must be the same weight used for the blend —
+    logging a different array would silently mis-attribute every row.
+    """
+    from app.ml.training import _route_fresh_stale_probabilities, _route_offset_weight
+
+    class _StubOffset:
+        def predict_proba(self, features, beach_ids=None):
+            p = np.full(len(features), 0.8)
+            return np.column_stack([1.0 - p, p])
+
+    ages = np.array([1.0, 4.0, 30.0])
+    features = pd.DataFrame(
+        {"days_since_enterococcus_value_obs": ages, "precip_mm_24h": np.zeros(3)}
+    )
+    metadata = pd.DataFrame({"beach_id": ["a", "b", "c"]})
+    ensemble = np.array([0.2, 0.2, 0.2])
+
+    routed, _, _, diag, weights = _route_fresh_stale_probabilities(
+        ensemble,
+        np.full(3, np.nan),
+        np.full(3, np.nan),
+        offset_classifier=_StubOffset(),
+        offset_calibrator=None,
+        features=features,
+        metadata=metadata,
+    )
+
+    # the returned weight is the ramp, and it is the one that produced `routed`
+    assert np.allclose(weights, _route_offset_weight(ages, 3, 5))
+    assert np.allclose(routed, (1.0 - weights) * 0.2 + weights * 0.8)
+    # fresh row keeps the ensemble, stale row is pure offset, middle is blended
+    assert np.isclose(routed[0], 0.2)
+    assert np.isclose(routed[2], 0.8)
+    assert 0.2 < routed[1] < 0.8
+    assert (diag["fresh_beaches"], diag["blended_beaches"], diag["stale_beaches"]) == (1, 1, 1)
+
+
 def test_temporal_stale_offset_comparison_structure():
     from app.ml.training import _temporal_stale_offset_comparison
 
