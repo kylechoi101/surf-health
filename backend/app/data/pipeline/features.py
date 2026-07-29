@@ -348,7 +348,13 @@ def _exact_lag_features(enriched: pd.DataFrame) -> pd.DataFrame:
             columns={column: f"{column}_lag_{lag}" for column in BASE_NUMERIC_COLUMNS}
         )
         feature_frame = feature_frame.merge(shifted, on=["beach_id", "sample_date"], how="left")
-    return feature_frame.drop(columns=["beach_id", "sample_date"])
+    # .merge() discards the caller's index for a fresh RangeIndex.  add_temporal_features
+    # combines this block with `enriched` via pd.concat(axis=1), which aligns on index —
+    # so whenever `enriched` has a non-contiguous index (any .loc[mask] filter, e.g. the
+    # training-window cut in training.py) the two UNION instead of aligning and every
+    # *_lag_* column silently lands on the wrong row.  Restore the caller's index, the
+    # same guard _rolling_and_spacing_features and _regulatory_geomean_features already use.
+    return feature_frame.drop(columns=["beach_id", "sample_date"]).set_index(enriched.index)
 
 
 def _rolling_and_spacing_features(enriched: pd.DataFrame) -> pd.DataFrame:
