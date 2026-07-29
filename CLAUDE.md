@@ -172,7 +172,7 @@ the positive-persistence floor). Fixes shipped in `app/ml/served_metrics.py` + `
   staleness-augmented training (censor risk-history features to the serving age distribution +
   days-since-sample feature), validated offline via `scripts/diagnose_spatial_brier.py` first.
 
-### Two-tier serve-time router (2026-07-23, resolves the staleness gap above — LOCAL, not deployed)
+### Two-tier serve-time router (2026-07-23, resolves the staleness gap above — **DEPLOYED, serving 100% of beaches**)
 
 The gap above is now addressed by a **level+deviation two-tier model served by a regime router**
 (`app/ml/two_tier.py`, `app/ml/models.py::XGBUndersampleOffsetEnsemble`, router in
@@ -206,11 +206,66 @@ deployment eval (known beaches, future dates, anchor censored to serving age) se
   holdout artifacts now carry `beach_id`+`lag`. Within-beach AUROC (not global AUCPR) is the
   primary metric — global AUCPR is blind to daily skill (it stayed ~0.65 while served within-beach
   was ~0.50).
-- **Status:** local-validated end-to-end (winner-only run: router fires, forecasts sane, tests
-  green); the daily GitHub Action needs **no YAML change** (already `--winner-only`, the router
-  rides along). NOT committed/deployed. Caveats: served numbers are the censored proxy (optimistic
-  vs true forward-scored ~0.24 incumbent baseline — the *relative* gap + bias fix are the solid
-  signals); no cluster-bootstrap CI on the served gap yet. See [[project_two_tier_model]] memory.
+- **Status: LIVE.** Merged in `00612cae` and serving since ~2026-07-22. On the 2026-07-28 daily run
+  `two_tier_diagnostics.serving_router` reports **fresh 0 / blended 0 / stale 297** — i.e. the offset
+  model serves **every beach**; the plain ensemble's fresh tier is empty in practice (no beach has a
+  sample ≤3d old on a typical day). The daily Action needed no YAML change (already `--winner-only`).
+  - **`production_model` still reads `xgb-undersample-ensemble-curated-v0`** and always will — that
+    is the registry *winner*, not the model that computed `p_exceed`. Do NOT read it as "what is
+    served"; read `model_registry.metrics.two_tier_diagnostics.serving_router` (note the **nesting**
+    — it is not a top-level key) and the per-row `served_offset_weight` in `forecast_history.parquet`
+    (0 = ensemble, 1 = offset, null = no router ran).
+  - **Side effect, confirmed:** the persistence pin is gone. Rows at `p_exceed = 1.0` ran 2.39% of
+    the 90d window (612 rows, realising only ~31%) and have been **0 since 2026-07-22**, along with
+    every `p_exceed ≥ 0.7`. Mean served `p` fell ~0.10 → ~0.07. This is the predicted "Very High
+    mostly vanishes until real skill supports ≥0.70" — not a regression.
+  - **`served_metrics` currently averages two regimes.** Its 90d window straddles the ~07-22 switch,
+    so the published AUCPR ≈0.22–0.24 / Brier is mostly the *pre-router* ensemble and understates
+    what is running now. Split it by `served_offset_weight` before quoting it; it self-corrects once
+    the window rolls past the switch.
+  - Caveats unchanged: the offline served numbers are a censored proxy (optimistic vs the true
+    forward-scored ~0.24 incumbent baseline — the *relative* gap + bias fix are the solid signals);
+    no cluster-bootstrap CI on the served gap yet. See [[project_two_tier_model]] memory.
+- **Challenger tested and rejected (2026-07-28):** bagged/boosted logistic regression on balanced
+  undersamples (XGBoost `gblinear`, ±per-beach `base_margin`), proposed as a simpler replacement.
+  On known beaches in the served regime it beats the *plain* ensemble (AUCPR 0.623 vs 0.531) but
+  loses to the deployed offset model on both global AUCPR (0.623 vs 0.716) **and** within-beach
+  daily skill (0.609 vs 0.691), which is the metric that matters. Also measured: averaging the
+  logistic *weights* across undersamples is a no-op (members correlate >0.99 — they share every
+  positive), and the outer bagging loop around XGBoost is worth only ~+0.02 AUCPR (most of the
+  benefit is the class rebalancing, not the averaging). Scripts left in the session scratchpad, not
+  committed. Do not re-litigate without a daily-cadence evaluation (below).
+
+### The measurement gap: daily product, weekly labels (2026-07-28)
+
+**Every metric in this file is computed on days a lab result exists.** The product publishes a
+forecast for every beach every day; labs sample a median of **7 days** apart. So ~6 of 7 served
+predictions are unverifiable in principle, and the numbers above grade the one day a week that
+is not the hard case. Two consequences worth internalising before trusting any model comparison:
+
+- **Global AUCPR/AUROC is blind to the daily question.** It is dominated by *between-beach*
+  variance — a model scores well by knowing Tijuana Slough is dirtier than Carmel, with zero
+  ability to tell Tuesday from Thursday at one beach. Use `within_beach_auroc` (`two_tier.py`)
+  as the headline; a value near 0.50 means the model is a per-beach lookup table no matter how
+  good the global number looks.
+- **AUCPR is base-rate dependent and the eval/serve base rates differ ~3×** (0.174 in the
+  sample-day training population vs 0.061 served). Measured directly by diluting a fixed set of
+  predictions: AUCPR falls 0.532 → 0.322 with the model, ranking and all held constant, while
+  AUROC stays flat at ~0.772. So **~71% of the apparent "0.54 backtest → 0.24 served" collapse is
+  arithmetic, not skill loss.** Never compare AUCPR across populations; compare AUROC.
+
+**Where daily skill is actually falsifiable:** 37 beaches (mostly SD ddPCR + LA) sample at a
+median gap ≤2d, giving **3,188 consecutive-day pairs**. Day-over-day the label flips **19.4%**
+of the time (vs 49.2% under independence) — strongly autocorrelated but far from static, so
+interpolating between weekly samples is structurally wrong. Those beaches are unrepresentative
+(base rate 0.437 vs 0.061 served), but a model that cannot beat persistence *there* cannot be
+trusted on a weekly-sampled beach. The evaluation to build: retrospective daily grid per
+candidate → within-beach AUROC by lead time 1–7 vs persistence, plus a flip-day readout.
+
+**Label-free check that needs no daily truth:** does the predicted series *move* like reality?
+Measured on the live grid — bands change on 6.49% of beach-days and **92.5% of those changes
+occur on days with no new lab sample**, i.e. the model responds to rain/solar covariates rather
+than parroting the last result. Necessary but not sufficient: right variance ≠ right timing.
 
 ## ML training
 

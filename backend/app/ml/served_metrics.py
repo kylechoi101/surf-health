@@ -48,6 +48,11 @@ _HISTORY_COLUMNS = [
     "risk_band",
     "sample_age_days",
     "model_version",
+    # Two-tier provenance: 0 = ensemble served this row, 1 = offset model did,
+    # in between = age-ramp blend; null when no router ran. model_version alone
+    # cannot distinguish them — it records the registry winner (the ensemble)
+    # even on rows the offset model produced.
+    "served_offset_weight",
     "forecast_generated_at",
 ]
 _PROBABILITY_COLUMNS = ("p_exceed", "p_exceed_raw", "p_exceed_precal")

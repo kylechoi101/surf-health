@@ -297,6 +297,57 @@ def test_build_sliding_windows_uses_calendar_day_lags_for_sparse_history():
     assert dataset.sequence_array[0, -9, 0] == 21.0
 
 
+def test_exact_lag_features_survive_a_non_contiguous_index():
+    """Regression: a ``.loc[mask]`` filter leaves a non-contiguous index, while
+    ``_exact_lag_features`` builds its block with ``.merge()`` and so returns a fresh
+    RangeIndex.  ``add_temporal_features`` combines the two with ``pd.concat(axis=1)``,
+    which aligns on index — so the two UNION instead of aligning and every ``*_lag_*``
+    value lands on the wrong row.  Production hit both training entry points:
+    ``enterococcus_value_lag_7`` was correct on only 33% of rows and the lag block
+    retained 55% of its signal.  The lag frame must carry the caller's index.
+    """
+
+    def _row(beach_id: str, date: str, value: float) -> dict:
+        return {
+            "beach_id": beach_id,
+            "sample_date": date,
+            "sample_time": f"{date}T08:00:00-07:00",
+            "enterococcus_value": value,
+            "exceeds_stv": 0,
+            "wave_height_m": 1.5,
+            "dominant_period_s": 10.0,
+            "wave_direction_deg": 200.0,
+            "water_temperature_c": 15.0,
+            "salinity_psu": 33.0,
+            "uv_index": 5.0,
+            "wind_speed_mps": 4.0,
+        }
+
+    # Same history as test_build_sliding_windows_uses_calendar_day_lags_for_sparse_history
+    # (2026-04-10 minus 7d -> the 04-03 sample, 23.0), but with a second beach
+    # interleaved so filtering it out punches holes in the index — exactly what the
+    # training-window cut in training.py produces.
+    frame = pd.DataFrame(
+        [
+            _row("filler", "2026-04-01", 99.0),
+            _row("alpha", "2026-04-01", 21.0),
+            _row("filler", "2026-04-02", 99.0),
+            _row("alpha", "2026-04-03", 23.0),
+            _row("filler", "2026-04-03", 99.0),
+            _row("alpha", "2026-04-04", 24.0),
+            _row("filler", "2026-04-09", 99.0),
+            _row("alpha", "2026-04-10", 30.0),
+        ]
+    )
+    filtered = frame.loc[frame["beach_id"] == "alpha"]
+    assert not filtered.index.equals(pd.RangeIndex(len(filtered))), "precondition"
+
+    dataset = build_sliding_windows(filtered)
+
+    assert len(dataset.feature_frame) == 1
+    assert dataset.feature_frame.iloc[0]["enterococcus_value_lag_7"] == 23.0
+
+
 def _make_history(beach_id: str, start: str, values: list[float]) -> pd.DataFrame:
     base_date = pd.Timestamp(start)
     rows = []

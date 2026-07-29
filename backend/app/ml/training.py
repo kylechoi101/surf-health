@@ -3331,7 +3331,9 @@ def _route_fresh_stale_probabilities(
     two across the boundary so no beach jumps bands in a single day. Returns the
     routed (probability, lower, upper) arrays plus a diagnostic dict — the
     fresh/blended/stale split and the raw handoff delta (how far the two models
-    disagree on the same rows, i.e. the un-blended jump the ramp smooths)."""
+    disagree on the same rows, i.e. the un-blended jump the ramp smooths) — and the
+    per-row blend weight, logged as ``served_offset_weight`` so served_metrics can
+    attribute each prediction to the model that actually made it."""
     beach_ids = metadata["beach_id"].to_numpy() if "beach_id" in metadata.columns else None
     offset_raw = offset_classifier.predict_proba(features, beach_ids=beach_ids)[:, 1]
     offset_probs = np.asarray(_apply_calibrator(offset_calibrator, offset_raw, metadata), dtype=float)
@@ -3358,7 +3360,7 @@ def _route_fresh_stale_probabilities(
         "handoff_mean_abs_delta": float(np.nanmean(delta)) if len(delta) else float("nan"),
         "handoff_p90_abs_delta": float(np.nanpercentile(delta, 90)) if len(delta) else float("nan"),
     }
-    return routed, routed_lower, routed_upper, diagnostics
+    return routed, routed_lower, routed_upper, diagnostics, w
 
 
 def _export_forecasts(
@@ -3462,6 +3464,11 @@ def _export_forecasts(
     assigned_cells = np.full(len(baseline_forecast_features), "unknown", dtype=object)
     probability_lower = np.full(len(baseline_forecast_features), np.nan, dtype=float)
     probability_upper = np.full(len(baseline_forecast_features), np.nan, dtype=float)
+    # Per-row two-tier provenance: 0 = the ensemble served this beach, 1 = the
+    # offset model did, in between = the age ramp blended them. Stays None on
+    # every non-routed path so `served_offset_weight` is null rather than a
+    # misleading 0.0 when no router ran.
+    route_offset_weights: np.ndarray | None = None
     if winner == "stacked_ensemble":
         _ens_logistic = logistic.predict_proba(baseline_forecast_features)[:, 1]
         if logistic_calibrator is not None:
@@ -3554,7 +3561,7 @@ def _export_forecasts(
             and models.offset_calibrator is not None
             and not baseline_forecast_features.empty
         ):
-            probabilities, probability_lower, probability_upper, _route_diag = (
+            probabilities, probability_lower, probability_upper, _route_diag, route_offset_weights = (
                 _route_fresh_stale_probabilities(
                     probabilities,
                     probability_lower,
@@ -3751,6 +3758,14 @@ def _export_forecasts(
                 "prediction_interval_level": (0.9 if regression_interval_half_width is not None else None),
                 "top_drivers": computed_drivers[i],
                 "model_version": _forecast_model_version(winner, str(scope)),
+                # Which tier actually produced p_exceed. model_version records the
+                # registry winner, which is the ensemble even on rows the offset
+                # model served — without this the log cannot attribute a prediction.
+                "served_offset_weight": (
+                    float(route_offset_weights[i])
+                    if route_offset_weights is not None and i < len(route_offset_weights)
+                    else None
+                ),
                 "forecast_generated_at": forecast_generated_at,
                 "wave_height_m": _safe_float(latest_row.get("wave_height_m")) if latest_row is not None else None,
                 "dominant_period_s": _safe_float(latest_row.get("dominant_period_s")) if latest_row is not None else None,
