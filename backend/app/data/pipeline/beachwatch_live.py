@@ -29,6 +29,7 @@ import numpy as np
 import pandas as pd
 
 from app.data.pipeline.beachwatch import _canonical_parameter
+from app.data.pipeline.ceden import _normalize_method_or_unit
 from app.data.pipeline.county_corrections import correct_county
 from app.data.pipeline.exceedance import compute_exceeds_stv
 from app.data.pipeline.spelling import correct_place_spelling
@@ -130,11 +131,20 @@ def merge_live_into_observations(
 ) -> pd.DataFrame:
     """Fold live rows in, keeping every existing row.
 
-    Dedupe is on the physical sample — (beach_id, sample_time, analyte, method,
-    units, value) — so a row we already hold from BeachWatch or CEDEN wins and the
-    live mirror of it is dropped. Live only ever ADDS samples nobody else had yet,
-    which is the point: it is 4-6 days ahead in San Diego / Los Angeles and behind
-    or absent elsewhere.
+    Two passes, mirroring ``merge_ceden_into_beachwatch_bundle``:
+
+    1. **Intra-source**: dedupe on (beach_id, sample_time, analyte, data_source,
+       method, units, value). Method and units are IN the key on purpose — two
+       genuinely different assays on one sample are two observations.
+    2. **Cross-source mirrors**: group on (beach_id, sample_time, analyte, value)
+       WITHOUT method/units/source. If a group spans >1 source it is the same
+       physical sample reported twice, so collapse it to the highest-priority row.
+
+    Pass 2 is not optional, and normalizing the method string is NOT a substitute
+    for it: the sources spell the same assay differently ("1600" vs "EPA 1600"),
+    and ``_normalize_method_or_unit`` only strips non-alphanumerics, so those
+    still hash apart ("1600" vs "epa1600"). Without pass 2 a one-month window
+    inserted ~800 duplicate rows and a 4-year backfill inserted ~31,000.
     """
     if live.empty:
         return observations
@@ -154,17 +164,34 @@ def merge_live_into_observations(
     combined["_priority"] = combined["data_source"].map(priority).fillna(9)
     combined["_t"] = pd.to_datetime(combined["sample_time"], errors="coerce")
     combined["_v"] = pd.to_numeric(combined["value"], errors="coerce").round(6)
-    combined["_m"] = combined["method"].astype(str).str.strip().str.lower()
-    combined["_u"] = combined["units"].astype(str).str.strip().str.lower()
+    combined["_m"] = combined["method"].map(_normalize_method_or_unit)
+    combined["_u"] = combined["units"].map(_normalize_method_or_unit)
 
     before = len(existing)
+    # Sort by priority FIRST so every keep="first" below retains the
+    # highest-priority source; drop_duplicates preserves order, so the ordering
+    # established here still holds when pass 2 runs.
+    combined = combined.sort_values(["_priority", "_t"]).drop_duplicates(
+        subset=["beach_id", "_t", "analyte", "data_source", "_m", "_u", "_v"], keep="first"
+    )
+    # Pass 2 — collapse the same physical sample reported by >1 source.
+    mirror_sources = combined.groupby(["beach_id", "_t", "analyte", "_v"])["data_source"].transform(
+        "nunique"
+    )
+    is_mirrored = mirror_sources.gt(1).fillna(False)
+    mirrored = combined.loc[is_mirrored].drop_duplicates(
+        subset=["beach_id", "_t", "analyte", "_v"], keep="first"
+    )
+    collapsed = int(is_mirrored.sum() - len(mirrored))
     combined = (
-        combined.sort_values(["_priority", "_t"])
-        .drop_duplicates(subset=["beach_id", "_t", "analyte", "_m", "_u", "_v"], keep="first")
+        pd.concat([combined.loc[~is_mirrored], mirrored], ignore_index=True, sort=False)
         .drop(columns=["_priority", "_t", "_v", "_m", "_u"])
         .sort_values(["beach_id", "sample_time"])
         .reset_index(drop=True)
     )
     added = len(combined) - before
-    print(f"[beachwatch-live] merged: {before} -> {len(combined)} observations (+{added} new samples)")
+    print(
+        f"[beachwatch-live] merged: {before} -> {len(combined)} observations "
+        f"(+{added} new samples, {collapsed} cross-source mirrors collapsed)"
+    )
     return combined

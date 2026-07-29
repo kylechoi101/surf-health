@@ -113,6 +113,49 @@ def test_merge_is_additive_and_existing_sources_win():
     assert added.iloc[0]["data_source"] == DATA_SOURCE
 
 
+def test_cross_source_mirror_collapses_despite_different_method_spelling():
+    """The regression that shipped: BeachWatch writes "1600", the live app writes
+    "EPA 1600". Both name the same assay on the same physical sample, but they
+    hash apart even after _normalize_method_or_unit ("1600" vs "epa1600"), so a
+    method-keyed dedupe kept both. That inserted ~800 duplicate rows for a 1-month
+    window and ~31,000 for a 4-year backfill.
+    """
+    existing = pd.DataFrame(
+        [
+            {
+                "beach_id": "b-alpha", "sample_time": pd.Timestamp("2026-07-20 07:30:00"),
+                "sample_date": pd.Timestamp("2026-07-20").date(), "analyte": "enterococcus",
+                "method": "1600", "units": "CFU/100ml", "value": 500.0,
+                "exceeds_stv": True, "county": "San Diego", "station_name": "IB-079",
+                "beach_name": "Test Beach", "usepa_id": "CA1", "data_source": "BeachWatch",
+                "station_code": "IB-079",
+            }
+        ]
+    )
+    # Same sample, same value, method spelled the other way.
+    markup = _row("IB-079", "2026-07-20", "Enterococcus", "500", "CFU/100ml", "EPA 1600")
+    live = normalize_live_results(parse_results_html(markup), _stations(), 104.0,
+                                  now=pd.Timestamp("2026-07-29"))
+    assert len(live) == 1 and live.iloc[0]["method"] == "EPA 1600"
+
+    merged = merge_live_into_observations(existing, live)
+    assert len(merged) == 1, "the mirror must collapse, not duplicate"
+    assert merged.iloc[0]["data_source"] == "BeachWatch", "higher-priority source wins"
+
+
+def test_two_genuinely_different_assays_on_one_sample_are_both_kept():
+    """Guard the other direction: pass 2 keys on VALUE, so distinct results from
+    distinct methods must survive — collapsing them would silently drop data."""
+    markup = (
+        _row("IB-079", "2026-07-26", "Enterococcus", "500", "CFU/100ml", "EPA 1600")
+        + _row("IB-079", "2026-07-26", "Enterococcus", "1504", "Copies/100ml", "MCB-ddPCR")
+    )
+    live = normalize_live_results(parse_results_html(markup), _stations(), 104.0,
+                                  now=pd.Timestamp("2026-07-29"))
+    merged = merge_live_into_observations(pd.DataFrame(), live)
+    assert len(merged) == 2, "different values from different assays must both survive"
+
+
 def test_county_codes_cover_the_live_form():
     assert COUNTY_CODES["San Diego"] == 10
     assert COUNTY_CODES["Los Angeles"] == 5
