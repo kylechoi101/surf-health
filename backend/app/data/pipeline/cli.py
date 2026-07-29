@@ -278,6 +278,28 @@ def main() -> None:
     parser.add_argument("--results-csv", type=Path)
     parser.add_argument("--advisories-csv", type=Path)
     parser.add_argument("--max-results-rows", type=int, default=None)
+    parser.add_argument(
+        "--with-beachwatch-live",
+        action="store_true",
+        help="Additively merge the LIVE BeachWatch app (beachwatch.waterboards.ca.gov) "
+             "into observations. The data.ca.gov export is frozen (newest sample "
+             "2026-03-05); the live DB is 4-6 days ahead of us in San Diego / LA.",
+    )
+    parser.add_argument(
+        "--beachwatch-live-days",
+        type=int,
+        default=30,
+        help="Daily mode: pull results ENTERED within the last N days (1/7/30/60/90). "
+             "Entered-date, not sample-date, so it captures late backfill.",
+    )
+    parser.add_argument(
+        "--beachwatch-live-backfill-years",
+        type=int,
+        nargs="+",
+        default=None,
+        help="Backfill mode: fetch these calendar years in full instead of the "
+             "rolling --beachwatch-live-days window. e.g. 2024 2025 2026",
+    )
     parser.add_argument("--merge-ceden", action="store_true")
     parser.add_argument("--ceden-results-csv", type=Path)
     parser.add_argument("--ceden-sites-csv", type=Path)
@@ -439,6 +461,43 @@ def main() -> None:
                     "[warn] The capped Safe-to-Swim slice did not contribute any mapped enterococcus rows. "
                     "Try increasing --max-ceden-rows or removing the cap."
                 )
+        if args.with_beachwatch_live:
+            # ADDITIVE third source. Runs last so BeachWatch + CEDEN rows always win
+            # the dedupe; live only contributes samples nobody else has yet.
+            from app.data.connectors.beachwatch_live import fetch_all as _fetch_live
+            from app.data.pipeline.beachwatch_live import (
+                merge_live_into_observations,
+                normalize_live_results,
+            )
+
+            _years = args.beachwatch_live_backfill_years
+            _slices = [{"year": y} for y in _years] if _years else [
+                {"created_days": args.beachwatch_live_days}
+            ]
+            _raw_frames = []
+            for _slice in _slices:
+                _label = _slice.get("year") or f"entered<={_slice.get('created_days')}d"
+                print(f"[beachwatch-live] fetching slice {_label} across all counties...")
+                _raw_frames.append(
+                    _fetch_live(
+                        on_progress=lambda c, n: print(f"[beachwatch-live]   {c}: {n} rows"),
+                        **_slice,
+                    )
+                )
+            _raw = pd.concat(_raw_frames, ignore_index=True) if _raw_frames else pd.DataFrame()
+            _live = normalize_live_results(
+                _raw, bundle["stations"], settings.epa_marine_enterococcus_stv
+            )
+            if not _live.empty:
+                bundle["observations"] = merge_live_into_observations(
+                    bundle["observations"], _live
+                )
+                # observations changed -> beach_day (the training/label frame) is stale.
+                bundle["beach_day"] = build_beach_day_frame(
+                    bundle["observations"], bundle["stations"], bundle["advisories"]
+                )
+            else:
+                print("[beachwatch-live] no usable rows returned; leaving observations unchanged")
         uv_daily = pd.DataFrame()
         if args.with_external_covariates:
             bundle["stations"], bundle["beach_day"], uv_daily = asyncio.run(
