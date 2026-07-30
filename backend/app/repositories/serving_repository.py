@@ -12,7 +12,11 @@ from typing import Any
 
 from fastapi import HTTPException
 
-from app.ml.calibration import confidence_capped_risk_band, risk_band
+from app.ml.calibration import (
+    advisory_floored_probability,
+    confidence_capped_risk_band,
+    risk_band,
+)
 from app.repositories.base import BeachRepository
 from app.services.shore_normal import compute_shore_normal_deg
 from app.schemas.domain import (
@@ -462,8 +466,12 @@ class ServingSnapshotRepository(BeachRepository):
                 flagged_display_lookup[bid] for bid in flagged_ids if bid in flagged_display_lookup
             ]
             has_active = bool(flagged_ids)
-            if has_active:
-                worst_band = "Advisory"
+            # Deliberately NOT overriding worst_band here. A parent's advisory state
+            # rides on has_active_advisory (OR across members, by design), while the
+            # band stays the worst MODEL band among members so each area still shows
+            # its own modelled result. Members that are themselves posted are already
+            # floored to >= High individually, so a posted member cannot drag the
+            # parent below High either.
 
             # Pick advisory website from first active member station that has one
             advisory_website: str | None = None
@@ -594,9 +602,23 @@ class ServingSnapshotRepository(BeachRepository):
         advisory_website: str | None = None
         parent_has_advisory = False
         parent_advisory_url: str | None = None
+        served_p_exceed = float(row["p_exceed"])
+        floor_applied_here = False
         if active_advisory:
             drivers = ["Official health advisory is active for this station.", *base_drivers][:5]
-            band = "Advisory"  # Authoritative county posting; UI surfaces the source link separately.
+            # Band stays the MODEL's; the posting is carried by advisory_website /
+            # the client's badge. Floor first so a posted station can never show
+            # Low or Moderate. The confidence cap is skipped on purpose — it exists
+            # to damp strong MODEL-only warnings off stale samples, and an official
+            # posting is not model-only.
+            served_p_exceed, floor_applied_here = advisory_floored_probability(
+                served_p_exceed, True
+            )
+            band = risk_band(
+                advisory_floored_probability(
+                    raw_p_exceed if raw_p_exceed is not None else served_p_exceed, True
+                )[0]
+            )
             advisory_website = website_map.get(beach_id)
         else:
             drivers = base_drivers
@@ -623,9 +645,11 @@ class ServingSnapshotRepository(BeachRepository):
             advisory_website=advisory_website,
             parent_has_active_advisory=parent_has_advisory,
             parent_advisory_website=parent_advisory_url,
-            p_exceed=float(row["p_exceed"]),
+            p_exceed=served_p_exceed,
             p_exceed_raw=_safe_float(row.get("p_exceed_raw")),
-            advisory_floor_applied=_safe_bool(row.get("advisory_floor_applied"), default=False),
+            advisory_floor_applied=(
+                _safe_bool(row.get("advisory_floor_applied"), default=False) or floor_applied_here
+            ),
             p_exceed_lower=_safe_float(row.get("p_exceed_lower")),
             p_exceed_upper=_safe_float(row.get("p_exceed_upper")),
             predicted_log_enterococcus=_safe_float(row.get("predicted_log_enterococcus")),
@@ -705,14 +729,18 @@ class ServingSnapshotRepository(BeachRepository):
             if value and str(value).lower() not in ("nan", "none", ""):
                 drivers.append(f"Field notes recorded {label} as {value}")
 
+        # Same guarantee in the persistence fallback: floor, then derive the band,
+        # so a posted beach whose last sample was clean cannot render Low.
+        raw_p_exceed_fallback = p_exceed
+        p_exceed, fallback_floor_applied = advisory_floored_probability(p_exceed, active_advisory)
         return ForecastRecord(
             beach_id=beach_id,
             forecast_date=forecast_date,
-            risk_band=("Advisory" if active_advisory else risk_band(p_exceed)),
+            risk_band=risk_band(p_exceed),
             model_risk_band=(risk_band(p_exceed) if active_advisory else None),
             p_exceed=float(p_exceed),
-            p_exceed_raw=float(p_exceed),
-            advisory_floor_applied=False,
+            p_exceed_raw=float(raw_p_exceed_fallback),
+            advisory_floor_applied=fallback_floor_applied,
             predicted_log_enterococcus=log10(max(latest_value, 1.0)),
             model_version="derived-persistence-v0",
             forecast_generated_at=datetime.now(UTC),

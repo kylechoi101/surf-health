@@ -245,7 +245,11 @@ def test_advisory_window_is_judged_as_of_snapshot_generated_at(tmp_path):
     repository = _repo(snapshot_path)
     assert BEACH_ID in repository._active_advisory_beach_ids()
     forecast = repository.get_forecast(BEACH_ID, today)
-    assert forecast.risk_band == "Advisory"
+    # Contract change (2026-07-30): a posted station keeps the MODEL band, floored
+    # to >= High so it can never read Low; the posting rides on
+    # official_advisory_active rather than replacing the band.
+    assert forecast.risk_band == "High"
+    assert forecast.advisory_floor_applied is True
     assert forecast.official_advisory_active is True
 
 

@@ -50,6 +50,26 @@ def risk_band(probability: float | None) -> str | None:
     return "Very High"
 
 
+def advisory_floored_probability(
+    probability: float | None, advisory_active: bool
+) -> tuple[float | None, bool]:
+    """Vendored twin of app.ml.calibration.advisory_floored_probability.
+
+    Keep in sync with the backend copy. Lifts p_exceed to the High cutpoint while
+    a posting is active, so a posted beach can never render Low/Moderate now that
+    risk_band stays the model's band instead of being replaced by "Advisory".
+    """
+    if not advisory_active or probability is None:
+        return probability, False
+    try:
+        p = float(probability)
+    except (TypeError, ValueError):
+        return probability, False
+    if math.isnan(p) or p >= _HIGH_THRESHOLD:
+        return probability, False
+    return _HIGH_THRESHOLD, True
+
+
 OFFICIAL_ADVISORY_DRIVER = "Official health advisory is active for this station."
 ACTIVE_WINDOW_DAYS = 14  # Match serving_repository's 14-day acute window
 
@@ -139,9 +159,20 @@ def _build_forecast_block(fc_row: pd.Series, has_active_advisory: bool) -> dict:
         raw_p = _finite_or_none(row.get("p_exceed"))
     model_band = risk_band(raw_p) if raw_p is not None else row.get("risk_band")
     if has_active_advisory:
+        # risk_band stays the MODEL's band; the posting is signalled by
+        # official_advisory_active, which the UI renders as a separate badge.
+        # advisory_floored_probability guarantees the band cannot read Low or
+        # Moderate under an active posting, so badge and band can't contradict.
+        floored_p, floor_applied = advisory_floored_probability(
+            raw_p if raw_p is not None else 0.0, True
+        )
         row["official_advisory_active"] = True
+        row["p_exceed"] = floored_p
+        row["risk_band"] = risk_band(floored_p)
+        # Retained for API compatibility; equals risk_band now that the band is
+        # never replaced. Clients should read official_advisory_active instead.
         row["model_risk_band"] = model_band
-        row["risk_band"] = "Advisory"
+        row["advisory_floor_applied"] = bool(row.get("advisory_floor_applied")) or floor_applied
         row["forecast_label_mode"] = "official_advisory_override"
         drivers = list(row.get("top_drivers") or [])
         drivers = [d for d in drivers if d != OFFICIAL_ADVISORY_DRIVER]
@@ -240,6 +271,10 @@ def bake(curated: Path, out: Path) -> None:
     # fields the web expects (member names/codes, advisory, worst risk band) are
     # aggregated here from beach_rows.
     beach_by_id = {r["id"]: r for r in beach_rows}
+    # No "Advisory" entry: it is no longer a band value. A parent's advisory state
+    # rides on has_active_advisory (OR across members, deliberate), while the band
+    # is the worst MODEL band among members. "Advisory" is kept mapping to the top
+    # only so a stale row baked by an older pipeline still sorts sanely.
     order = {"Low": 1, "Moderate": 2, "High": 3, "Very High": 4, "Advisory": 5}
 
     def _member_ids(raw) -> list[str]:

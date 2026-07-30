@@ -211,7 +211,11 @@ def test_serving_snapshot_limits_hot_path_rows_and_repository_serves_contract(tm
     assert beach.name == "Main Beach"
 
     forecast = repository.get_forecast(beach_id, date(2026, 4, 20))
-    assert forecast.risk_band == "Advisory"
+    # Contract change (2026-07-30): a posted station keeps the MODEL band, floored
+    # to >= High so it can never read Low; the posting rides on
+    # official_advisory_active rather than replacing the band.
+    assert forecast.risk_band == "High"
+    assert forecast.advisory_floor_applied is True
     assert forecast.official_advisory_active is True
     assert forecast.model_risk_band == "Low"
     assert forecast.forecast_label_mode == "official_advisory_override"
@@ -231,8 +235,13 @@ def test_serving_snapshot_limits_hot_path_rows_and_repository_serves_contract(tm
     assert observations.advisories[0].advisory_website == "https://www.ocgov.com/beach/advisory"
 
     parents = repository.list_parent_beaches()
-    assert parents[0].risk_band == "Advisory"
+    # Parent contract (2026-07-30): the advisory rides on has_active_advisory --
+    # an OR across members, so ANY posted member flags the parent (deliberate) --
+    # while risk_band is the worst MODEL band among members, so each area still
+    # shows its own modelled result. The posted member is floored to >= High
+    # individually, so it cannot drag the parent below High either.
     assert parents[0].has_active_advisory is True
+    assert parents[0].risk_band == "High"
 
     health = repository.get_system_health()
     assert health.is_beta_product is True

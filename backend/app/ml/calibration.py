@@ -260,6 +260,33 @@ def risk_band(probability: float) -> str:
     return "Very High"
 
 
+def advisory_floored_probability(probability: float, advisory_active: bool) -> tuple[float, bool]:
+    """Lift ``p_exceed`` to the High cutpoint while an official posting is active.
+
+    This is the safety guarantee that lets ``risk_band`` stay the MODEL's band on a
+    posted beach instead of being replaced by a synthetic "Advisory" band: floored
+    at ``_HIGH_THRESHOLD`` a posted beach can never display Low or Moderate, so the
+    badge and the band can never contradict each other.
+
+    It exists because the pipeline's own floor (``advisory_active_recent_for_floor``,
+    baked into the training feature frame) and the serve-time advisory flag (read
+    from ``advisories.parquet``) are DIFFERENT sources and can disagree — a posting
+    filed after the feature frame was built is absent from the feature. Measured
+    2026-07-30 on the shipped bake: of 18 posted beaches with a forecast the
+    feature-driven floor fired on 16, and the 2 it missed (Gazos Creek Access
+    p=0.056, Keller Beach p=0.118) would have rendered "Low" under an active
+    advisory. Driving the floor from the same flag that raises the badge closes
+    that gap by construction.
+
+    Returns ``(probability, floor_applied)``.
+    """
+    if not advisory_active:
+        return probability, False
+    if probability >= _HIGH_THRESHOLD:
+        return probability, False
+    return _HIGH_THRESHOLD, True
+
+
 # Sample-recency bands (mirrors app.schemas.domain.sample_recency_band) that the
 # confidence-aware display gate treats as "too stale to fire a strong warning"
 # on a *model-only* prediction. Kept here so calibration owns the band policy.

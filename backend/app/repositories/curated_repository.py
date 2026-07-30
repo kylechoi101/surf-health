@@ -15,7 +15,7 @@ import pandas as pd
 import pyarrow.parquet as pq
 from fastapi import HTTPException
 
-from app.ml.calibration import risk_band
+from app.ml.calibration import advisory_floored_probability, risk_band
 from app.repositories.base import BeachRepository
 from app.services.shore_normal import compute_shore_normal_deg
 from app.schemas.domain import (
@@ -545,9 +545,17 @@ class CuratedBeachRepository(BeachRepository):
             row["forecast_age_hours"] = None
 
         if active_advisory:
+            # risk_band stays the MODEL's band; official_advisory_active carries the
+            # posting and the UI renders it as a separate badge. The floor keeps a
+            # posted beach out of Low/Moderate so badge and band cannot disagree.
+            floored_p, floor_applied = advisory_floored_probability(
+                raw_p_exceed if raw_p_exceed is not None else float(row["p_exceed"]), True
+            )
             row["official_advisory_active"] = True
+            row["p_exceed"] = floored_p
+            row["risk_band"] = risk_band(floored_p)
             row["model_risk_band"] = model_risk_band
-            row["risk_band"] = "Advisory"
+            row["advisory_floor_applied"] = bool(row.get("advisory_floor_applied")) or floor_applied
             row["forecast_label_mode"] = "official_advisory_override"
             row["top_drivers"] = self._advisory_override_drivers(row.get("top_drivers"))
             row["advisory_website"] = self._active_advisory_website(beach_id)
@@ -635,19 +643,24 @@ class CuratedBeachRepository(BeachRepository):
         storm = latest.get("storm_drain_flow")
         if storm and str(storm).lower() not in ("nan", "none", ""):
             drivers.append(f"Storm drain flow noted as {storm}")
-        model_risk_band = risk_band(p_exceed)
         active_advisory = self._has_active_advisory(beach_id)
+        # Floor before deriving the band: this persistence fallback must obey the
+        # same guarantee as the model path, or a posted beach whose last sample was
+        # clean would render Low with an advisory badge beside it.
+        raw_p_exceed = p_exceed
+        p_exceed, floor_applied = advisory_floored_probability(p_exceed, active_advisory)
+        model_risk_band = risk_band(p_exceed)
         if active_advisory:
             drivers = self._advisory_override_drivers(drivers)
 
         return ForecastRecord(
             beach_id=beach_id,
             forecast_date=forecast_date,
-            risk_band="Advisory" if active_advisory else model_risk_band,
+            risk_band=model_risk_band,
             model_risk_band=model_risk_band if active_advisory else None,
             p_exceed=float(p_exceed),
-            p_exceed_raw=float(p_exceed),
-            advisory_floor_applied=False,
+            p_exceed_raw=float(raw_p_exceed),
+            advisory_floor_applied=floor_applied,
             predicted_log_enterococcus=predicted_log,
             lower_prediction_interval=None,
             upper_prediction_interval=None,
