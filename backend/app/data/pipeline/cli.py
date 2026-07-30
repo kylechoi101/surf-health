@@ -157,6 +157,36 @@ def load_beachwatch_results_incremental(path: Path, min_date: pd.Timestamp) -> p
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
+def refresh_latest_official_sample_at(
+    stations: pd.DataFrame, observations: pd.DataFrame
+) -> pd.DataFrame:
+    """Recompute each beach's newest sample stamp from ``observations``.
+
+    MUST be re-run after any source is merged in late, or the stations frame
+    keeps the value computed from whatever history existed when the bundle was
+    first built -- and ``latest_official_sample_at`` is exactly what the apps
+    render as "last sampled". Measured on 2026-07-30, before this was wired into
+    the late merges: 75 beaches carried a stamp BEHIND their own observations,
+    Orange County by up to 63 days (stamp 2026-04-29, newest row 2026-07-01),
+    Los Angeles and Santa Barbara by ~7. Those beaches had fresh rows in the
+    label frame while the UI showed them two months stale.
+
+    A beach with no rows keeps its previous value rather than going null.
+    """
+    if observations.empty or "beach_id" not in observations.columns:
+        return stations
+    latest_samples = (
+        observations.groupby("beach_id")["sample_time"].max().rename("latest_official_sample_at")
+    )
+    if latest_samples.empty:
+        return stations
+    stations = stations.merge(latest_samples, on="beach_id", how="left", suffixes=("", "_new"))
+    stations["latest_official_sample_at"] = stations["latest_official_sample_at_new"].fillna(
+        stations["latest_official_sample_at"]
+    )
+    return stations.drop(columns=["latest_official_sample_at_new"])
+
+
 def normalize_beachwatch_bundle(
     stations_path: Path,
     results_path: Path | None,
@@ -198,17 +228,7 @@ def normalize_beachwatch_bundle(
     advisories = advisories.loc[advisories["beach_id"].isin(stations["beach_id"])].reset_index(drop=True)
     if not observations.empty and "beach_id" in observations.columns:
         observations = observations.loc[observations["beach_id"].isin(stations["beach_id"])].reset_index(drop=True)
-    latest_samples = (
-        observations.groupby("beach_id")["sample_time"].max().rename("latest_official_sample_at")
-        if not observations.empty and "beach_id" in observations.columns
-        else pd.Series(dtype="datetime64[ns]", name="latest_official_sample_at")
-    )
-    if not latest_samples.empty:
-        stations = stations.merge(latest_samples, on="beach_id", how="left", suffixes=("", "_new"))
-        stations["latest_official_sample_at"] = stations["latest_official_sample_at_new"].fillna(
-            stations["latest_official_sample_at"]
-        )
-        stations = stations.drop(columns=["latest_official_sample_at_new"])
+    stations = refresh_latest_official_sample_at(stations, observations)
 
     beach_day = build_beach_day_frame(observations, stations, advisories)
     return {
@@ -299,6 +319,21 @@ def main() -> None:
         default=None,
         help="Backfill mode: fetch these calendar years in full instead of the "
              "rolling --beachwatch-live-days window. e.g. 2024 2025 2026",
+    )
+    parser.add_argument(
+        "--with-county-direct",
+        action="store_true",
+        help="Gap-fill observations from county_direct_samples.parquet (the "
+             "county/city health-department scrape). Additive and date-keyed: it "
+             "only adds beach-days no other source covers. Needed because San "
+             "Francisco reports into the state route weeks late.",
+    )
+    parser.add_argument(
+        "--county-direct-samples",
+        type=Path,
+        default=None,
+        help="Override the county_direct_samples.parquet path "
+             "(default: <curated_dir>/county_direct_samples.parquet).",
     )
     parser.add_argument("--merge-ceden", action="store_true")
     parser.add_argument("--ceden-results-csv", type=Path)
@@ -492,12 +527,51 @@ def main() -> None:
                 bundle["observations"] = merge_live_into_observations(
                     bundle["observations"], _live
                 )
-                # observations changed -> beach_day (the training/label frame) is stale.
+                # observations changed -> the newest-sample stamp the apps render
+                # AND beach_day (the training/label frame) are both stale.
+                bundle["stations"] = refresh_latest_official_sample_at(
+                    bundle["stations"], bundle["observations"]
+                )
                 bundle["beach_day"] = build_beach_day_frame(
                     bundle["observations"], bundle["stations"], bundle["advisories"]
                 )
             else:
                 print("[beachwatch-live] no usable rows returned; leaving observations unchanged")
+        if args.with_county_direct:
+            # Fourth source, additive and lowest-precedence. Reads the parquet
+            # that scripts/fetch_county_advisories.py writes -- which in the daily
+            # workflow runs AFTER this step, so we see the previous run's scrape
+            # (<=1 day old). That is deliberate: the merge has to happen here,
+            # before the precip/solar/marine joins below, or the new rows would
+            # land in beach_day with every covariate all-NaN. One day of lag on a
+            # weekly-sampled county is a rounding error against the 30 it fixes.
+            from app.data.pipeline.county_direct import (
+                merge_county_direct_into_observations,
+                normalize_county_direct_samples,
+            )
+
+            _direct_path = args.county_direct_samples or (
+                Path(settings.curated_dir) / "county_direct_samples.parquet"
+            )
+            if not _direct_path.exists():
+                print(f"[county-direct] {_direct_path} not found; skipping")
+            else:
+                _direct_raw = pd.read_parquet(_direct_path)
+                print(f"[county-direct] read {len(_direct_raw)} rows from {_direct_path}")
+                _direct = normalize_county_direct_samples(
+                    _direct_raw, bundle["stations"], settings.epa_marine_enterococcus_stv
+                )
+                _before = len(bundle["observations"])
+                bundle["observations"] = merge_county_direct_into_observations(
+                    bundle["observations"], _direct
+                )
+                if len(bundle["observations"]) != _before:
+                    bundle["stations"] = refresh_latest_official_sample_at(
+                        bundle["stations"], bundle["observations"]
+                    )
+                    bundle["beach_day"] = build_beach_day_frame(
+                        bundle["observations"], bundle["stations"], bundle["advisories"]
+                    )
         uv_daily = pd.DataFrame()
         if args.with_external_covariates:
             bundle["stations"], bundle["beach_day"], uv_daily = asyncio.run(

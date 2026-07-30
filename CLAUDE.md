@@ -11,6 +11,7 @@ backend/           Python FastAPI service + ML pipeline
         hydrology_sources.py   UsgsNwisConnector, OpenMeteoHistoricalPrecipConnector,
                                OpenMeteoHistoricalSolarWindConnector (ERA5-Land archive)
       pipeline/
+        county_direct.py       County-direct samples -> observations (SF recency; date-keyed)
         cli.py                 Main pipeline entry point (--normalize-beachwatch, --with-hydrology,
                                --with-solar-wind, etc.)
         features.py            Feature column lists + add_temporal_features()
@@ -41,6 +42,7 @@ Full refresh (what CI does):
 python -m app.data.pipeline.cli \
   --normalize-beachwatch --stations-csv ... --results-csv ... --advisories-csv ... \
   --merge-ceden --max-ceden-rows 50000 \
+  --with-beachwatch-live --beachwatch-live-days 30 --with-county-direct \
   --with-external-covariates --with-hydrology --with-solar-wind
 ```
 
@@ -79,6 +81,45 @@ per-spot swell-window modeling (deferred fast-follow).
 - **One-time-station cap** (`pipeline/station_quality.py`): `support_status_for` marks stations
   whose sampling history spans **<90 days** as `unsupported` (one-time incidents, out of training).
 - **Negative enterococcus values** (−1000 sentinels) are dropped → NaN in normalization.
+
+### County-direct sample source — SF recency fix (2026-07-30)
+
+`--with-county-direct` (`pipeline/county_direct.py`) makes
+`county_direct_samples.parquet` a **fourth observations source**. That file — written by
+`scripts/fetch_county_advisories.py` — was previously a dead end: it fed the advisory/closure
+layer only, and nothing read the sample rows.
+
+- **The bug it fixes:** San Francisco publishes weekly results to its own Socrata dataset
+  (`data.sfgov.org` resource `v3fv-x3ux`) within days, but reports into the State Water Board —
+  the route `observations.parquet` is built from — weeks late. On 2026-07-30 every state-routed
+  source held **zero** SF rows for July while the direct feed already had 07-06/13/20/27. SF's
+  serving anchor read 30 days stale next to an **active 07-27 posting** the advisory layer had
+  published from the same samples. Merging adds 68 SF beach-days incl. **12 exceedances** the
+  model had never seen, moving 17 of 21 SF beaches from ~30d stale to 3d.
+- **The merge key is the sample DATE, not `sample_time`.** The state feed carries real collection
+  times (`10:25:00`); this feed is date-only, so the same physical sample hashes apart on
+  `sample_time` and `merge_live_into_observations`'s time-keyed collapse would NOT catch it.
+  Measured over the overlap window (04-20..06-30): all **206/206** state SF rows match a direct
+  row on (beach_id, date) with an identical value — i.e. time-keying would have inserted 206
+  duplicates. Same mirror-bug class as `738c99d`'s "1600" vs "EPA 1600", new guise. Value is
+  deliberately OUT of the key too, so a revised result can't slip in as a second beach-day.
+- **Gap-fill only, never displaces:** a direct row whose (beach_id, date, analyte) any source
+  already covers is dropped. Enterococcus only (SF's coliform-driven postings — e.g. Baker Beach
+  East 07-27, COLI_FECAL 4200 with entero at 10 — stay advisory-only, so the two layers will not
+  agree beach-for-beach). Counties are allowlisted (`INGEST_COUNTIES`, SF only): Sonoma/Humboldt
+  are in the parquet but months stale and report freshwater indicators.
+- **Ordering:** runs inside bundle construction, right after the live merge — it must precede the
+  precip/solar/marine joins or the new rows land in `beach_day` with every covariate all-NaN.
+  Consequence: it reads the **previous** run's scrape (`fetch_county_advisories.py` runs after the
+  pipeline in the daily workflow), so SF lands at ~4d lag rather than 3. Deliberate trade.
+- **`latest_official_sample_at` is now recomputed after every late merge**
+  (`cli.py::refresh_latest_official_sample_at`). It is what the apps render as "last sampled", and
+  it was computed once during bundle construction — so `--with-beachwatch-live`'s rows never
+  updated it. Measured on the shipped `beaches.parquet`: **75 beaches carried a stamp BEHIND their
+  own observations** — Orange County by up to **63 days** (stamp 04-29, newest row 07-01), LA and
+  Santa Barbara by ~7 — rising to 92 once the SF rows merge. Those beaches had fresh rows in the
+  label frame while the UI showed them two months stale. This is an independent **pre-existing**
+  bug that `--with-beachwatch-live` introduced, not an SF one; the fix clears all of them (92 → 0).
 
 ### Pipeline robustness guards (2026-06-11)
 
