@@ -1,16 +1,16 @@
 {
-  "generated_at": "2026-07-29T23:39:16.800390+00:00",
+  "generated_at": "2026-07-30T05:02:15.712942+00:00",
   "forecast_date": "2026-07-29",
   "model_version": "xgb-undersample-ensemble-curated-v0",
   "risk_threshold": 0.2,
-  "total_beaches": 509,
-  "active_advisories": 20,
-  "agreement_rate": 0.8,
+  "total_beaches": 520,
+  "active_advisories": 23,
+  "agreement_rate": 0.826,
   "pool_metrics": {
     "acute": {
-      "advised_beaches": 20,
-      "model_flagged": 16,
-      "agreement_rate": 0.8
+      "advised_beaches": 23,
+      "model_flagged": 19,
+      "agreement_rate": 0.826
     },
     "closure": {
       "advised_beaches": 0,
@@ -47,40 +47,47 @@
       {
         "beach_id": "ca826873-east-bay-parks-district-keller-beach-contra-costa-co-keller-south-beach",
         "risk_band": "Low",
-        "p_exceed": 0.122,
+        "p_exceed": 0.124,
         "pool": "acute",
         "advisory_age_days": 0
       },
       {
         "beach_id": "ca279698-long-beach-city-long-beach-b-56",
         "risk_band": "Low",
-        "p_exceed": 0.122,
+        "p_exceed": 0.124,
         "pool": "acute",
-        "advisory_age_days": 0
+        "advisory_age_days": 1
       },
       {
         "beach_id": "ca279698-long-beach-city-long-beach-b-5",
         "risk_band": "Low",
-        "p_exceed": 0.122,
+        "p_exceed": 0.124,
         "pool": "acute",
-        "advisory_age_days": 0
+        "advisory_age_days": 1
       },
       {
         "beach_id": "ca534500-san-mateo-gazos-creek-access-gazos-creek-access",
         "risk_band": "Low",
-        "p_exceed": 0.154,
+        "p_exceed": 0.124,
         "pool": "acute",
-        "advisory_age_days": 0
+        "advisory_age_days": 1
       }
     ],
     "worst_chronic": []
   },
   "false_positives": {
-    "count": 71,
+    "count": 69,
     "description": "Model says High/VeryHigh but no active advisory",
     "worst": [
       {
         "beach_id": "ca104746-san-diego-tijuana-slough-national-wildlife-refuge-ib-040",
+        "risk_band": "High",
+        "p_exceed": 0.495,
+        "pool": "none",
+        "advisory_age_days": null
+      },
+      {
+        "beach_id": "ca876094-san-diego-la-jolla-shores-beach-fm-080",
         "risk_band": "High",
         "p_exceed": 0.495,
         "pool": "none",
@@ -94,34 +101,6 @@
         "advisory_age_days": null
       },
       {
-        "beach_id": "ca506450-san-diego-san-diego-bay-eh-120",
-        "risk_band": "High",
-        "p_exceed": 0.495,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
-        "beach_id": "ca922367-san-diego-torrey-pines-city-beach-fm-090",
-        "risk_band": "High",
-        "p_exceed": 0.495,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
-        "beach_id": "ca650180-san-diego-powerhouse-park-15th-street-eh-360",
-        "risk_band": "High",
-        "p_exceed": 0.495,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
-        "beach_id": "ca412549-orange-huntington-harbour-bhh13",
-        "risk_band": "High",
-        "p_exceed": 0.495,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
         "beach_id": "marin-all-marin-county-inkwells",
         "risk_band": "High",
         "p_exceed": 0.495,
@@ -129,7 +108,7 @@
         "advisory_age_days": null
       },
       {
-        "beach_id": "ca402275-santa-barbara-el-capitan-state-beach-wp0000013",
+        "beach_id": "ca412549-orange-huntington-harbour-bhh13",
         "risk_band": "High",
         "p_exceed": 0.495,
         "pool": "none",
@@ -150,20 +129,6 @@
         "advisory_age_days": null
       },
       {
-        "beach_id": "ca447069-san-mateo-pacifica-state-beach-linda-mar-beach-5",
-        "risk_band": "High",
-        "p_exceed": 0.495,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
-        "beach_id": "ca447069-san-mateo-pacifica-state-beach-linda-mar-beach-7",
-        "risk_band": "High",
-        "p_exceed": 0.495,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
         "beach_id": "ca781317-san-mateo-marlin-park-foster-city-marlin-park",
         "risk_band": "High",
         "p_exceed": 0.495,
@@ -171,7 +136,14 @@
         "advisory_age_days": null
       },
       {
-        "beach_id": "ca506450-san-diego-san-diego-bay-eh-090",
+        "beach_id": "ca674616-san-mateo-kiteboard-beach-kiteboard-beach",
+        "risk_band": "High",
+        "p_exceed": 0.495,
+        "pool": "none",
+        "advisory_age_days": null
+      },
+      {
+        "beach_id": "ca289877-san-diego-mission-bay-ventura-cove-mb-223",
         "risk_band": "High",
         "p_exceed": 0.495,
         "pool": "none",
@@ -185,21 +157,35 @@
         "advisory_age_days": null
       },
       {
-        "beach_id": "ca789152-san-diego-carlsbad-municipal-beach-eh-480",
+        "beach_id": "ca650180-san-diego-powerhouse-park-15th-street-eh-360",
         "risk_band": "High",
         "p_exceed": 0.495,
         "pool": "none",
         "advisory_age_days": null
       },
       {
-        "beach_id": "ca192160-san-diego-mission-bay-mariners-basin-mb-170",
+        "beach_id": "ca006650-orange-newport-beach-bgcd",
         "risk_band": "High",
         "p_exceed": 0.495,
         "pool": "none",
         "advisory_age_days": null
       },
       {
-        "beach_id": "ca108339-san-diego-mission-bay-mb-100",
+        "beach_id": "ca506450-san-diego-san-diego-bay-eh-120",
+        "risk_band": "High",
+        "p_exceed": 0.495,
+        "pool": "none",
+        "advisory_age_days": null
+      },
+      {
+        "beach_id": "ca922367-san-diego-torrey-pines-city-beach-fm-090",
+        "risk_band": "High",
+        "p_exceed": 0.495,
+        "pool": "none",
+        "advisory_age_days": null
+      },
+      {
+        "beach_id": "ca068221-san-diego-imperial-beach-municipal-beach-other-eh-010",
         "risk_band": "High",
         "p_exceed": 0.495,
         "pool": "none",
@@ -213,7 +199,21 @@
         "advisory_age_days": null
       },
       {
-        "beach_id": "ca068221-san-diego-imperial-beach-municipal-beach-other-eh-010",
+        "beach_id": "ca134387-san-diego-north-imperial-beach-ib-060",
+        "risk_band": "High",
+        "p_exceed": 0.495,
+        "pool": "none",
+        "advisory_age_days": null
+      },
+      {
+        "beach_id": "ca152716-san-diego-cardiff-state-beach-se-060",
+        "risk_band": "High",
+        "p_exceed": 0.495,
+        "pool": "none",
+        "advisory_age_days": null
+      },
+      {
+        "beach_id": "ca397227-san-diego-mission-bay-campland-on-the-bay-mb-080",
         "risk_band": "High",
         "p_exceed": 0.495,
         "pool": "none",
