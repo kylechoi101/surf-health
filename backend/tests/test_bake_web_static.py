@@ -238,3 +238,52 @@ def test_posted_beach_can_never_render_low_or_moderate():
     assert block["risk_band"] == "Low"
     assert block["p_exceed"] == 0.02
     assert block["official_advisory_active"] is False
+
+
+def test_display_and_feature_advisory_gates_are_different_questions():
+    """Why forecasts.parquet needed its own floor fix (2026-07-30).
+
+    Two advisory gates coexist and legitimately disagree:
+      * MODEL feature ``advisory_active_recent_for_floor`` -- "active AND started
+        within 365d, or Tijuana River" -- deliberately excludes stale bookkeeping
+        advisories so they don't pollute a training feature.
+      * DISPLAY authority ``filter_currently_active`` -- "closure, OR posted within
+        14d" -- which is what raises the badge users see.
+
+    training._export_forecasts floored on the feature gate alone, so when only the
+    display gate fired the parquet shipped Low/Moderate for a posted beach while
+    every read path (API + web bake) floored it to High. Users were safe, but the
+    artifact at rest -- and forecast_history, and the served_metrics scored from it
+    -- disagreed with what was actually served. Measured that day: 5 such beaches.
+
+    This pins the policies as genuinely distinct, so a future edit that "unifies"
+    them by deleting one has to do so deliberately.
+    """
+    from app.repositories.curated_repository import filter_currently_active
+
+    now = pd.Timestamp.now(tz="UTC")
+    advisories = pd.DataFrame(
+        [
+            # Posted 3 days ago: BOTH gates fire.
+            {"beach_id": "recent", "status": "active", "advisory_type": "posting",
+             "started_at": now - pd.Timedelta(days=3)},
+            # A closure with no recent start: the display gate fires (closures are
+            # never age-gated); the 365d feature gate would not.
+            {"beach_id": "old-closure", "status": "active", "advisory_type": "closure",
+             "started_at": now - pd.Timedelta(days=800)},
+            # Lifted: neither fires.
+            {"beach_id": "inactive", "status": "inactive", "advisory_type": "posting",
+             "started_at": now - pd.Timedelta(days=1)},
+        ]
+    )
+    display_active = set(filter_currently_active(advisories)["beach_id"])
+    assert "recent" in display_active
+    assert "old-closure" in display_active, "closures are never age-gated for display"
+    assert "inactive" not in display_active
+
+    # And the floor must lift any of them out of Low/Moderate once it fires.
+    for raw in (0.0, 0.1245, 0.2216, 0.29999):
+        row = pd.Series({"beach_id": "b", "p_exceed_raw": raw, "p_exceed": raw})
+        block = bake._build_forecast_block(row, has_active_advisory=True)
+        assert block["risk_band"] not in ("Low", "Moderate")
+        assert block["p_exceed"] >= 0.30

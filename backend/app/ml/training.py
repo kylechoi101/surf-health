@@ -3690,6 +3690,26 @@ def _export_forecasts(
     )
     uv_lookup = _build_uv_lookup(uv_daily, forecast_date)
     station_lookup = stations.set_index("beach_id")
+    # Beaches the SERVE path considers posted. The feature column below
+    # (advisory_active_recent_for_floor) answers a different question -- it gates on
+    # "started within 365d OR Tijuana River" to keep stale bookkeeping advisories out
+    # of a MODEL feature -- while display authority is filter_currently_active
+    # ("closure, OR posted within 14d"). Those two legitimately disagree, and when
+    # they do the parquet shipped a band the serve layer then floored, so
+    # forecasts.parquet (and forecast_history, and the served_metrics computed from
+    # it) disagreed with what users actually saw. Measured 2026-07-30: 5 posted
+    # beaches carried Low/Moderate in the parquet while every read path served High.
+    _display_active_advisory_ids: set[str] = set()
+    try:
+        from app.repositories.curated_repository import filter_currently_active
+
+        if advisories is not None and not advisories.empty:
+            _display_active_advisory_ids = set(
+                filter_currently_active(advisories)["beach_id"].astype(str).tolist()
+            )
+    except Exception as exc:  # noqa: BLE001 - never let this sink a training run
+        print(f"[forecast] display-advisory floor unavailable ({exc}); feature gate only",
+              file=sys.stderr, flush=True)
     if not forecast_metadata.empty:
         forecast_generated_at = datetime.now(UTC).isoformat()
         for i, (idx, probability, density_prediction, scope) in enumerate(zip(
@@ -3709,7 +3729,14 @@ def _export_forecasts(
                     if zip_key in uv_lookup.index:
                         uv_index = _safe_float(uv_lookup.loc[zip_key].get("uv_index"))
                         uv_alert = uv_lookup.loc[zip_key].get("uv_alert")
-            advisory_floor_trigger = _safe_float(feature_row.get("advisory_active_recent_for_floor")) or 0.0
+            # Floor on EITHER signal: the model-feature gate, or the display gate the
+            # serve path uses. Whichever fires, the written band matches what the API
+            # and the web bake will render, so the artifact at rest, the served
+            # response, and served_metrics all agree.
+            advisory_floor_trigger = (
+                (_safe_float(feature_row.get("advisory_active_recent_for_floor")) or 0.0)
+                or (str(beach_id) in _display_active_advisory_ids)
+            )
             p_raw = float(probability)
             served_p_exceed = max(p_raw, _HIGH_THRESHOLD) if advisory_floor_trigger else p_raw
             advisory_floor_applied = bool(advisory_floor_trigger and p_raw < _HIGH_THRESHOLD)
