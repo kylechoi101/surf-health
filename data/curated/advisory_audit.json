@@ -1,21 +1,21 @@
 {
-  "generated_at": "2026-07-30T18:46:11.240882+00:00",
+  "generated_at": "2026-07-31T03:30:58.270873+00:00",
   "forecast_date": "2026-07-30",
   "model_version": "xgb-undersample-ensemble-curated-v0",
   "risk_threshold": 0.2,
-  "total_beaches": 520,
-  "active_advisories": 20,
-  "agreement_rate": 0.95,
+  "total_beaches": 531,
+  "active_advisories": 19,
+  "agreement_rate": 1.0,
   "pool_metrics": {
     "acute": {
-      "advised_beaches": 20,
-      "model_flagged": 19,
-      "agreement_rate": 0.95
+      "advised_beaches": 18,
+      "model_flagged": 18,
+      "agreement_rate": 1.0
     },
     "closure": {
-      "advised_beaches": 0,
-      "model_flagged": 0,
-      "agreement_rate": null
+      "advised_beaches": 1,
+      "model_flagged": 1,
+      "agreement_rate": 1.0
     },
     "chronic": {
       "advised_beaches": 0,
@@ -34,167 +34,159 @@
     }
   },
   "false_negatives": {
-    "count": 1,
+    "count": 0,
     "description": "Active advisory but model says Low/Moderate",
     "by_pool": {
-      "acute": 1,
+      "acute": 0,
       "closure": 0,
       "chronic": 0,
       "stale": 0,
       "unknown_duration": 0
     },
-    "worst_acute": [
-      {
-        "beach_id": "ca826873-east-bay-parks-district-keller-beach-contra-costa-co-keller-south-beach",
-        "risk_band": "Low",
-        "p_exceed": 0.124,
-        "pool": "acute",
-        "advisory_age_days": 0
-      }
-    ],
+    "worst_acute": [],
     "worst_chronic": []
   },
   "false_positives": {
-    "count": 76,
+    "count": 83,
     "description": "Model says High/VeryHigh but no active advisory",
     "worst": [
       {
-        "beach_id": "marin-all-marin-county-inkwells",
+        "beach_id": "ca735620-los-angeles-santa-monica-state-beach-smb-3-3",
         "risk_band": "High",
-        "p_exceed": 0.495,
+        "p_exceed": 0.497,
         "pool": "none",
         "advisory_age_days": null
       },
       {
-        "beach_id": "ca152716-san-diego-cardiff-state-beach-se-060",
+        "beach_id": "marin-all-marin-county-inkwells",
         "risk_band": "High",
-        "p_exceed": 0.495,
+        "p_exceed": 0.497,
+        "pool": "none",
+        "advisory_age_days": null
+      },
+      {
+        "beach_id": "ca506450-san-diego-san-diego-bay-eh-211",
+        "risk_band": "High",
+        "p_exceed": 0.497,
         "pool": "none",
         "advisory_age_days": null
       },
       {
         "beach_id": "ca397227-san-diego-mission-bay-campland-on-the-bay-mb-080",
         "risk_band": "High",
-        "p_exceed": 0.495,
+        "p_exceed": 0.497,
+        "pool": "none",
+        "advisory_age_days": null
+      },
+      {
+        "beach_id": "ca152716-san-diego-cardiff-state-beach-se-060",
+        "risk_band": "High",
+        "p_exceed": 0.497,
+        "pool": "none",
+        "advisory_age_days": null
+      },
+      {
+        "beach_id": "ca134387-san-diego-north-imperial-beach-ib-060",
+        "risk_band": "High",
+        "p_exceed": 0.497,
+        "pool": "none",
+        "advisory_age_days": null
+      },
+      {
+        "beach_id": "ca068221-san-diego-imperial-beach-municipal-beach-other-eh-010",
+        "risk_band": "High",
+        "p_exceed": 0.497,
+        "pool": "none",
+        "advisory_age_days": null
+      },
+      {
+        "beach_id": "ca326620-san-diego-moonlight-beach-eh-420",
+        "risk_band": "High",
+        "p_exceed": 0.497,
         "pool": "none",
         "advisory_age_days": null
       },
       {
         "beach_id": "ca789152-san-diego-carlsbad-municipal-beach-eh-480",
         "risk_band": "High",
-        "p_exceed": 0.495,
+        "p_exceed": 0.497,
         "pool": "none",
         "advisory_age_days": null
       },
       {
-        "beach_id": "ca876094-san-diego-la-jolla-shores-beach-fm-080",
+        "beach_id": "ca192160-san-diego-mission-bay-mariners-basin-mb-170",
         "risk_band": "High",
-        "p_exceed": 0.495,
+        "p_exceed": 0.497,
         "pool": "none",
         "advisory_age_days": null
       },
       {
-        "beach_id": "ca606869-san-diego-south-carlsbad-state-beach-eh-440",
+        "beach_id": "ca922367-san-diego-torrey-pines-city-beach-fm-090",
         "risk_band": "High",
-        "p_exceed": 0.495,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
-        "beach_id": "ca506450-san-diego-san-diego-bay-eh-120",
-        "risk_band": "High",
-        "p_exceed": 0.495,
+        "p_exceed": 0.497,
         "pool": "none",
         "advisory_age_days": null
       },
       {
         "beach_id": "ca104746-san-diego-tijuana-slough-national-wildlife-refuge-ib-040",
         "risk_band": "High",
-        "p_exceed": 0.495,
+        "p_exceed": 0.497,
+        "pool": "none",
+        "advisory_age_days": null
+      },
+      {
+        "beach_id": "ca876094-san-diego-la-jolla-shores-beach-fm-080",
+        "risk_band": "High",
+        "p_exceed": 0.497,
+        "pool": "none",
+        "advisory_age_days": null
+      },
+      {
+        "beach_id": "ca606869-san-diego-south-carlsbad-state-beach-eh-440",
+        "risk_band": "High",
+        "p_exceed": 0.497,
+        "pool": "none",
+        "advisory_age_days": null
+      },
+      {
+        "beach_id": "ca506450-san-diego-san-diego-bay-eh-120",
+        "risk_band": "High",
+        "p_exceed": 0.497,
+        "pool": "none",
+        "advisory_age_days": null
+      },
+      {
+        "beach_id": "ca006650-orange-newport-beach-bgcu",
+        "risk_band": "High",
+        "p_exceed": 0.497,
         "pool": "none",
         "advisory_age_days": null
       },
       {
         "beach_id": "ca650180-san-diego-powerhouse-park-15th-street-eh-360",
         "risk_band": "High",
-        "p_exceed": 0.495,
+        "p_exceed": 0.497,
         "pool": "none",
         "advisory_age_days": null
       },
       {
         "beach_id": "ca895390-san-diego-mission-bay-de-anza-cove-mb-070",
         "risk_band": "High",
-        "p_exceed": 0.495,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
-        "beach_id": "ca006650-orange-newport-beach-bgcd",
-        "risk_band": "High",
-        "p_exceed": 0.495,
+        "p_exceed": 0.497,
         "pool": "none",
         "advisory_age_days": null
       },
       {
         "beach_id": "ca412549-orange-huntington-harbour-bhh13",
         "risk_band": "High",
-        "p_exceed": 0.495,
+        "p_exceed": 0.497,
         "pool": "none",
         "advisory_age_days": null
       },
       {
         "beach_id": "ca852440-san-mateo-pillar-point-harbor-pillar-point-7",
         "risk_band": "High",
-        "p_exceed": 0.495,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
-        "beach_id": "ca781317-san-mateo-marlin-park-foster-city-marlin-park",
-        "risk_band": "High",
-        "p_exceed": 0.495,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
-        "beach_id": "ca447069-san-mateo-pacifica-state-beach-linda-mar-beach-7",
-        "risk_band": "High",
-        "p_exceed": 0.495,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
-        "beach_id": "ca447069-san-mateo-pacifica-state-beach-linda-mar-beach-5",
-        "risk_band": "High",
-        "p_exceed": 0.495,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
-        "beach_id": "ca852440-san-mateo-pillar-point-harbor-pillar-point-5",
-        "risk_band": "High",
-        "p_exceed": 0.495,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
-        "beach_id": "ca506450-san-diego-san-diego-bay-eh-090",
-        "risk_band": "High",
-        "p_exceed": 0.495,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
-        "beach_id": "ca208646-san-diego-mission-beach-mb-115",
-        "risk_band": "High",
-        "p_exceed": 0.495,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
-        "beach_id": "ca801475-san-diego-silver-strand-state-beach-ib-068",
-        "risk_band": "High",
-        "p_exceed": 0.495,
+        "p_exceed": 0.497,
         "pool": "none",
         "advisory_age_days": null
       }
