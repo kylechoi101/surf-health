@@ -3,7 +3,6 @@ from __future__ import annotations
 import ast
 import json
 import os
-import re
 from collections.abc import Iterable
 from datetime import UTC, date, datetime
 from functools import cached_property
@@ -16,9 +15,17 @@ import pyarrow.parquet as pq
 from fastapi import HTTPException
 
 from app.ml.calibration import advisory_floored_probability, risk_band
+from app.repositories._coerce import (
+    derive_friendly_name,
+    coerce_advisory_website as _coerce_advisory_website,
+    safe_bool as _safe_bool,
+    safe_float as _safe_float,
+    safe_int as _safe_int,
+)
 from app.repositories.base import BeachRepository
 from app.services.shore_normal import compute_shore_normal_deg
 from app.schemas.domain import (
+    MAX_FORECAST_AGE_HOURS,
     AdvisoryRecord,
     BeachSummary,
     EnvironmentalSummary,
@@ -100,44 +107,12 @@ OFFICIAL_ADVISORY_DRIVER = "Official health advisory is active for this station.
 
 
 def _derive_friendly_name(row: object) -> str:
-    beach_id = str(row["beach_id"])
-    beach_id = re.sub(r"^ca\d+-", "", beach_id)
-    county_slug = str(row.get("county", "")).lower().replace(" ", "-")
-    if beach_id.startswith(county_slug + "-"):
-        beach_id = beach_id[len(county_slug) + 1 :]
-    station_raw = str(row.get("name", ""))
-    station_slug = re.sub(r"[^a-z0-9]+", "-", station_raw.lower()).strip("-")
-    if station_slug and beach_id.endswith("-" + station_slug):
-        beach_id = beach_id[: -(len(station_slug) + 1)]
-    return beach_id.replace("-", " ").title() if beach_id else station_raw
-
-
-def _safe_float(value: object) -> float | None:
-    try:
-        if value is None or pd.isna(value):
-            return None
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _safe_int(value: object) -> int | None:
-    number = _safe_float(value)
-    return int(number) if number is not None else None
-
-
-def _coerce_advisory_website(raw: object) -> str | None:
-    if raw is None:
-        return None
-    try:
-        if pd.isna(raw):
-            return None
-    except (TypeError, ValueError):
-        pass
-    text = str(raw).strip()
-    if not text or text.lower() == "unknown":
-        return None
-    return text
+    return derive_friendly_name(
+        beach_id=str(row["beach_id"]),
+        county=str(row.get("county", "") or ""),
+        station_name=str(row.get("name", "") or ""),
+        beach_name=str(row.get("beach_name", "") or ""),
+    )
 
 
 def _coerce_beach_name(raw: object) -> str | None:
@@ -169,19 +144,6 @@ def _coerce_station_code(raw: object) -> str | None:
         pass
     text = str(raw).strip()
     return text or None
-
-
-def _safe_bool(value: object, *, default: bool = True) -> bool:
-    """Parse a boolean that may have been stored as string/int in parquet/SQLite."""
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return bool(int(value))
-    if isinstance(value, str):
-        return value.lower() not in ("0", "false", "no", "")
-    return default
 
 
 def _driver_list(value: object) -> list[str]:
@@ -534,15 +496,38 @@ class CuratedBeachRepository(BeachRepository):
         )
         row["environmental_summary"] = environmental_summary
         
+        # Staleness, matching ServingSnapshotRepository._build_forecast_record.
+        # This path previously computed forecast_age_hours and never set is_stale
+        # at all, so it defaulted to False (schemas.domain.ForecastRecord) — the
+        # parquet fallback silently dropped the staleness warning that the sqlite
+        # path renders, and clients showed a days-old band as current. That
+        # fallback is exactly the degradation mode where staleness matters most
+        # (serving.sqlite missing but the data commit landed).
+        now_utc = pd.Timestamp.now(tz="UTC")
+        age_hours_exact: float | None = None
         try:
             gen_at = pd.to_datetime(row.get("forecast_generated_at"))
-            now_utc = pd.Timestamp.now(tz="UTC")
             if gen_at.tz is None:
                 gen_at = gen_at.tz_localize("UTC")
-            age_hours = int((now_utc - gen_at).total_seconds() / 3600)
-            row["forecast_age_hours"] = max(0, age_hours)
+            age_hours_exact = (now_utc - gen_at).total_seconds() / 3600
+            row["forecast_age_hours"] = max(0, int(age_hours_exact))
         except Exception:
             row["forecast_age_hours"] = None
+
+        # Fall back to the row's own forecast_date (midnight UTC) when the
+        # generation stamp is absent. The UN-truncated age feeds the threshold:
+        # the display int would let a 48.9h-old forecast read as 48h and slip
+        # under the cap. Unknowable age fails toward "stale", never "current".
+        staleness_age_hours = age_hours_exact
+        if staleness_age_hours is None:
+            try:
+                row_date = pd.to_datetime(row.get("forecast_date")).tz_localize("UTC")
+                staleness_age_hours = max(0.0, (now_utc - row_date).total_seconds() / 3600)
+            except Exception:
+                staleness_age_hours = None
+        row["is_stale"] = (
+            staleness_age_hours is None or staleness_age_hours > MAX_FORECAST_AGE_HOURS
+        )
 
         if active_advisory:
             # risk_band stays the MODEL's band; official_advisory_active carries the
