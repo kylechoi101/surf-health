@@ -5,7 +5,7 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from io import StringIO
-from math import atan2, cos, radians, sin, sqrt
+from math import atan2, cos, radians, sin
 from typing import Any
 
 import httpx
@@ -62,15 +62,9 @@ def concat_non_empty(frames: list[pd.DataFrame]) -> pd.DataFrame:
     return pd.concat(non_empty, ignore_index=True) if non_empty else pd.DataFrame()
 
 
-def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    radius_km = 6371.0
-    dlat = radians(lat2 - lat1)
-    dlon = radians(lon2 - lon1)
-    a = (
-        sin(dlat / 2) ** 2
-        + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon / 2) ** 2
-    )
-    return 2 * radius_km * atan2(sqrt(a), sqrt(1 - a))
+# Re-exported from app.core.geo, which is now the single definition. Kept
+# importable here because seven modules already import it from this path.
+from app.core.geo import haversine_km  # noqa: E402,F401
 
 
 def _safe_float(value: Any) -> float | None:

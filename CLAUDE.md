@@ -248,10 +248,19 @@ deployment eval (known beaches, future dates, anchor censored to serving age) se
   holdout artifacts now carry `beach_id`+`lag`. Within-beach AUROC (not global AUCPR) is the
   primary metric — global AUCPR is blind to daily skill (it stayed ~0.65 while served within-beach
   was ~0.50).
-- **Status: LIVE.** Merged in `00612cae` and serving since ~2026-07-22. On the 2026-07-28 daily run
-  `two_tier_diagnostics.serving_router` reports **fresh 0 / blended 0 / stale 297** — i.e. the offset
-  model serves **every beach**; the plain ensemble's fresh tier is empty in practice (no beach has a
-  sample ≤3d old on a typical day). The daily Action needed no YAML change (already `--winner-only`).
+- **Status: LIVE.** Merged in `00612cae` and serving since ~2026-07-22. The daily Action needed no
+  YAML change (already `--winner-only`).
+  - **⚠️ The "fresh 0 / blended 0 / stale 297" once written here was wrong — the offset model does
+    NOT serve every beach.** No shipped run reproduces it. The 2026-07-30 daily run reports
+    **fresh 183 / blended 8 / stale 329**. Read the live `system_health.json`, never this prose.
+  - **The split is a pure function of data lag, and it is violently sensitive to it.** The router
+    keys on `forecast_date − latest enterococcus sample_date` per beach against the 3d/5d cutoffs;
+    nothing else enters it. Holding the 2026-08-01 observations fixed and moving only the forecast
+    date: 07-30 → 268/0/250, 07-31 → 124/144/250, 08-01 → 43/81/394, 08-02 → 11/32/475. **One day
+    of pipeline lag moves ~144 beaches onto a different model**, silently and with no alert, so a
+    late daily run or an upstream feed delay will show up later as an unexplained metric shift.
+    Both figures above were reconstructed exactly from sample ages alone (183/8/329 and 43/81/394),
+    so if a router split ever looks surprising, check the data lag before suspecting the model.
   - **`production_model` still reads `xgb-undersample-ensemble-curated-v0`** and always will — that
     is the registry *winner*, not the model that computed `p_exceed`. Do NOT read it as "what is
     served"; read `model_registry.metrics.two_tier_diagnostics.serving_router` (note the **nesting**

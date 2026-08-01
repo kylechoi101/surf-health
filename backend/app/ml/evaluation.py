@@ -5,6 +5,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import LogisticRegression
+
+from app.ml.calibration import logit
 from sklearn.metrics import (
     average_precision_score,
     brier_score_loss,
@@ -14,14 +16,26 @@ from sklearn.metrics import (
 )
 
 
+# Guard against log(0) in log_loss ONLY. Deliberately NOT the calibration clip:
+# this one exists to keep the metric finite, so it stays tight; LOGIT_EPSILON
+# exists to mirror the transform the pipeline applies. Conflating them would
+# make log_loss quietly more forgiving of confident-wrong predictions.
 _EPSILON = 1e-6
 
 
 def _calibration_slope(labels: np.ndarray, probabilities: np.ndarray) -> float:
+    """Slope of the label on the model's log-odds. 1.0 = perfectly calibrated
+    spread; < 0.4 blocks publication (training._promotion_assessment).
+
+    Clips at calibration.LOGIT_EPSILON so this measures the model on the same
+    log-odds range the pipeline's own calibrator fits on. ``C=1e6`` is
+    deliberately looser than the calibrator's ``C=1.0``: this is a diagnostic
+    that wants the unpenalised slope estimate, whereas the fitted transform
+    wants regularisation so the calibration map does not overfit.
+    """
     if len(np.unique(labels)) < 2:
         return float("nan")
-    clipped = np.clip(probabilities, _EPSILON, 1.0 - _EPSILON)
-    logits = np.log(clipped / (1.0 - clipped)).reshape(-1, 1)
+    logits = logit(probabilities).reshape(-1, 1)
     model = LogisticRegression(C=1e6, solver="lbfgs", max_iter=1000)
     model.fit(logits, labels.astype(int))
     return float(model.coef_[0][0])

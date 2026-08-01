@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import sqlite3
 from datetime import UTC, date, datetime, timedelta
 from functools import cache
-from math import isnan, log10
+from math import log10
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +15,13 @@ from app.ml.calibration import (
     advisory_floored_probability,
     confidence_capped_risk_band,
     risk_band,
+)
+from app.repositories._coerce import (
+    derive_friendly_name,
+    coerce_advisory_website as _coerce_advisory_website,
+    safe_bool as _safe_bool,
+    safe_float as _safe_float,
+    safe_int as _safe_int,
 )
 from app.repositories.base import BeachRepository
 from app.services.shore_normal import compute_shore_normal_deg
@@ -34,27 +40,6 @@ from app.schemas.domain import (
 )
 
 
-def _coerce_advisory_website(raw: object) -> str | None:
-    if raw is None:
-        return None
-    if isinstance(raw, float) and isnan(raw):
-        return None
-    text = str(raw).strip()
-    if not text or text.lower() == "unknown":
-        return None
-    return text
-
-
-def _safe_float(value: object) -> float | None:
-    try:
-        if value is None:
-            return None
-        parsed = float(value)
-        return None if isnan(parsed) else parsed
-    except (TypeError, ValueError):
-        return None
-
-
 def _row_get(row: object, key: str) -> object | None:
     """Tolerant sqlite3.Row accessor — returns None for keys not in the cursor
     schema. Lets us read columns that may or may not exist depending on when
@@ -63,24 +48,6 @@ def _row_get(row: object, key: str) -> object | None:
         return row[key]
     except (KeyError, IndexError):
         return None
-
-
-def _safe_int(value: object) -> int | None:
-    number = _safe_float(value)
-    return int(number) if number is not None else None
-
-
-def _safe_bool(value: object, *, default: bool = True) -> bool:
-    """Parse a boolean that may have been stored as string/int in SQLite."""
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return bool(int(value))
-    if isinstance(value, str):
-        return value.lower() not in ("0", "false", "no", "")
-    return default
 
 
 def _parse_json_list(value: object) -> list[Any]:
@@ -107,30 +74,12 @@ def _parse_date(value: object) -> date:
 
 
 def _derive_friendly_name(row: sqlite3.Row) -> str:
-    b_name = str(row["beach_name"]) if "beach_name" in row.keys() and row["beach_name"] else ""
-    # If we have an explicit beach name (as opposed to a station name), keep it stable.
-    # Downstream products can separately surface the station name if needed, but the
-    # canonical beach name should not change when station metadata changes.
-    if b_name:
-        return b_name
-
-    if not b_name:
-        beach_id = str(row["beach_id"])
-        beach_id = re.sub(r"^ca\d+-", "", beach_id)
-        county_slug = str(row["county"] or "").lower().replace(" ", "-")
-        if beach_id.startswith(county_slug + "-"):
-            beach_id = beach_id[len(county_slug) + 1 :]
-        station_raw = str(row["name"] or "")
-        station_slug = re.sub(r"[^a-z0-9]+", "-", station_raw.lower()).strip("-")
-        if station_slug and beach_id.endswith("-" + station_slug):
-            beach_id = beach_id[: -(len(station_slug) + 1)]
-        b_name = beach_id.replace("-", " ").title() if beach_id else station_raw
-
-    s_name = str(row["name"] or "")
-    
-    if b_name and s_name and b_name.lower() != s_name.lower() and s_name.lower() not in b_name.lower():
-        return f"{b_name} ({s_name})"
-    return b_name or s_name
+    return derive_friendly_name(
+        beach_id=str(row["beach_id"]),
+        county=str(row["county"] or ""),
+        station_name=str(row["name"] or ""),
+        beach_name=str(row["beach_name"] or "") if "beach_name" in row.keys() else "",
+    )
 
 
 class ServingSnapshotRepository(BeachRepository):

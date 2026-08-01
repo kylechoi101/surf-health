@@ -21,12 +21,24 @@ from __future__ import annotations
 import asyncio
 import math
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date
 from zoneinfo import ZoneInfo
 
 import httpx
 import numpy as np
 import pandas as pd
+
+from app.core.geo import haversine_km as _haversine_km
+
+
+from app.core.timewindows import forecast_cutoff_utc as _forecast_cutoff_utc
+from app.data.pipeline.solar_wind import uv_index_24h_max
+
+
+def _uv_or_none(uv, shortwave) -> float | None:
+    value, _is_proxy = uv_index_24h_max(uv, shortwave)
+    return None if value != value else float(value)  # NaN -> None
+
 
 _PACIFIC = ZoneInfo("America/Los_Angeles")
 _OPEN_METEO_FORECAST = "https://api.open-meteo.com/v1/forecast"
@@ -70,14 +82,6 @@ _CA_BUOYS: list[tuple[str, float, float]] = [
 _BUOY_MAX_DISTANCE_KM = 25.0
 
 
-def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    r = 6371.0
-    p = math.pi / 180
-    a = (0.5 - math.cos((lat2 - lat1) * p) / 2
-         + math.cos(lat1 * p) * math.cos(lat2 * p) * (1 - math.cos((lon2 - lon1) * p)) / 2)
-    return 2 * r * math.asin(math.sqrt(a))
-
-
 def _nearest_buoy(lat: float, lon: float) -> tuple[str, float] | None:
     """Return (station_id, distance_km) of the closest NDBC buoy within range."""
     best = None
@@ -88,10 +92,6 @@ def _nearest_buoy(lat: float, lon: float) -> tuple[str, float] | None:
             best_d = d
             best = sid
     return (best, best_d) if best else None
-
-
-def _forecast_cutoff_utc(d: date) -> pd.Timestamp:
-    return pd.Timestamp(datetime(d.year, d.month, d.day, 5, 0, 0, tzinfo=_PACIFIC)).tz_convert("UTC")
 
 
 @dataclass
@@ -159,7 +159,13 @@ async def _fetch_openmeteo(
     return {
         "wind_speed_mps": float(np.nanmax(ws)) if not np.isnan(ws).all() else None,
         "wind_direction_deg": wd_mean,
-        "uv_index": float(np.nanmax(uv)) if not np.isnan(uv).all() else None,
+        # Same UV policy as the archive-side aggregator. The forecast endpoint
+        # normally returns real modelled UV, so this takes the real branch and
+        # the proxy is only reached if that ever stops being true — previously
+        # this returned None there while solar_wind fell back, so an endpoint
+        # change would have silently blanked the served value while the trained
+        # feature kept a number.
+        "uv_index": _uv_or_none(uv, sw),
         "shortwave_24h_sum": float(np.nansum(sw)) * 3600 / 1e6 if not np.isnan(sw).all() else None,
     }
 

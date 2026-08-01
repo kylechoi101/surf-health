@@ -481,6 +481,33 @@ def normalize_advisories(frame: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+ADVISORY_OPEN_ENDED_MAX_DAYS = 14
+
+
+def fill_open_ended_advisory_end(
+    started_at: pd.Series, ended_at: pd.Series
+) -> pd.Series:
+    """Effective end timestamp for an advisory, capping never-closed rows.
+
+    Counties don't reliably log closure events, so an advisory with no
+    ``ended_at`` is not necessarily still in effect. Open-ended rows are capped
+    at ``started_at + 14 days`` — matching the serving override window and
+    WHO/EPA acute-event guidance: anything not refreshed in two weeks is
+    bureaucratic, not operational.
+
+    This used to be a bare ``.fillna(Timestamp("2099-01-01"))`` here, which made
+    every never-closed admin advisory (Tijuana plume, 2022 BSV postings)
+    permanently active. training._refresh_candidate_advisory_features was fixed
+    to cap them, but this copy — which builds beach_day.parquet, the TRAINING
+    LABELS frame — was not, so the feature fired at 0.33 in training and 0.21 at
+    serving, disagreeing on 12.4% of rows. One rule now, used by both.
+    """
+    started = pd.to_datetime(started_at)
+    ended = pd.to_datetime(ended_at)
+    capped = started + pd.Timedelta(days=ADVISORY_OPEN_ENDED_MAX_DAYS)
+    return ended.fillna(capped)
+
+
 def _advisory_temporal_features(beach_day: pd.DataFrame, advisories: pd.DataFrame) -> pd.DataFrame:
     """Add per-(beach_id, sample_date) advisory activity features.
 
@@ -501,7 +528,9 @@ def _advisory_temporal_features(beach_day: pd.DataFrame, advisories: pd.DataFram
     adv = advisories[["beach_id", "started_at", "ended_at"]].copy()
     adv["started_at"] = pd.to_datetime(adv["started_at"])
     adv["ended_at_ts"] = pd.to_datetime(adv["ended_at"])
-    adv["ended_at_filled"] = adv["ended_at_ts"].fillna(pd.Timestamp("2099-01-01"))
+    adv["ended_at_filled"] = fill_open_ended_advisory_end(
+        adv["started_at"], adv["ended_at_ts"]
+    )
 
     # Cross-merge within beach_id; _row tracks the originating beach_day index.
     key = bd[["beach_id", "sample_date"]].copy()

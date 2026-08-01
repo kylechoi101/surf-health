@@ -8,16 +8,32 @@ from sklearn.isotonic import IsotonicRegression
 from sklearn.linear_model import LogisticRegression
 
 
-_EPSILON = 1e-4
+# Canonical clip for ANY probability->log-odds transform in the ML stack.
+#
+# This is the single definition on purpose. evaluation._calibration_slope used
+# 1e-6 while the transform actually applied to served probabilities used 1e-4,
+# so the reported slope — a PUBLICATION-BLOCKING gate metric at < 0.4 — was fit
+# on a more extreme log-odds range than the pipeline ever produces, biasing it
+# low in proportion to how many predictions saturate. Measured on the shipped
+# leave-one-out holdouts: no candidate crosses the 0.4 gate either way (the
+# winner moves 1.1467 -> 1.1523), but the saturated persistence baselines move
+# ~50% (0.1039 -> 0.1559), which is exactly the regime where a silent
+# disagreement between "the number we report" and "the number we apply" hides.
+LOGIT_EPSILON = 1e-4
+_EPSILON = LOGIT_EPSILON  # retained for existing internal references
 
 
 def _clip_probabilities(probabilities: np.ndarray) -> np.ndarray:
-    return np.clip(np.asarray(probabilities, dtype=float), _EPSILON, 1.0 - _EPSILON)
+    return np.clip(np.asarray(probabilities, dtype=float), LOGIT_EPSILON, 1.0 - LOGIT_EPSILON)
 
 
-def _logit(probabilities: np.ndarray) -> np.ndarray:
+def logit(probabilities: np.ndarray) -> np.ndarray:
+    """Log-odds of ``probabilities``, clipped to LOGIT_EPSILON at both rails."""
     clipped = _clip_probabilities(probabilities)
     return np.log(clipped / (1.0 - clipped))
+
+
+_logit = logit
 
 
 def _inverse_logit(values: np.ndarray) -> np.ndarray:

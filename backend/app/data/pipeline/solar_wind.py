@@ -5,17 +5,46 @@ leaking same-morning sample data into features.
 """
 from __future__ import annotations
 
-from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
 
+from app.core.timewindows import forecast_cutoff_utc as _forecast_cutoff_utc
+
+# Peak clear-noon shortwave in CA is ~900 W/m^2, which corresponds to a UV index
+# of ~11; 900/80 = 11.25. Cloudy ~300 W/m^2 -> ~3.75.
+UV_FROM_SHORTWAVE_DIVISOR = 80.0
+UV_INDEX_CEILING = 15.0
+
+
+def uv_index_24h_max(uv_values, shortwave_values) -> tuple[float, bool]:
+    """Peak UV index over a window, and whether it is the shortwave proxy.
+
+    Open-Meteo's ARCHIVE API returns null for uv_index (it is a forecast-only
+    variable) — measured at 0 non-null across 172,512 cached hourly rows — so
+    every historical value the model trains on is the proxy below. The FORECAST
+    endpoint does return real modelled UV, which is why the served ``uv_index``
+    in latest_env.parquet runs ~43% above the trained ``uv_index_24h_max``.
+
+    Both producers now share this one policy so the divisor, the ceiling and the
+    prefer-real-then-fall-back order cannot drift apart, and the boolean makes
+    the provenance explicit at the call site instead of implicit in a comment.
+    """
+    if uv_values is not None:
+        uv = np.asarray(uv_values, dtype=float)
+        if uv.size and not np.isnan(uv).all():
+            return float(np.nanmax(uv)), False
+    if shortwave_values is not None:
+        sw = np.asarray(shortwave_values, dtype=float)
+        if sw.size and not np.isnan(sw).all():
+            peak = float(np.nanmax(sw))
+            proxy = max(0.0, min(UV_INDEX_CEILING, peak / UV_FROM_SHORTWAVE_DIVISOR))
+            return proxy, True
+    return float("nan"), False
+
+
 _PACIFIC = ZoneInfo("America/Los_Angeles")
-
-
-def _forecast_cutoff_utc(d: date) -> pd.Timestamp:
-    return pd.Timestamp(datetime(d.year, d.month, d.day, 5, 0, 0, tzinfo=_PACIFIC)).tz_convert("UTC")
 
 
 def aggregate_solar_wind_windows(raw: pd.DataFrame) -> pd.DataFrame:
@@ -86,16 +115,10 @@ def aggregate_solar_wind_windows(raw: pd.DataFrame) -> pd.DataFrame:
             cc_mean = float(window["cloud_cover"].mean()) if "cloud_cover" in window else np.nan
             sw_sum_wm2_h = float(window["shortwave_radiation"].sum()) if "shortwave_radiation" in window else np.nan
             sw_mj = sw_sum_wm2_h * 3600 / 1e6 if not np.isnan(sw_sum_wm2_h) else np.nan
-            # Open-Meteo's archive API returns null for uv_index (forecast-only
-            # variable). Derive from peak hourly shortwave when uv_index is
-            # missing: clear-noon CA gets ~900 W/m² → UV ≈ 11; cloudy ~300 → UV ≈ 3.75.
-            uv_max: float = np.nan
-            if "uv_index" in window and window["uv_index"].notna().any():
-                uv_max = float(window["uv_index"].max())
-            elif "shortwave_radiation" in window and window["shortwave_radiation"].notna().any():
-                sw_peak = float(window["shortwave_radiation"].max())
-                if not np.isnan(sw_peak):
-                    uv_max = max(0.0, min(15.0, sw_peak / 80.0))
+            uv_max, _uv_is_proxy = uv_index_24h_max(
+                window["uv_index"] if "uv_index" in window else None,
+                window["shortwave_radiation"] if "shortwave_radiation" in window else None,
+            )
             u_mean = float(window["wind_u"].mean()) if "wind_u" in window else np.nan
             v_mean = float(window["wind_v"].mean()) if "wind_v" in window else np.nan
             ws_max = float(window["wind_speed_10m"].max()) if "wind_speed_10m" in window else np.nan

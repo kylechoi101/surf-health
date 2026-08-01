@@ -397,6 +397,20 @@ def _rolling_and_spacing_features(enriched: pd.DataFrame) -> pd.DataFrame:
             # Non-null for any beach with at least one prior sample.
             feature_map[f"{column}_last_obs"] = col_values.shift(1).ffill()
 
+        # Last observed EXCEEDANCE before this row. Same shift(1).ffill() rule as
+        # the *_last_obs values above, so it is forecast-safe in the identical way.
+        #
+        # This exists because `enterococcus_value` is not comparable across rows:
+        # San Diego ddPCR reports copies/100mL (threshold 1413) while culture
+        # methods report MPN/CFU (threshold 104), and beach_day carries no
+        # method/units column to tell them apart — 84 beaches report BOTH ways.
+        # `exceeds_stv` was already decided per-sample by the method-aware
+        # exceedance.compute_exceeds_stv, so carrying the decision forward is the
+        # only correct "what did we see last time" signal. Re-thresholding the raw
+        # value (the old persistence baseline) judged copy counts against 104.
+        exceedance = pd.to_numeric(group["exceeds_stv"], errors="coerce")
+        feature_map["exceeds_stv_last_obs"] = exceedance.shift(1).ffill()
+
         feature_frames.append(pd.DataFrame(feature_map, index=group.index))
 
     return pd.concat(feature_frames).reindex(enriched.index) if feature_frames else pd.DataFrame()

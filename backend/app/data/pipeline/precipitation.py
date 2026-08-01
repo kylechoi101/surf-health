@@ -1,17 +1,14 @@
 from __future__ import annotations
 
-from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
 
+from app.core.timewindows import forecast_cutoff_utc as _forecast_cutoff_utc
+
+
 _PACIFIC = ZoneInfo("America/Los_Angeles")
-
-
-def _forecast_cutoff_utc(d: date) -> pd.Timestamp:
-    """Return 5 AM PT in UTC for the given date, correctly accounting for PST vs PDT."""
-    return pd.Timestamp(datetime(d.year, d.month, d.day, 5, 0, 0, tzinfo=_PACIFIC)).tz_convert("UTC")
 
 
 def compute_antecedent_wetness_index(precip_series: pd.Series, decay_rate: float = 0.2) -> pd.Series:

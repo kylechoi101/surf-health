@@ -13,6 +13,9 @@ from urllib.request import urlopen
 import pandas as pd
 
 
+from app.core.geo import haversine_km
+
+
 INCH_TO_MM = 25.4
 RAIN_MONITORING_PAUSE_INCHES = 0.1
 RAIN_GENERAL_ADVISORY_INCHES = 0.2
@@ -65,19 +68,6 @@ STORMWATER_SOURCE_LAYERS = [
         "asset_type": "discharge_point",
     },
 ]
-
-
-def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    radius_km = 6371.0
-    phi1 = math.radians(lat1)
-    phi2 = math.radians(lat2)
-    d_phi = math.radians(lat2 - lat1)
-    d_lambda = math.radians(lon2 - lon1)
-    a = (
-        math.sin(d_phi / 2) ** 2
-        + math.cos(phi1) * math.cos(phi2) * math.sin(d_lambda / 2) ** 2
-    )
-    return radius_km * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
 def _clean_text(value: Any) -> str:

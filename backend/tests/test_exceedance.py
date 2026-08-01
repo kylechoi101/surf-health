@@ -109,3 +109,72 @@ def test_culture_150_cfu_exceeds_under_104():
         stv_threshold=104.0,
     )
     assert out.tolist() == [True]
+
+
+# --- The consumer side: the persistence baseline must honour the same rule -----
+#
+# The 104-vs-1413 split used to stop at the ingest boundary. training's
+# persistence baseline re-derived exceedance from the raw value against a flat
+# 104, so San Diego ddPCR copy counts in (104, 1413] — already labelled CLEAN by
+# compute_exceeds_stv — produced a persistence positive, which
+# _positive_persistence_guarded_blend_probabilities hard-pins to 1.0. On
+# 2026-07-30 that put 34 of the 74 served "High" bands on beaches whose most
+# recent lab result was clean. These tests pin the fix at both ends.
+
+
+def test_exceedance_last_obs_feature_carries_the_method_aware_decision():
+    """features builds exceeds_stv_last_obs by the same shift(1).ffill() rule as
+    the *_last_obs values, so it is forecast-safe and never sees its own row."""
+    from app.data.pipeline.features import add_temporal_features
+
+    frame = pd.DataFrame(
+        {
+            "beach_id": ["b1"] * 4,
+            "sample_date": pd.to_datetime(
+                ["2026-01-01", "2026-01-08", "2026-01-15", "2026-01-22"]
+            ),
+            # A clean PCR row (298 copies) sits at index 1.
+            "enterococcus_value": [50.0, 298.0, 60.0, 70.0],
+            "exceeds_stv": [0.0, 0.0, 1.0, 0.0],
+        }
+    )
+    enriched = add_temporal_features(frame)
+    last = enriched["exceeds_stv_last_obs"].tolist()
+
+    assert pd.isna(last[0]), "first row of a beach has no prior observation"
+    assert last[1] == 0.0, "carries row 0's clean result, not its own"
+    assert last[2] == 0.0, "the 298-copy PCR row was CLEAN — must not carry a 1"
+    assert last[3] == 1.0, "carries row 2's genuine exceedance"
+
+
+def test_persistence_baseline_does_not_fire_on_clean_pcr_row():
+    """The regression that shipped 34 false 'High' bands: a clean 298-copy ddPCR
+    result must not become a persistence positive."""
+    from app.ml.training import _persistence_probabilities
+
+    features = pd.DataFrame(
+        {
+            # Both rows carry a last-observed value above the 104 culture STV.
+            "enterococcus_value_last_obs": [298.0, 298.0],
+            # Row 0 was ddPCR copies/100mL -> clean (298 < 1413).
+            # Row 1 was a culture method   -> exceedance (298 > 104).
+            "exceeds_stv_last_obs": [0.0, 1.0],
+        }
+    )
+    probs = _persistence_probabilities(features, 104.0)
+
+    assert probs.tolist() == [0.0, 1.0], (
+        "persistence must carry the method-aware exceedance decision forward, "
+        "not re-threshold the raw value against the culture STV"
+    )
+
+
+def test_persistence_baseline_falls_back_when_feature_absent():
+    """Frames built before exceeds_stv_last_obs existed keep the legacy rule."""
+    from app.ml.training import _persistence_probabilities
+
+    legacy = pd.DataFrame({"enterococcus_value_last_obs": [50.0, 150.0]})
+    assert _persistence_probabilities(legacy, 104.0).tolist() == [0.0, 1.0]
+
+    empty = pd.DataFrame({"other_column": [1.0, 2.0]})
+    assert _persistence_probabilities(empty, 104.0).tolist() == [0.0, 0.0]

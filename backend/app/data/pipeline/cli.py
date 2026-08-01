@@ -39,6 +39,101 @@ from app.data.pipeline.external_covariates import enrich_beach_day_with_external
 from app.data.pipeline.station_quality import support_status_for
 
 
+def _backfill_beach_links(
+    hydrologic_links: pd.DataFrame, stations: pd.DataFrame
+) -> pd.DataFrame:
+    """Add a link row for every station missing from the cached link table.
+
+    Pour point == beach coordinate (see hydrography._build_link_row), so this is
+    a local fill with no network calls. Existing rows are never modified — a
+    beach that already has a gage link keeps it.
+    """
+    if stations is None or stations.empty or "beach_id" not in stations.columns:
+        return hydrologic_links
+
+    coords = (
+        stations[["beach_id", "latitude", "longitude"]]
+        .dropna(subset=["latitude", "longitude"])
+        .drop_duplicates("beach_id")
+    )
+    known = (
+        set(hydrologic_links["beach_id"].astype(str))
+        if not hydrologic_links.empty and "beach_id" in hydrologic_links.columns
+        else set()
+    )
+    missing = coords.loc[~coords["beach_id"].astype(str).isin(known)]
+    if missing.empty:
+        return hydrologic_links
+
+    added = pd.DataFrame(
+        {
+            "beach_id": missing["beach_id"].astype(str),
+            "hydrologic_unit_id": None,
+            "pour_point_id": None,
+            "pour_point_latitude": missing["latitude"].astype(float),
+            "pour_point_longitude": missing["longitude"].astype(float),
+            "distance_to_pour_point_km": 0.0,
+            "nearest_stream_gage_id": None,
+            "distance_to_gage_km": None,
+            "watershed_area_km2": None,
+            "mapping_confidence": "none",
+        }
+    )
+    print(
+        f"[hydrology] link table backfilled: {len(hydrologic_links)} cached "
+        f"+ {len(added)} beaches with no cached link = {len(hydrologic_links) + len(added)}"
+    )
+    if hydrologic_links.empty:
+        return added.reset_index(drop=True)
+    return pd.concat([hydrologic_links, added], ignore_index=True)
+
+
+def _split_precip_locations(
+    locations: list[tuple[float, float]],
+    existing: pd.DataFrame,
+    full_start,
+) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
+    """Split fetch coordinates into (needs_full_history, incremental_only).
+
+    A coordinate needs the full window when the cache has no rows for it, or its
+    earliest cached day starts after ``full_start`` — i.e. its history does not
+    reach back far enough to be usable as a lagged feature.
+
+    Without this, the link-table backfill produces a coverage mirage: the 560
+    newly-linked beaches get precip going FORWARD only, because the incremental
+    path fetches ~7 days back for every coordinate equally. Measured on the first
+    run after the backfill, 66 of 120 coordinates held exactly 10 days of history
+    against the original 54 coordinates' 2,405 — precip looked 81.5% covered at
+    serving time while being absent across the training window, which is the
+    train/serve mismatch this codebase keeps rediscovering.
+
+    Refetching everything at the full window is NOT the fix: the connector's
+    cache key embeds the date range (``openmeteo_{lat}_{lon}_{start}_{end}``), so
+    a widened window is a cache miss for every coordinate and re-downloads all
+    history. Splitting keeps the known coordinates on their cached increment and
+    pays the full fetch only for genuinely new ones.
+    """
+    rounded = {(round(lat, 1), round(lon, 1)) for lat, lon in locations}
+    if existing is None or existing.empty or "sample_date" not in existing.columns:
+        return sorted(rounded), []
+
+    have = existing.dropna(subset=["latitude", "longitude"]).copy()
+    have["_lat"] = have["latitude"].astype(float).round(1)
+    have["_lon"] = have["longitude"].astype(float).round(1)
+    earliest = (
+        pd.to_datetime(have["sample_date"], errors="coerce")
+        .groupby([have["_lat"], have["_lon"]])
+        .min()
+    )
+    cutoff = pd.Timestamp(full_start)
+    deep_enough = {
+        coord for coord, first in earliest.items() if pd.notna(first) and first <= cutoff
+    }
+    needs_full = sorted(rounded - deep_enough)
+    incremental = sorted(rounded & deep_enough)
+    return needs_full, incremental
+
+
 def _download_file(url: str, destination: Path) -> Path:
     destination.parent.mkdir(parents=True, exist_ok=True)
     with httpx.Client(timeout=120.0, follow_redirects=True) as client:
@@ -609,6 +704,26 @@ def main() -> None:
                     hydrologic_links = build_hydrologic_beach_links(bundle["stations"])
                     hydrologic_links.to_parquet(hydrologic_links_path, index=False)
 
+            # Backfill beaches the cached link table predates.
+            #
+            # build_beach_hydrology_daily cross-joins hydrologic_links x dates, so a
+            # beach absent from this table gets NO precip and NO streamflow row at
+            # all. The table is only rebuilt when the file is MISSING (above), so it
+            # had frozen at 290 of 850 beaches: precipitation reached 42.8% of
+            # beaches while solar-wind — which sources its coordinates straight from
+            # bundle["stations"] — reached 92.8%. Two Open-Meteo pulls of the same
+            # 0.1-degree grid, 50 points of coverage apart, purely because one read a
+            # stale artifact.
+            #
+            # The backfill costs no network calls: hydrography._build_link_row sets
+            # pour_point_{latitude,longitude} to the beach coordinate verbatim
+            # ("the beach coordinate is the coastal outlet", distance 0.0), so the
+            # pour point IS the beach coordinate and can be filled locally. Backfilled
+            # rows carry no gage, which is honest — they get NaN streamflow and
+            # NaN distance_to_gage_km, the has-gage signal the model already reads,
+            # rather than being dropped from the frame entirely.
+            hydrologic_links = _backfill_beach_links(hydrologic_links, bundle["stations"])
+
             # --- Streamflow: incremental fetch from USGS NWIS ---
             gage_ids = (
                 hydrologic_links["nearest_stream_gage_id"].dropna().unique().tolist()
@@ -698,14 +813,45 @@ def main() -> None:
                         print(f"[hydrology] precip cache missing derived cols → FULL re-aggregation {_pr_fetch_start} → {end_date}")
                     else:
                         print(f"[hydrology] precip full fetch {_pr_fetch_start} → {end_date}")
-                raw_precip = asyncio.run(
-                    OpenMeteoHistoricalPrecipConnector().fetch_historical_precip(
-                        locations,
-                        _pr_fetch_start,
-                        end_date,
-                        cache_dir=settings.precip_cache_dir / "openmeteo",
-                    )
+                # Coordinates whose cached history does not reach _full_start_date
+                # get the full window; everything else keeps the cheap increment.
+                # See _split_precip_locations for why a blanket full fetch is wrong.
+                _pr_backfill_locs, _pr_incr_locs = _split_precip_locations(
+                    locations,
+                    _existing_pr if (_pr_path.exists() and not args.start_date) else pd.DataFrame(),
+                    _pr_fetch_start if _pr_fetch_start <= _full_start_date else _full_start_date,
                 )
+                _pr_connector = OpenMeteoHistoricalPrecipConnector()
+                _pr_cache = settings.precip_cache_dir / "openmeteo"
+                _pr_frames = []
+                if _pr_incr_locs:
+                    print(
+                        f"[hydrology] precip incremental: {len(_pr_incr_locs)} coords "
+                        f"{_pr_fetch_start} → {end_date}"
+                    )
+                    _pr_frames.append(asyncio.run(
+                        _pr_connector.fetch_historical_precip(
+                            _pr_incr_locs, _pr_fetch_start, end_date, cache_dir=_pr_cache,
+                        )
+                    ))
+                if _pr_backfill_locs:
+                    print(
+                        f"[hydrology] precip HISTORY BACKFILL: {len(_pr_backfill_locs)} coords "
+                        f"with no usable history {_full_start_date} → {end_date}"
+                    )
+                    _pr_frames.append(asyncio.run(
+                        _pr_connector.fetch_historical_precip(
+                            _pr_backfill_locs, _full_start_date, end_date, cache_dir=_pr_cache,
+                        )
+                    ))
+                _pr_frames = [f for f in _pr_frames if f is not None and not f.empty]
+                raw_precip = (
+                    pd.concat(_pr_frames, ignore_index=True) if _pr_frames else pd.DataFrame()
+                )
+                # Aggregate over the CONCATENATED raw frame: the rolling windows
+                # (precip_mm_192h, first_rain_score, ...) are per-coordinate, so
+                # aggregating each fetch separately would truncate the backfilled
+                # coords' windows at their own fetch boundary.
                 new_precip_daily = aggregate_precip_windows(raw_precip)
                 if _pr_path.exists() and not args.start_date:
                     _existing_pr = pd.read_parquet(_pr_path)

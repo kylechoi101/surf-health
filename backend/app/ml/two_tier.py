@@ -28,17 +28,20 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import roc_auc_score
 
+from app.ml.calibration import LOGIT_EPSILON, logit
 from app.ml.stale_evaluation import RECENCY_COLUMN, censor_bacteria_history_for_cutoff
 
 # Median served ``sample_age_days`` (model_truth.md Test 3). Rows censored to this
 # age approximate the between-sample day the product actually publishes.
 DEFAULT_STALE_CUTOFF_DAYS = 14
-_EPS = 1e-6
-
-
-def _logit(p: np.ndarray | float) -> np.ndarray | float:
-    p = np.clip(p, _EPS, 1.0 - _EPS)
-    return np.log(p / (1.0 - p))
+# Third copy of the probability->log-odds clip, now sourced from calibration.
+# Provably a no-op here: these probabilities are empirical-Bayes shrunk rates,
+# so they are bounded well away from the rails — measured across 669 beaches on
+# the 1095-day window they span [0.0045, 0.9647], and the global rate is 0.178.
+# Neither 1e-6 nor 1e-4 binds on a single beach, so the deployed offset model's
+# base_margin is bit-identical before and after.
+_EPS = LOGIT_EPSILON
+_logit = logit
 
 
 def beach_baseline_margin(
