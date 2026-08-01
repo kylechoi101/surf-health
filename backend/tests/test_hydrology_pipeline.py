@@ -184,3 +184,130 @@ class TestBuildBeachHydrologyDaily:
         # Beach links to a nonexistent gage → streamflow columns are NaN, row is still present
         row = result[result["beach_id"] == "scripps-pier"].iloc[0]
         assert pd.isna(row["streamflow_cfs_latest"])
+
+
+# --- Link-table backfill -------------------------------------------------------
+#
+# build_beach_hydrology_daily cross-joins hydrologic_links x dates, so a beach
+# missing from the link table gets no precip and no streamflow at all. cli.py
+# only rebuilt the table when the FILE was missing, so it froze at 290 of 850
+# beaches and precipitation reached 42.8% of beaches while solar-wind (which
+# reads bundle["stations"] directly) reached 92.8%.
+
+
+def _stations(n=4):
+    return pd.DataFrame(
+        {
+            "beach_id": [f"b{i}" for i in range(n)],
+            "latitude": [33.0 + i * 0.1 for i in range(n)],
+            "longitude": [-118.0 - i * 0.1 for i in range(n)],
+        }
+    )
+
+
+def test_backfill_covers_every_station_and_preserves_existing_links():
+    from app.data.pipeline.cli import _backfill_beach_links
+
+    cached = pd.DataFrame(
+        {
+            "beach_id": ["b0"],
+            "hydrologic_unit_id": ["180701"],
+            "pour_point_id": ["pp_180701"],
+            "pour_point_latitude": [33.0],
+            "pour_point_longitude": [-118.0],
+            "distance_to_pour_point_km": [0.0],
+            "nearest_stream_gage_id": ["11080000"],
+            "distance_to_gage_km": [4.2],
+            "watershed_area_km2": [None],
+            "mapping_confidence": ["high"],
+        }
+    )
+    out = _backfill_beach_links(cached, _stations(4))
+
+    assert set(out["beach_id"]) == {"b0", "b1", "b2", "b3"}
+    kept = out.loc[out["beach_id"] == "b0"].iloc[0]
+    assert kept["nearest_stream_gage_id"] == "11080000", "existing link untouched"
+    assert kept["distance_to_gage_km"] == 4.2
+    assert kept["mapping_confidence"] == "high"
+
+    added = out.loc[out["beach_id"] == "b2"].iloc[0]
+    # Pour point IS the beach coordinate (hydrography._build_link_row).
+    assert added["pour_point_latitude"] == pytest.approx(33.2)
+    assert added["pour_point_longitude"] == pytest.approx(-118.2)
+    # No gage invented — NaN is the has-gage signal the model reads.
+    assert pd.isna(added["nearest_stream_gage_id"])
+    assert pd.isna(added["distance_to_gage_km"])
+
+
+def test_backfill_is_idempotent_and_handles_an_empty_table():
+    from app.data.pipeline.cli import _backfill_beach_links
+
+    once = _backfill_beach_links(pd.DataFrame(), _stations(3))
+    assert len(once) == 3
+    twice = _backfill_beach_links(once, _stations(3))
+    assert len(twice) == 3, "re-running must not duplicate rows"
+
+
+def test_backfill_skips_stations_without_coordinates():
+    from app.data.pipeline.cli import _backfill_beach_links
+
+    st = _stations(3)
+    st.loc[1, "latitude"] = None
+    out = _backfill_beach_links(pd.DataFrame(), st)
+    assert set(out["beach_id"]) == {"b0", "b2"}
+
+
+# --- Precip history backfill ---------------------------------------------------
+#
+# The link-table backfill alone produced a coverage mirage: newly-linked
+# coordinates got precip going FORWARD only, because the incremental path fetches
+# ~7 days back for every coordinate equally. Measured on the first run after that
+# change, 66 of 120 coordinates held 10 days of history against the original 54
+# coordinates' 2,405 — precip read 81.5% covered at serving time while being
+# absent across the training window.
+
+
+def _precip_cache(coords_and_starts, end="2026-08-01"):
+    rows = []
+    for (lat, lon), start in coords_and_starts:
+        for d in pd.date_range(start, end, freq="7D"):
+            rows.append({"latitude": lat, "longitude": lon, "sample_date": d})
+    return pd.DataFrame(rows)
+
+
+def test_split_flags_only_coords_whose_history_is_too_shallow():
+    from app.data.pipeline.cli import _split_precip_locations
+
+    existing = _precip_cache([
+        ((33.0, -118.0), "2023-01-01"),   # deep — reaches back past the cutoff
+        ((34.0, -119.0), "2026-07-23"),   # shallow — only the incremental window
+    ])
+    locations = [(33.0, -118.0), (34.0, -119.0), (35.0, -120.0)]  # third is brand new
+    need, incr = _split_precip_locations(existing=existing, locations=locations,
+                                         full_start=date(2024, 1, 1))
+
+    assert set(need) == {(34.0, -119.0), (35.0, -120.0)}
+    assert set(incr) == {(33.0, -118.0)}, "a deep coord must stay on the cheap increment"
+
+
+def test_split_rounds_to_the_connectors_grid():
+    """The connector fetches at round(coord, 1); detection must match or every
+    coordinate looks new and the full window is refetched for all of them."""
+    from app.data.pipeline.cli import _split_precip_locations
+
+    existing = _precip_cache([((33.0, -118.0), "2023-01-01")])
+    need, incr = _split_precip_locations(
+        existing=existing, locations=[(33.04, -118.02)], full_start=date(2024, 1, 1)
+    )
+    assert need == []
+    assert incr == [(33.0, -118.0)]
+
+
+def test_split_treats_an_empty_cache_as_all_new():
+    from app.data.pipeline.cli import _split_precip_locations
+
+    need, incr = _split_precip_locations(
+        existing=pd.DataFrame(), locations=[(33.0, -118.0)], full_start=date(2024, 1, 1)
+    )
+    assert need == [(33.0, -118.0)]
+    assert incr == []
