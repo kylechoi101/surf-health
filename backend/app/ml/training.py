@@ -33,6 +33,10 @@ from torch.utils.data import DataLoader, Subset
 
 from app.core.config import get_settings
 from app.core.json_safe import write_json
+from app.data.pipeline.beachwatch import (
+    ADVISORY_OPEN_ENDED_MAX_DAYS,
+    fill_open_ended_advisory_end,
+)
 from app.data.pipeline.features import (
     MARINE_MICROBIOLOGY_NUMERIC_COLUMNS,
     STORMWATER_EXPERT_NUMERIC_COLUMNS,
@@ -486,14 +490,37 @@ def _persistence_probabilities(features: pd.DataFrame, stv_threshold: float) -> 
     """A fair persistence baseline: use the most-recent prior official observation.
 
     BeachWatch sampling is often weekly, so a strict lag-1 baseline degenerates into
-    predicting the majority class. ``enterococcus_value_last_obs`` is explicitly
-    constructed as the last observed value prior to the target row (forecast-safe),
-    so thresholding it is the right "do what we did last time" comparator.
+    predicting the majority class. ``exceeds_stv_last_obs`` is the last observed
+    exceedance prior to the target row (forecast-safe), so carrying it forward is
+    the right "do what we did last time" comparator.
+
+    It replaces the old ``enterococcus_value_last_obs > stv_threshold`` rule, which
+    was method-blind: San Diego ddPCR rows report copies/100mL and must be judged
+    against 1413 (see pipeline.exceedance), but this compared them against the 104
+    culture STV and flagged clean water as an exceedance. Because the result is
+    hard-pinned to 1.0 by _positive_persistence_guarded_blend_probabilities, that
+    put 34 of the 74 "High" bands served on 2026-07-30 on beaches whose most recent
+    lab result was clean. ``exceeds_stv_last_obs`` carries the already-method-aware
+    decision instead of re-deriving it.
+
+    ``stv_threshold`` is retained only for the legacy fallback below, which applies
+    to frames built before ``exceeds_stv_last_obs`` existed.
     """
-    last_obs = pd.to_numeric(features.get("enterococcus_value_last_obs"), errors="coerce")
+    last_exceedance = features.get("exceeds_stv_last_obs")
+    if last_exceedance is not None:
+        exceeded = pd.to_numeric(last_exceedance, errors="coerce")
+        return exceeded.fillna(0.0).gt(0.0).astype(float).to_numpy()
+
+    last_obs = features.get("enterococcus_value_last_obs")
     if last_obs is None:
         return np.zeros(len(features), dtype=float)
-    return last_obs.fillna(0.0).gt(stv_threshold).astype(float).to_numpy()
+    return (
+        pd.to_numeric(last_obs, errors="coerce")
+        .fillna(0.0)
+        .gt(stv_threshold)
+        .astype(float)
+        .to_numpy()
+    )
 
 
 def _blend_probabilities(
@@ -2637,25 +2664,18 @@ def _refresh_candidate_advisory_features(
     adv = advisories[["beach_id", "started_at", "ended_at", "cause"]].copy()
     adv["started_at"] = pd.to_datetime(adv["started_at"])
     adv["ended_at_ts"] = pd.to_datetime(adv["ended_at"])
-    # ended_at_filled: rows without a closure date used to default to 2099,
-    # which made every never-closed admin advisory (Tijuana plume, 2022 BSV
-    # postings, etc.) permanently "active" for training and serving. We cap
-    # open-ended advisories at started_at + 14 days unless they started in
-    # the last 14 days (those are still genuinely current). Matches the
-    # serving override window and WHO/EPA acute-event guidance — anything
-    # not refreshed in two weeks is bureaucratic, not operational.
+    # One open-ended-advisory rule, shared with beachwatch._advisory_temporal_features
+    # (which builds the same feature into the training labels frame). The old code
+    # here special-cased "started within the last 14d -> fill 2099"; capping every
+    # open-ended row at started_at + 14d is equivalent for the as-of-forecast_date
+    # test below (a row started after forecast_ts - 14d caps to a date at or beyond
+    # forecast_ts, so it still reads active) and, unlike the 2099 sentinel, is
+    # correct per-row when swept across history.
     forecast_ts = pd.Timestamp(forecast_date)
-    window_start = forecast_ts - pd.Timedelta(days=14)
-    zombie_cutoff = forecast_ts - pd.Timedelta(days=14)
-    fill_default = pd.Timestamp("2099-01-01")
-    open_ended_recent = adv["ended_at_ts"].isna() & (adv["started_at"] >= zombie_cutoff)
-    open_ended_old = adv["ended_at_ts"].isna() & (adv["started_at"] < zombie_cutoff)
-    adv["ended_at_filled"] = adv["ended_at_ts"]
-    adv.loc[open_ended_recent, "ended_at_filled"] = fill_default
-    adv.loc[open_ended_old, "ended_at_filled"] = (
-        adv.loc[open_ended_old, "started_at"] + pd.Timedelta(days=14)
+    window_start = forecast_ts - pd.Timedelta(days=ADVISORY_OPEN_ENDED_MAX_DAYS)
+    adv["ended_at_filled"] = fill_open_ended_advisory_end(
+        adv["started_at"], adv["ended_at_ts"]
     )
-    adv["ended_at_filled"] = adv["ended_at_filled"].fillna(fill_default)
 
     active_adv = adv[
         (adv["started_at"] < forecast_ts) & (adv["ended_at_filled"] > window_start)
@@ -3950,6 +3970,46 @@ def _export_forecasts(
     return TrainingArtifacts(winner=winner, metrics=metrics)
 
 
+def _train_offset_model(
+    features: pd.DataFrame,
+    labels: np.ndarray,
+    metadata: pd.DataFrame,
+    train_idx: np.ndarray,
+    cal_idx: np.ndarray,
+    cal_metadata: pd.DataFrame,
+) -> tuple[object, object]:
+    """Fit the two-tier offset model and its calibrator.
+
+    The offset model holds each beach's never-stale historical baseline as an
+    XGBoost ``base_margin``, so the serve-time router can hand it the stale
+    (between-sample) beaches the plain ensemble collapses on — CA deployment
+    eval: served AUCPR 0.38 -> 0.62, and the under-warning bias is fixed. See
+    two_tier.py.
+
+    Shared by BOTH training entrypoints on purpose. This block used to live only
+    inside _run_winner_only, so ``train_curated_and_export`` — the
+    ``full_comparison=true`` winner-re-selection path — passed no offset model to
+    _export_forecasts, the router's ``offset_classifier is not None`` gate went
+    false, and that run published plain-ensemble forecasts with the two-tier
+    router silently off. Nothing caught it: the offset->ensemble mean shift is
+    ~1.43x, well under validate_forecast's 4x anomaly trip.
+    """
+    print("Training XGB undersample offset model (two-tier)...", file=sys.stderr, flush=True)
+    beach_all = metadata["beach_id"].to_numpy() if "beach_id" in metadata.columns else None
+    classifier = XGBUndersampleOffsetEnsemble().fit(
+        features.iloc[train_idx],
+        labels[train_idx],
+        beach_ids=beach_all[train_idx] if beach_all is not None else None,
+    )
+    cal_raw = _predict_pos(
+        classifier,
+        features.iloc[cal_idx],
+        beach_ids=beach_all[cal_idx] if beach_all is not None else None,
+    )
+    _, calibrator = _identity_or_calibrated(cal_raw, labels[cal_idx], cal_metadata)
+    return classifier, calibrator
+
+
 def _run_winner_only(
     curated_dir: Path,
     forecast_date: date,
@@ -4092,23 +4152,10 @@ def _run_winner_only(
     _, ensemble_calibrator = _identity_or_calibrated(ens_cal_raw, labels[cal_idx], cal_metadata)
     _record_valid_metrics("xgb_undersample_ensemble", ens_metric_raw, ensemble_calibrator)
 
-    # Two-tier offset model — trained alongside the ensemble so the serve-time
-    # router can hand stale (between-sample) beaches to the offset, which holds
-    # each beach's never-stale historical baseline. CA deployment eval: served
-    # AUCPR 0.38 → 0.62 and the under-warning bias is fixed (see two_tier.py).
-    print("Training XGB undersample offset model (two-tier)...", file=sys.stderr, flush=True)
+    offset_classifier, offset_calibrator = _train_offset_model(
+        features, labels, metadata, train_idx, cal_idx, cal_metadata
+    )
     _beach_all = metadata["beach_id"].to_numpy() if "beach_id" in metadata.columns else None
-    offset_classifier = XGBUndersampleOffsetEnsemble().fit(
-        features.iloc[train_idx],
-        labels[train_idx],
-        beach_ids=_beach_all[train_idx] if _beach_all is not None else None,
-    )
-    off_cal_raw = _predict_pos(
-        offset_classifier,
-        features.iloc[cal_idx],
-        beach_ids=_beach_all[cal_idx] if _beach_all is not None else None,
-    )
-    _, offset_calibrator = _identity_or_calibrated(off_cal_raw, labels[cal_idx], cal_metadata)
     _record_valid_metrics(
         "xgb_undersample_offset",
         _predict_pos(
@@ -4732,6 +4779,12 @@ def train_curated_and_export(
         regressor="elastic_net" if regressor is baselines.linear else "hist_gbm_regressor",
         ensemble_weights=ensemble_weights.tolist() if winner == "stacked_ensemble" and ensemble_weights is not None else None,
     )
+    # The serve-time router needs the offset model regardless of which entrypoint
+    # produced the winner — see _train_offset_model. This path calibrates on
+    # valid_idx, matching the calibrator fit used for every other model here.
+    offset_classifier, offset_calibrator = _train_offset_model(
+        features, labels, metadata, train_idx, valid_idx, valid_metadata
+    )
     return _export_forecasts(
         curated_dir=curated_dir,
         forecast_date=forecast_date,
@@ -4757,6 +4810,8 @@ def train_curated_and_export(
             ensemble_weights=ensemble_weights,
             regressor=regressor,
             regressor_valid_predictions=regressor_valid_predictions,
+            offset_classifier=offset_classifier,
+            offset_calibrator=offset_calibrator,
         ),
         plan=plan,
         metrics=metrics,
