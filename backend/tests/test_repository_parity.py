@@ -132,3 +132,49 @@ def test_friendly_name_prefers_explicit_beach_name_over_the_id_slug():
     )
     assert name == "Long Beach"
     assert "Long Beach City" not in name
+
+
+# --- Card vs detail must agree ------------------------------------------------
+#
+# `list_parent_beaches` used to read `risk_band` straight from the forecasts table
+# -- baked at EXPORT time with the advisory floor applied -- while
+# `_build_forecast_record` re-derived it against the CURRENT advisory state. They
+# agreed only while advisory state was unchanged between export and serve. On
+# 2026-08-02 they had diverged for 12 beaches: Dillon Beach rendered High on the
+# card and Low on the detail, both reporting p_exceed = 0.3, off a Posting from
+# 2026-07-13 that was never closed.
+
+
+@pytest.mark.parametrize(
+    "raw,stored,active,recency,expect_band,expect_p",
+    [
+        # The Dillon case: floor baked at export, advisory since lapsed.
+        (0.032, 0.30, False, "recent", "Low", 0.032),
+        # Genuinely posted: band from the floored MODEL value, stored p preserved.
+        (0.18, 0.72, True, "fresh", "High", 0.72),
+        # Posted with nothing stored above the floor.
+        (0.05, 0.05, True, "fresh", "High", 0.30),
+        # Not posted, model is genuinely high on a fresh sample -> not capped.
+        (0.55, 0.55, False, "fresh", "High", 0.55),
+        # Not posted, high model band but a very stale sample -> confidence cap.
+        (0.55, 0.55, False, "very_stale", "Moderate", 0.55),
+    ],
+)
+def test_serve_time_band_is_one_rule(raw, stored, active, recency, expect_band, expect_p):
+    from app.repositories.serving_repository import serve_time_band
+
+    band, p = serve_time_band(raw, stored, active_advisory=active, recency_band=recency)
+    assert band == expect_band
+    assert p == pytest.approx(expect_p)
+
+
+def test_serve_time_band_never_contradicts_its_own_probability():
+    """A response must never report p_exceed at or above a cutpoint while banding
+    below it -- the detail view used to return p_exceed 0.3 with risk_band 'Low',
+    and 0.3 is exactly the High cutpoint."""
+    from app.ml.calibration import risk_band
+    from app.repositories.serving_repository import serve_time_band
+
+    for raw in (0.0, 0.05, 0.19, 0.2, 0.29, 0.3, 0.31, 0.69, 0.7, 0.95):
+        band, p = serve_time_band(raw, 0.30, active_advisory=False, recency_band="recent")
+        assert band == risk_band(p), f"band {band} disagrees with its own p_exceed {p}"
