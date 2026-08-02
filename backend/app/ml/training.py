@@ -2692,7 +2692,14 @@ def _refresh_candidate_advisory_features(
     recent_ids = set(active_adv.loc[is_recent, "beach_id"].tolist())
     candidates["advisory_recent_active"] = candidates["beach_id"].isin(recent_ids).astype(int)
 
-    is_currently_active = active_adv["ended_at_ts"].isna() | (active_adv["ended_at_ts"] >= forecast_ts)
+    # ended_at_FILLED, not ended_at_ts: reading the raw column meant `.isna()`
+    # treated a never-closed advisory as active FOREVER — the 2099-sentinel bug in a
+    # third guise, and the one that floored Dillon Beach to High off a Posting from
+    # 2026-07-13 and Malibu Lagoon off one from 2026-03-02. Genuinely chronic
+    # sources keep the exemption they already had in the clause below, so capping
+    # open-ended rows here cannot drop the Tijuana River closure.
+    is_chronic = active_adv["cause"].str.contains("Tijuana River", case=False, na=False)
+    is_currently_active = is_chronic | (active_adv["ended_at_filled"] >= forecast_ts)
     is_recent_active_floor = is_currently_active & (
         (active_adv["started_at"] >= cutoff_365) | (active_adv["cause"].str.contains("Tijuana River", case=False, na=False))
     )

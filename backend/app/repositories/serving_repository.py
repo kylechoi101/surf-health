@@ -73,6 +73,61 @@ def _parse_date(value: object) -> date:
     return date.fromisoformat(str(value)[:10])
 
 
+def serve_time_band(
+    raw_p_exceed: float | None,
+    stored_p_exceed: float | None,
+    *,
+    active_advisory: bool,
+    recency_band: str | None,
+) -> tuple[str, float]:
+    """Decide (band, probability) at SERVE time. Never read the stored band.
+
+    The card and the detail view used to answer this differently for the same
+    beach: `list_parent_beaches` read `risk_band` straight out of the forecasts
+    table -- a value baked at EXPORT time with the advisory floor already applied
+    -- while `_build_forecast_record` re-derived it from `p_exceed_raw` against
+    the CURRENT advisory state. They agree only while advisory state is unchanged
+    between export and serve.
+
+    On 2026-08-02 it had diverged for 12 beaches: Dillon Beach showed High on the
+    card and Low on the detail, both reporting p_exceed = 0.3, off a Posting from
+    2026-07-13 that was never closed (Malibu Lagoon's was from 2026-03-02). The
+    detail was additionally self-contradictory -- p_exceed 0.3 is exactly the High
+    cutpoint, rendered as "Low".
+
+    One rule now: an advisory floors the probability only while it is actually
+    active at serve time, which is the floor's stated purpose ("a posted station
+    can never show Low or Moderate"). A beach that is no longer posted shows its
+    model band, and the returned probability is always the one the band was
+    derived from.
+    """
+    base = raw_p_exceed if raw_p_exceed is not None else stored_p_exceed
+    if base is None:
+        return "Low", 0.0
+    if active_advisory:
+        # Posted station. The band is derived from the MODEL's own probability
+        # (floored, so a posting can never render Low/Moderate) while the served
+        # p_exceed keeps the stored value — a deliberate split: the posting is
+        # carried by the advisory badge, and banding the stored value would
+        # escalate a posted beach to Very High off the override itself. The
+        # confidence cap is skipped here on purpose; it damps MODEL-only warnings
+        # off stale samples, and an official posting is not model-only.
+        band_p, _ = advisory_floored_probability(float(base), True)
+        served_p, _ = advisory_floored_probability(
+            float(stored_p_exceed if stored_p_exceed is not None else base), True
+        )
+        return risk_band(band_p), float(served_p)
+    # Not posted: the stored p_exceed may still carry an EXPORT-time floor whose
+    # advisory has since lapsed. Band and probability both come from the raw
+    # model value so the response cannot contradict itself.
+    return (
+        confidence_capped_risk_band(
+            float(base), sample_recency_band=recency_band, advisory_active=False
+        ),
+        float(base),
+    )
+
+
 def _derive_friendly_name(row: sqlite3.Row) -> str:
     return derive_friendly_name(
         beach_id=str(row["beach_id"]),
@@ -344,16 +399,27 @@ class ServingSnapshotRepository(BeachRepository):
         if not rows:
             return []
 
-        forecasts = self._fetch_all("select beach_id, risk_band, p_exceed, model_version from forecasts")
-        forecast_lookup = {
-            str(row["beach_id"]): (
-                str(row["risk_band"]),
-                float(row["p_exceed"]),
-                str(row["model_version"]),
-            )
-            for row in forecasts
-        }
         active_beach_ids = self._active_advisory_beach_ids()
+        # Re-derive the band here rather than reading the stored one: the stored
+        # value was baked at export time with the advisory floor applied, and the
+        # detail view re-derives against the CURRENT advisory state. Reading it
+        # raw is what made the card and the detail disagree. See serve_time_band.
+        # `select *`, not a column list: p_exceed_raw / sample_recency_band are
+        # absent from older snapshots, and naming them makes the query raise
+        # instead of degrading. _row_get already exists for exactly this.
+        forecasts = self._fetch_all("select * from forecasts")
+        forecast_lookup = {}
+        for row in forecasts:
+            beach_id = str(row["beach_id"])
+            band, probability = serve_time_band(
+                _safe_float(_row_get(row, "p_exceed_raw")),
+                _safe_float(row["p_exceed"]),
+                active_advisory=beach_id in active_beach_ids,
+                recency_band=(
+                    str(_row_get(row, "sample_recency_band") or "") or None
+                ),
+            )
+            forecast_lookup[beach_id] = (band, probability, str(row["model_version"]))
         advisory_websites = self._active_advisory_websites()
         # member_id -> local nickname (e.g. "Black's Beach"), so the apps can
         # match search queries against the actual names users know stations by.
@@ -551,37 +617,29 @@ class ServingSnapshotRepository(BeachRepository):
         advisory_website: str | None = None
         parent_has_advisory = False
         parent_advisory_url: str | None = None
-        served_p_exceed = float(row["p_exceed"])
-        floor_applied_here = False
+        # One serve-time decision, shared with list_parent_beaches, so the card and
+        # the detail can never disagree about the same beach. It also guarantees the
+        # returned p_exceed is the value the band was derived from: this used to
+        # return the EXPORT-time floored 0.3 alongside a band computed from the raw
+        # probability, so a response could read `p_exceed: 0.3, risk_band: "Low"`
+        # when 0.3 is exactly the High cutpoint.
+        band, served_p_exceed = serve_time_band(
+            raw_p_exceed,
+            _safe_float(row["p_exceed"]),
+            active_advisory=active_advisory,
+            recency_band=sample_recency_band(sample_age),
+        )
+        floor_applied_here = active_advisory and served_p_exceed > (raw_p_exceed or 0.0)
         if active_advisory:
             drivers = ["Official health advisory is active for this station.", *base_drivers][:5]
             # Band stays the MODEL's; the posting is carried by advisory_website /
-            # the client's badge. Floor first so a posted station can never show
-            # Low or Moderate. The confidence cap is skipped on purpose — it exists
-            # to damp strong MODEL-only warnings off stale samples, and an official
-            # posting is not model-only.
-            served_p_exceed, floor_applied_here = advisory_floored_probability(
-                served_p_exceed, True
-            )
-            band = risk_band(
-                advisory_floored_probability(
-                    raw_p_exceed if raw_p_exceed is not None else served_p_exceed, True
-                )[0]
-            )
+            # the client's badge. The floor keeps a posted station out of Low or
+            # Moderate. The confidence cap is skipped on purpose (inside
+            # serve_time_band) — it exists to damp strong MODEL-only warnings off
+            # stale samples, and an official posting is not model-only.
             advisory_website = website_map.get(beach_id)
         else:
             drivers = base_drivers
-            # Apply the same confidence-aware false-alarm cap as the export/list path
-            # so the detail view doesn't re-derive an un-capped band from p_exceed_raw.
-            band = (
-                confidence_capped_risk_band(
-                    raw_p_exceed,
-                    sample_recency_band=sample_recency_band(sample_age),
-                    advisory_active=False,
-                )
-                if raw_p_exceed is not None
-                else model_risk_band
-            )
             parent_has_advisory, parent_advisory_url = self._parent_advisory_signal(
                 beach_id, active_set, website_map
             )
