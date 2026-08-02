@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -38,9 +39,40 @@ def _f(v) -> float | None:
         return None
 
 
+ACTIVE_WINDOW_DAYS = 14  # Match serving_repository's 14-day acute window
+
+
+def _active_advisory_set(advisories: pd.DataFrame) -> set[str]:
+    """Beach ids with a currently-active advisory.
+
+    Vendored twin of `bake_web_static._active_advisory_set` (minus the website
+    map, which the map layer doesn't render). Both bakers are curl'd standalone
+    by shorelife-web's deploy and cannot import the app package, so the rule is
+    duplicated on purpose — `test_bake_conditions_map.py` pins this copy against
+    that one so they cannot drift.
+
+    status='active' AND started_at within 14 days. Closures bypass the window:
+    they describe ongoing hazards that persist until the scraper stops seeing
+    them. Postings still get the 14-day gate.
+    """
+    if advisories.empty or "status" not in advisories.columns:
+        return set()
+    a = advisories.copy()
+    a["started_at"] = pd.to_datetime(a["started_at"], errors="coerce")
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=ACTIVE_WINDOW_DAYS)
+    is_active = a["status"] == "active"
+    advisory_type = a.get("advisory_type", pd.Series("", index=a.index))
+    is_closure = advisory_type.fillna("").str.contains("closure", case=False, na=False)
+    active = a[is_active & (is_closure | (a["started_at"] >= cutoff))]
+    return {str(b) for b in active["beach_id"].dropna()}
+
+
 def bake_conditions(curated: Path) -> list[dict]:
     """Per-beach current conditions for the glyph + bacteria + UV layers."""
     beaches = pd.read_parquet(curated / "beaches.parquet")
+    adv_path = curated / "advisories.parquet"
+    advisories = pd.read_parquet(adv_path) if adv_path.exists() else pd.DataFrame()
+    advisory_ids = _active_advisory_set(advisories)
     env_path = curated / "latest_env.parquet"
     env = pd.read_parquet(env_path) if env_path.exists() else pd.DataFrame()
     env_by = {str(r["beach_id"]): r for _, r in env.iterrows()} if not env.empty else {}
@@ -57,10 +89,18 @@ def bake_conditions(curated: Path) -> list[dict]:
     # Water-quality severity in [0,1]: 0 = good (green), 1 = bad/advisory (red).
     # The web draws a blurred gradient field from each station; this is the value
     # it colors. Prefer the continuous p_exceed; fall back to the risk band.
-    _BAND_SEV = {"Low": 0.08, "Moderate": 0.38, "High": 0.66, "Very High": 0.9, "Advisory": 1.0}
+    _BAND_SEV = {"Low": 0.08, "Moderate": 0.38, "High": 0.66, "Very High": 0.9}
 
-    def _wq_severity(band, pex) -> float | None:
-        if band == "Advisory":
+    def _wq_severity(band, pex, has_advisory: bool = False) -> float | None:
+        # An active posting pins severity to full, whatever the model says.
+        #
+        # This used to test `band == "Advisory"`, but risk_band has not carried
+        # that value since a2556455d made it "always the model's band" — the
+        # advisory now rides on a separate flag. So the branch was dead, the map
+        # never received advisory state at all, and posted beaches rendered from
+        # p_exceed like any other: no purple, ever, for any of the 28 currently
+        # posted beaches.
+        if has_advisory:
             return 1.0
         if pex is not None:
             return min(1.0, max(0.04, pex / 0.45))  # p_exceed 0.45+ → full red
@@ -91,7 +131,8 @@ def bake_conditions(curated: Path) -> list[dict]:
             "lon": round(lon, 4),
             "risk_band": band_by.get(bid),
             "p_exceed": pex_by.get(bid),
-            "wq": _wq_severity(band_by.get(bid), pex_by.get(bid)),
+            "has_advisory": bid in advisory_ids,
+            "wq": _wq_severity(band_by.get(bid), pex_by.get(bid), bid in advisory_ids),
             "wind_speed_mps": _f(e.get("wind_speed_mps")) if e is not None else None,
             "wind_dir_deg": _f(e.get("wind_direction_deg")) if e is not None else None,
             "uv_index": _f(e.get("uv_index")) if e is not None else None,
@@ -99,8 +140,12 @@ def bake_conditions(curated: Path) -> list[dict]:
             "swell_dir_deg": swell_dir,
             "swell_period_s": swell_p,
         }
-        # keep only beaches that carry at least one vector/scalar to draw
-        if any(rec[k] is not None for k in ("wind_speed_mps", "uv_index", "swell_dir_deg", "risk_band")):
+        # keep only beaches that carry at least one vector/scalar to draw.
+        # has_advisory counts: a posted beach must reach the map even when every
+        # other layer is missing for it, or the purple never renders.
+        if rec["has_advisory"] or any(
+            rec[k] is not None for k in ("wind_speed_mps", "uv_index", "swell_dir_deg", "risk_band")
+        ):
             rows.append(rec)
     return rows
 
