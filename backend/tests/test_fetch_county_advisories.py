@@ -732,13 +732,42 @@ def test_substring_rule_rejects_single_incidental_token_match():
     """"Shinn Pond at Alameda Creek Trails" (a Fremont freshwater pond) used to
     resolve onto "Alameda Point Encinal Beach Mid" on the single shared token
     "alameda". A dropped advisory is a miss; a mis-mapped one posts a warning on
-    the wrong beach AND clears the real one, so this must now be a miss."""
+    the wrong beach AND clears the real one, so this must now be a miss.
+
+    Covers BOTH layers that can make this match: the substring rule and the
+    fuzzy fallback. rapidfuzz's token_set_ratio scores a token-subset pair 100,
+    so guarding only the substring layer left the mis-map fully intact wherever
+    rapidfuzz is installed — which is CI and production, but not necessarily a
+    dev sandbox, so this test is silently weaker without it.
+    """
+    import fetch_county_advisories as fca
+
     resolver = StationResolver(_ebrpd_marin_beaches())
     beach_ids, kind = resolver.resolve_all_by_name(
         "East Bay Parks District", "Shinn Pond at Alameda Creek Trails"
     )
     assert beach_ids == []
     assert kind == "miss"
+    assert fca.HAS_RAPIDFUZZ, (
+        "rapidfuzz is missing, so the fuzzy layer was skipped and this test did "
+        "not actually exercise it — install it (it is in the CI dependency set)"
+    )
+
+
+def test_fuzzy_layer_still_matches_a_genuine_misspelling():
+    """The token guard must not turn the fuzzy layer off entirely: a near-
+    identical string is still a match via the length-sensitive `ratio`."""
+    beaches = pd.DataFrame([
+        {"beach_id": "stinson", "name": "Stinson", "beach_name": "Stinson Cove",
+         "county": "Marin", "region": "N", "station_code": "S1",
+         "support_status": "production", "latitude": 1.0, "longitude": 2.0},
+    ])
+    resolver = StationResolver(beaches)
+    # A misspelling: shares only 1 token with the roster key, so it survives
+    # solely on the whole-string ratio (91.7) — the path the guard preserves.
+    beach_ids, kind = resolver.resolve_all_by_name("Marin", "Stinsen Cove")
+    assert beach_ids == ["stinson"]
+    assert kind == "fuzzy"
 
 
 def test_substring_rule_still_matches_on_two_shared_tokens():

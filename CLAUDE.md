@@ -143,6 +143,19 @@ problems, fixed separately:
   ≥2 shared tokens, and an ambiguous match (several qualifying keys) is a miss rather than a
   dict-order coin flip. A dropped advisory is a miss; a mis-mapped one posts a warning on the
   wrong beach AND clears the real one.
+  - **The fuzzy layer needed the same guard, and this is a trap for the next person.**
+    `rapidfuzz.fuzz.token_set_ratio` scores **100** whenever one token set is a *subset* of the
+    other, so guarding only the substring layer left the identical mis-map fully intact
+    (`token_set_ratio("shinn pond alameda trails", "alameda") == 100`, 39-point gap to the
+    runner-up). A fuzzy candidate must now also be token-anchored (≥2 shared tokens) **or**
+    near-identical end-to-end by the length-sensitive `fuzz.ratio` (≥90), which scores that pair
+    43.8. Costs nothing measurable — the fuzzy layer matched **0** advisories in the last
+    committed run (45 live_list, 1 csv). ⚠️ **`rapidfuzz` is an optional import**: without it
+    installed the whole layer is skipped, so a dev sandbox silently passes tests that CI fails.
+    `test_substring_rule_rejects_single_incidental_token_match` now asserts `HAS_RAPIDFUZZ`.
+  - **Measured, all 850 beaches × both name columns, all 15 counties:** 1017 identical, 683
+    newly-correct (site names the `beach_name`-only index could never see), **0** that previously
+    resolved correctly and now do not.
 - **Layer order is now confidence order:** exact `beach_name` → exact secondary → **alias CSV** →
   token-guarded substring → fuzzy. The curated alias file deliberately outranks the heuristic so
   an operator can correct a bad match by adding a row. Alias rows may now **fan out**: repeated

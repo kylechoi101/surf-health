@@ -256,6 +256,13 @@ _MIN_MATCH_KEY_LEN = 4
 # rule has to be the conservative layer, not the greedy one.
 _MIN_SUBSTRING_SHARED_TOKENS = 2
 
+# A fuzzy candidate that is NOT token-anchored (see _MIN_SUBSTRING_SHARED_TOKENS)
+# must instead be a near-identical string end to end, scored with the
+# length-sensitive `fuzz.ratio` rather than `token_set_ratio`. This is what
+# still lets a genuine misspelling through while rejecting "roster key happens
+# to appear as a token".
+_MIN_FUZZY_WHOLE_STRING_RATIO = 90
+
 
 class StationResolver:
     """Resolve a (county, beach_name) tuple to a beach_id using:
@@ -418,13 +425,31 @@ class StationResolver:
             if len(substring_hits) == 1:
                 return [next(iter(substring_hits))], "live_list"
 
-        # Layer C: fuzzy match (only if rapidfuzz available)
+        # Layer C: fuzzy match (only if rapidfuzz available), under the SAME
+        # conservatism as Layer A.2.
+        #
+        # `token_set_ratio` scores 100 whenever one token set is a subset of the
+        # other, so on its own it re-admits the exact mis-map the substring
+        # guard rejects: token_set_ratio("shinn pond alameda trails",
+        # "alameda") == 100 with a 39-point gap to the runner-up, which is how
+        # a Fremont freshwater pond kept resolving onto Alameda Point. A match
+        # must therefore ALSO be either token-anchored (>= 2 shared tokens, the
+        # Layer A.2 rule) or a near-identical string overall (`ratio`, which is
+        # length-sensitive and so immune to the subset pathology — it scores
+        # that pair 43.8). This costs nothing measurable: the fuzzy layer
+        # matched 0 advisories in the last committed run (45 live_list, 1 csv).
         if HAS_RAPIDFUZZ and county_lookup:
             candidates = list(county_lookup.keys())
             top = process.extract(norm, candidates, scorer=fuzz.token_set_ratio, limit=2)
             if top and top[0][1] >= 90:
                 if len(top) == 1 or (top[0][1] - top[1][1] >= 20):
-                    return [county_lookup[top[0][0]]], "fuzzy"
+                    key = top[0][0]
+                    shared = len(set(norm.split()) & set(key.split()))
+                    if (
+                        shared >= _MIN_SUBSTRING_SHARED_TOKENS
+                        or fuzz.ratio(norm, key) >= _MIN_FUZZY_WHOLE_STRING_RATIO
+                    ):
+                        return [county_lookup[key]], "fuzzy"
 
         return [], "miss"
 
