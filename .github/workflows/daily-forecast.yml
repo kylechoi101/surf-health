@@ -134,12 +134,23 @@ jobs:
         # ingest (which writes advisories.parquet) and BEFORE training (which
         # consumes it as a feature).
         #
-        # G.1: this step is NOT continue-on-error. The script self-fails (exit 1)
-        # only when its name-resolution observability gate trips (unresolved
-        # advisories > 5 absolute OR > 10% of scraped). Transient per-county
-        # HTTP failures are absorbed inside the script's RetryingClient and the
-        # CountyReport telemetry, so the only way the script returns non-zero
-        # is the explicit operability signal we want to surface.
+        # G.1: this step is NOT continue-on-error, but since 2026-08-05 the
+        # script only self-fails (exit 1) on a HARD gate trip — mass resolution
+        # loss (>15 unexpected unresolved) or a county that resolved advisories
+        # last run and resolves none now. Those mean the advisory feed cannot be
+        # trusted by the training step that consumes advisory_active_prev_14d,
+        # so the run must stop here.
+        #
+        # A SOFT trip (over the absolute floor or the 10% ratio) publishes its
+        # verdict to system_health.json['scraper_gate'] and returns 0 so the day
+        # still gets a forecast; the verify-scraper-gate step AFTER the commit is
+        # what fails the job. Before that split, one unmatched beach name
+        # (5 unresolved of 49 = 10.2%) aborted the whole run before training and
+        # cost a day's forecast — the dropped advisory was dropped either way.
+        #
+        # Transient per-county HTTP failures are absorbed inside the script's
+        # RetryingClient and the CountyReport telemetry, so the only way the
+        # script returns non-zero is the explicit operability signal above.
         run: |
           python scripts/fetch_county_advisories.py --curated ../data/curated/
         working-directory: backend
@@ -349,6 +360,24 @@ jobs:
         # the pipeline-failure issue.
         if: steps.render_deploy.outputs.triggered == 'true'
         run: python scripts/verify_deploy.py --curated ../data/curated/
+        working-directory: backend
+
+      - name: Verify scraper observability gate (fail the job if advisories were dropped)
+        # LAST step in the job, and that placement is load-bearing. Like the
+        # release gate, this must run after the commit/push so the verdict and
+        # the refreshed unresolved_advisories.parquet reach the repo before the
+        # job goes red. But it also has to run after the Render deploy: that
+        # step is `if: success()`, so failing the job any earlier would commit a
+        # fresh forecast and then skip shipping it — the users' snapshot would
+        # stay stale, which is the outcome this whole change exists to prevent.
+        # (The release gate failing before the deploy is fine by contrast: when
+        # it blocks, forecasts.parquet was deliberately NOT updated, so there is
+        # nothing new to ship.)
+        #
+        # `if: always()` so a soft scraper trip is still reported when an
+        # earlier step already failed for an unrelated reason.
+        if: always()
+        run: python scripts/verify_scraper_gate.py --curated ../data/curated/
         working-directory: backend
 
   # Failure alerting: the daily pipeline failing used to be silent — the only

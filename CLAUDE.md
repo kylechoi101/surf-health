@@ -121,6 +121,51 @@ layer only, and nothing read the sample rows.
   label frame while the UI showed them two months stale. This is an independent **pre-existing**
   bug that `--with-beachwatch-live` introduced, not an SF one; the fix clears all of them (92 → 0).
 
+### Advisory name resolution + G.1 gate severity (2026-08-05)
+
+The 2026-08-05 daily run failed at `fetch_county_advisories.py` with 5 unresolved of 49 scraped
+(10.2% vs the 10% ratio; the absolute floor is `> 5`, so only the ratio tripped). The step runs
+BEFORE ML training, so one unmatched beach name cost the whole day's forecast. Three separate
+problems, fixed separately:
+
+- **Resolver blind spot — `beach_name` is a site GROUP, not a site.** `StationResolver`'s Layer A
+  indexed `beach_name` only. Two failure modes: Marin's `GREEN BRIDGE` (a `production` beach)
+  carries the county-wide placeholder `All_Marin_County` in `beach_name`, so it was invisible and
+  its posting was dropped every run since 07-31 (its sibling Inkwells resolved only because a
+  SECOND registry row happens to carry `beach_name="Inkwells"`); and every site sharing a
+  `beach_name` collapsed to one arbitrary `beach_id`, so **"Del Valle WEST Swim Beach" resolved
+  onto the EAST beach** — the west posting landed on the wrong beach and west showed clean. Fixed
+  with an exact-only secondary index on the site-level `name`/`station_code` (~1.4k keys; the 13
+  statewide keys that map to >1 beach are dropped as ambiguous rather than resolved arbitrarily).
+- **Substring rule was producing wrong-beach advisories.** Layer A.1 accepted any containment over
+  a 4-char floor, so **"Shinn Pond at Alameda Creek Trails"** (a Fremont freshwater pond) resolved
+  onto **"Alameda Point Encinal Beach Mid"** on the single shared token `alameda`. Now requires
+  ≥2 shared tokens, and an ambiguous match (several qualifying keys) is a miss rather than a
+  dict-order coin flip. A dropped advisory is a miss; a mis-mapped one posts a warning on the
+  wrong beach AND clears the real one.
+- **Layer order is now confidence order:** exact `beach_name` → exact secondary → **alias CSV** →
+  token-guarded substring → fuzzy. The curated alias file deliberately outranks the heuristic so
+  an operator can correct a bad match by adding a row. Alias rows may now **fan out**: repeated
+  `(county, beach_name_normalized)` keys accumulate, and `resolve_advisories` replicates the
+  posting onto every covered `beach_id`. EBRPD's one district-wide "Crown Beach Regional
+  Shoreline" notice covers all **6** sampled Crown Beach points; resolving to one would leave
+  five showing clean. `resolve_by_name` stays single-valued for `persist_samples` — a scraped MPN
+  reading is one physical measurement and must not be duplicated.
+- **Gate severity split (`evaluate_scraper_gate`).** The numerator is now UNEXPECTED unresolved
+  only: venues with no possible `beach_id` live in `_static_data/unmapped_advisory_venues.csv`
+  (still scraped, still logged, excluded from floor/ratio) — otherwise they pin the counter at
+  the threshold and any single new posting fails the run, which is exactly what happened. The
+  allowlist is a deferral, not a mute: `review_by` is enforced, an expired row starts counting
+  again, and a name not on the list always counts. A **soft** trip (floor/ratio) now publishes
+  `system_health.json["scraper_gate"]`, returns 0, and lets the pipeline finish;
+  `scripts/verify_scraper_gate.py` fails the job **after** the commit AND after the Render deploy
+  (that step is `if: success()`, so failing earlier would commit a fresh forecast and then skip
+  shipping it). Only a **hard** trip aborts in place, before training consumes
+  `advisory_active_prev_14d`: >15 unexpected unresolved, or a county that resolved advisories
+  last run and resolves none now (`detect_county_resolution_regressions`, baselined against the
+  previous run's committed `county_advisories_report.json` — a volume-independent schema-drift
+  signal the ratio only approximated). `--strict-gate` restores exit-on-soft for local debugging.
+
 ### Pipeline robustness guards (2026-06-11)
 
 - **CEDEN negative-value guard** (`pipeline/ceden.py`): the CEDEN/SafeToSwim normalizer now nulls

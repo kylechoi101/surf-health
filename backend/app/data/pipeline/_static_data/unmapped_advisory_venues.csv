@@ -1,0 +1,22 @@
+# Venues a county/district posts advisories for that have NO counterpart in
+# beaches.parquet — there is no beach_id to resolve them to, so they can never
+# leave the unresolved sink. They are still scraped, still logged to
+# unresolved_advisories.parquet, and still printed; they are only excluded from
+# the G.1 gate's numerator so a permanently-unmappable venue cannot ratchet the
+# unresolved ratio into a daily workflow failure.
+#
+# This is an ALLOWLIST, not a mute button. Rules:
+#   * `scraped_name_normalized` must be the output of _normalize_name(), i.e.
+#     lowercased, punctuation stripped, and with the noise tokens (beach, creek,
+#     park, state, at, ...) already removed.
+#   * a name that is NOT listed here always counts against the gate — new
+#     unresolved names never auto-enter, which is the whole point of G.1.
+#   * `review_by` is enforced: past that date the entry stops suppressing and
+#     the venue counts against the gate again. Either add the venue to the beach
+#     registry, map it in county_beach_name_to_station.csv, or renew the row
+#     with a fresh justification.
+county,scraped_name_normalized,reason,review_by
+East Bay Parks District,lake temescal,"Freshwater swim lake in Oakland. EBRPD monitors and posts it; not in beaches.parquet (no station, no coastal geometry) so there is nothing to resolve to.",2026-11-01
+East Bay Parks District,big break regional shoreline,"Delta shoreline park in Oakley (Contra Costa). Posted by EBRPD; no registry counterpart.",2026-11-01
+East Bay Parks District,martinez shoreline,"Carquinez Strait shoreline park in Martinez. Posted by EBRPD; no registry counterpart.",2026-11-01
+East Bay Parks District,shinn pond alameda trails,"Freshwater pond on the Alameda Creek Trail in Fremont. No registry counterpart. Until the substring rule was token-guarded this resolved onto 'Alameda Point Encinal Beach Mid' — a different water body ~12km away — on the single shared token 'alameda'; it is correctly unresolved now.",2026-11-01
