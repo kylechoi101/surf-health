@@ -33,6 +33,7 @@ Run after the state-feed normalization step in the daily-forecast pipeline:
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import re
 import sys
@@ -247,21 +248,53 @@ _STATIC_ALIAS_CSV = (
 # "bay" collide with half the roster.
 _MIN_MATCH_KEY_LEN = 4
 
-# Substring matches (Layer A.2) must share at least this many tokens with the
-# roster key. The old rule accepted ANY containment over a 4-character floor,
-# which is how "Shinn Pond at Alameda Creek Trails" (a Fremont freshwater pond)
-# resolved onto "Alameda Point Encinal Beach Mid" — a bay swim beach — on the
-# single shared token "alameda". A dropped advisory is a miss; a mis-mapped one
-# posts a warning on the wrong beach and clears the real one, so the substring
-# rule has to be the conservative layer, not the greedy one.
+# Heuristic matches (Layer A.2 substring, Layer C fuzzy) must be ANCHORED — see
+# _match_is_anchored. The old rule accepted ANY containment over a 4-character
+# floor, which is how "Shinn Pond at Alameda Creek Trails" (a Fremont freshwater
+# pond) resolved onto "Alameda Point Encinal Beach Mid" — a bay swim beach — on
+# the single shared token "alameda". A dropped advisory is a miss; a mis-mapped
+# one posts a warning on the wrong beach and clears the real one, so the
+# heuristic layers have to be the conservative ones.
 _MIN_SUBSTRING_SHARED_TOKENS = 2
 
-# A fuzzy candidate that is NOT token-anchored (see _MIN_SUBSTRING_SHARED_TOKENS)
-# must instead be a near-identical string end to end, scored with the
-# length-sensitive `fuzz.ratio` rather than `token_set_ratio`. This is what
-# still lets a genuine misspelling through while rejecting "roster key happens
-# to appear as a token".
+# A fuzzy candidate that is not anchored must instead be a near-identical string
+# end to end, scored with the length-sensitive `fuzz.ratio` rather than
+# `token_set_ratio`. This is what still lets a genuine MISSPELLING through
+# (which by definition shares no exact token) while rejecting "roster key
+# happens to appear somewhere in the posting".
 _MIN_FUZZY_WHOLE_STRING_RATIO = 90
+
+
+def _is_token_prefix(shorter: list[str], longer: list[str]) -> bool:
+    return len(shorter) <= len(longer) and longer[: len(shorter)] == shorter
+
+
+def _match_is_anchored(norm: str, key: str) -> bool:
+    """Is `key` naming the SUBJECT of posting `norm` (or vice versa)?
+
+    Two ways to qualify:
+
+      * >= _MIN_SUBSTRING_SHARED_TOKENS shared tokens — enough overlap that the
+        match cannot rest on one incidental word.
+      * one side is a token-PREFIX of the other. Counties decorate a beach name
+        with trailing location detail ("Doheny State Beach - 100 feet up and
+        down coast of the San Juan Creek outlet"), so the roster key leads the
+        posting. This is what separates a decorated name from an incidental
+        mention: "alameda" is a token of "shinn pond alameda trails" but not its
+        prefix, whereas "doheny" leads "doheny 100 feet up and down coast...".
+
+    The prefix arm is NOT optional. `_normalize_name` strips the noise tokens
+    (beach, creek, bay, point, park, state...), which collapses 131 of 324
+    roster keys — 40% — to a single token: "doheny", "zuma", "stinson",
+    "crown". A shared-token count alone can never reach 2 against those, so a
+    shared-tokens-only rule silently drops EVERY decorated posting for 40% of
+    the roster (measured: 1,773 correct resolutions lost across all 15
+    counties, incl. the two EBRPD beaches this scraper fix targets).
+    """
+    norm_tokens, key_tokens = norm.split(), key.split()
+    if len(set(norm_tokens) & set(key_tokens)) >= _MIN_SUBSTRING_SHARED_TOKENS:
+        return True
+    return _is_token_prefix(norm_tokens, key_tokens) or _is_token_prefix(key_tokens, norm_tokens)
 
 
 class StationResolver:
@@ -387,13 +420,17 @@ class StationResolver:
         if norm in county_lookup:
             return [county_lookup[norm]], "live_list"
 
-        # Layer A.1: secondary index on site-level name/station_code (exact
-        # only — see __init__ for why these keys never feed the fuzzy layers).
-        secondary = self._secondary_name_lookup.get(county, {})
-        if norm in secondary:
-            return [secondary[norm]], "live_list"
-
-        # Layer B: alias CSV (curated; may fan out to several beach_ids)
+        # Layer B: alias CSV (curated; may fan out to several beach_ids).
+        #
+        # Runs ahead of the secondary index, not just ahead of the heuristics: a
+        # site-level `name` can collide with a DIFFERENT beach's group name in
+        # the same county, and only a human can adjudicate. LA has two distinct
+        # Mother's Beaches — Long Beach's Alamitos Bay site is literally named
+        # "Mothers' Beach", while Marina del Rey's carries it in `beach_name`
+        # ("Marina Del Rey Beach - Mothers Beach") — so a bare "Mothers Beach"
+        # posting hit the secondary index and silently moved 40 km. The
+        # ambiguity guard cannot see that: the two keys normalize differently,
+        # so neither index looks ambiguous on its own.
         aliases = self._alias_lookup.get((county, norm)) or []
         resolved_aliases: list[str] = []
         for target in aliases:
@@ -407,6 +444,12 @@ class StationResolver:
         if resolved_aliases:
             return resolved_aliases, "csv"
 
+        # Layer A.1: secondary index on site-level name/station_code (exact
+        # only — see __init__ for why these keys never feed the fuzzy layers).
+        secondary = self._secondary_name_lookup.get(county, {})
+        if norm in secondary:
+            return [secondary[norm]], "live_list"
+
         # Layer A.2: substring match either direction, token-guarded. Requires
         # _MIN_SUBSTRING_SHARED_TOKENS shared tokens so a single incidental
         # token ("alameda") can no longer carry a match onto the wrong beach.
@@ -414,16 +457,36 @@ class StationResolver:
         # qualify we drop to the unresolved sink rather than let dict order
         # decide which beach gets the advisory.
         if len(norm) >= _MIN_MATCH_KEY_LEN:
-            norm_tokens = set(norm.split())
-            substring_hits = {
-                bid
+            norm_tokens = norm.split()
+            candidates = [
+                (key, bid)
                 for key, bid in county_lookup.items()
                 if len(key) >= _MIN_MATCH_KEY_LEN
                 and (norm in key or key in norm)
-                and len(norm_tokens & set(key.split())) >= _MIN_SUBSTRING_SHARED_TOKENS
-            }
-            if len(substring_hits) == 1:
-                return [next(iter(substring_hits))], "live_list"
+                and _match_is_anchored(norm, key)
+            ]
+            # Several roster keys can legitimately qualify ("Huntington City
+            # Beach near the creek mouth" matches both "huntington" and
+            # "huntington city"). Rank rather than coin-flip on dict order:
+            #   1. a key that LEADS the posting names its subject, beating one
+            #      that merely appears inside it — this is what picks Cardiff
+            #      over San Elijo for "Cardiff/ San Elijo Lagoon - ...";
+            #   2. then the more specific (longer) key — "huntington city"
+            #      over "huntington".
+            # Only a tie at the top rank is genuinely ambiguous, and that is
+            # still a miss rather than an arbitrary pick.
+            if candidates:
+                def _rank(item: tuple[str, str]) -> tuple[int, int]:
+                    key = item[0]
+                    return (
+                        1 if _is_token_prefix(key.split(), norm_tokens) else 0,
+                        len(key.split()),
+                    )
+
+                best = max(_rank(c) for c in candidates)
+                winners = {bid for c, bid in ((c, c[1]) for c in candidates) if _rank(c) == best}
+                if len(winners) == 1:
+                    return [next(iter(winners))], "live_list"
 
         # Layer C: fuzzy match (only if rapidfuzz available), under the SAME
         # conservatism as Layer A.2.
@@ -444,9 +507,8 @@ class StationResolver:
             if top and top[0][1] >= 90:
                 if len(top) == 1 or (top[0][1] - top[1][1] >= 20):
                     key = top[0][0]
-                    shared = len(set(norm.split()) & set(key.split()))
                     if (
-                        shared >= _MIN_SUBSTRING_SHARED_TOKENS
+                        _match_is_anchored(norm, key)
                         or fuzz.ratio(norm, key) >= _MIN_FUZZY_WHOLE_STRING_RATIO
                     ):
                         return [county_lookup[key]], "fuzzy"
@@ -1748,7 +1810,15 @@ def load_unmapped_venues(
     if not path.exists():
         return {}
     try:
-        frame = pd.read_csv(path, comment="#")
+        # Strip whole comment LINES only. `pd.read_csv(comment="#")` truncates
+        # at a '#' anywhere on the line, including inside a quoted reason, which
+        # would silently drop that row's remaining columns (e.g. a future
+        # justification mentioning "site #3").
+        body = "".join(
+            line for line in path.read_text().splitlines(keepends=True)
+            if not line.lstrip().startswith("#")
+        )
+        frame = pd.read_csv(io.StringIO(body))
     except Exception as exc:  # pragma: no cover - defensive
         print(f"  [gate] could not load unmapped-venue allowlist: {exc}", file=sys.stderr)
         return {}
@@ -1790,9 +1860,29 @@ def _resolved_count(report: CountyReport) -> int:
     return report.matched_via_live_list + report.matched_via_csv + report.matched_via_fuzzy
 
 
+def split_unresolved(
+    unresolved_rows: list[dict],
+    allowlist: dict[tuple[str, str], str],
+) -> tuple[list[dict], list[dict]]:
+    """Partition unresolved rows into (expected, unexpected) by the allowlist."""
+    expected: list[dict] = []
+    unexpected: list[dict] = []
+    for row in unresolved_rows:
+        key = (
+            str(row.get("source_county") or ""),
+            str(
+                row.get("scraped_name_normalized")
+                or _normalize_name(str(row.get("scraped_name") or ""))
+            ),
+        )
+        (expected if key in allowlist else unexpected).append(row)
+    return expected, unexpected
+
+
 def detect_county_resolution_regressions(
     reports: list[CountyReport],
     previous_payload: dict,
+    unexpected_by_county: dict[str, int] | None = None,
 ) -> list[str]:
     """Detect counties that resolved advisories last run and resolve none now.
 
@@ -1801,8 +1891,19 @@ def detect_county_resolution_regressions(
     threshold only approximates. Unlike the ratio it does not depend on
     statewide scrape volume, so a quiet day cannot mask or manufacture it.
 
-    A county that simply has nothing posted today is NOT a regression: it must
-    have parsed advisories this run and resolved none of them.
+    Two things are NOT regressions:
+
+    * a county with nothing posted today — it must have parsed advisories this
+      run and resolved none of them;
+    * a county whose every unresolved name is on the known-unmapped allowlist.
+      EBRPD routinely posts only its freshwater venues (Lake Temescal, Big
+      Break, Martinez Shoreline), none of which has a beach_id to resolve to.
+      Without this check that ordinary day is a HARD failure that aborts the
+      run before training and costs the whole day's forecast — the exact
+      outage this gate was re-shaped to prevent, and the gate would be
+      contradicting its own numerator (0 unexpected) while doing it.
+      `unexpected_by_county` is that same allowlist-filtered count, so the two
+      cannot disagree.
     """
     prior_resolved: dict[str, int] = {}
     for entry in (previous_payload.get("counties") or []):
@@ -1819,6 +1920,9 @@ def detect_county_resolution_regressions(
         if not report.success or report.advisories_parsed <= 0:
             continue
         if _resolved_count(report) > 0:
+            continue
+        # Every name it failed on is a known-unmapped venue -> ordinary day.
+        if unexpected_by_county is not None and unexpected_by_county.get(report.county, 0) <= 0:
             continue
         if prior_resolved.get(report.county, 0) > 0:
             regressions.append(
@@ -1875,15 +1979,7 @@ def evaluate_scraper_gate(
         continues (a dropped advisory is dropped whether or not we also skip
         the forecast) and the job fails AFTER the data commit.
     """
-    expected: list[dict] = []
-    unexpected: list[dict] = []
-    for row in unresolved_rows:
-        key = (
-            str(row.get("source_county") or ""),
-            str(row.get("scraped_name_normalized") or _normalize_name(str(row.get("scraped_name") or ""))),
-        )
-        (expected if key in allowlist else unexpected).append(row)
-
+    expected, unexpected = split_unresolved(unresolved_rows, allowlist)
     unexpected_count = len(unexpected)
     ratio = (unexpected_count / total_scraped) if total_scraped else 0.0
     over_floor = unexpected_count > _UNRESOLVED_ABSOLUTE_FLOOR
@@ -2448,7 +2544,16 @@ def main() -> int:
     # we're trying to eliminate — make it a workflow-stopping signal so the
     # operator sees it before the bad data ships to prod.
     unresolved_count = persist_unresolved(unresolved_rows, args.curated)
-    regressions = detect_county_resolution_regressions(reports, previous_report)
+    # Score regressions on the SAME allowlist-filtered counts the gate uses, so
+    # a day of only known-unmapped postings can never hard-fail the run.
+    _, _unexpected_rows = split_unresolved(unresolved_rows, unmapped_allowlist)
+    unexpected_by_county: dict[str, int] = {}
+    for _row in _unexpected_rows:
+        _cty = str(_row.get("source_county") or "")
+        unexpected_by_county[_cty] = unexpected_by_county.get(_cty, 0) + 1
+    regressions = detect_county_resolution_regressions(
+        reports, previous_report, unexpected_by_county
+    )
     verdict = evaluate_scraper_gate(
         unresolved_rows,
         total_scraped,

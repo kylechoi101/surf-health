@@ -143,6 +143,22 @@ problems, fixed separately:
   ≥2 shared tokens, and an ambiguous match (several qualifying keys) is a miss rather than a
   dict-order coin flip. A dropped advisory is a miss; a mis-mapped one posts a warning on the
   wrong beach AND clears the real one.
+  - **The guard is ANCHORING, not a raw shared-token count** (`_match_is_anchored`). A match
+    qualifies on ≥2 shared tokens **or** on one side being a token-PREFIX of the other. The prefix
+    arm is load-bearing: `_normalize_name` strips `beach/creek/bay/point/park/state/...`, which
+    collapses **131 of 324 (40%)** roster keys to a single token (`doheny`, `zuma`, `crown`), and
+    counties post decorated names (`"Doheny State Beach - 100 feet up and down coast of the San
+    Juan Creek outlet"`). A shared-tokens-only rule can never reach 2 against those — measured, it
+    silently dropped **1,773** correct resolutions across all 15 counties, including the Crown and
+    Keller EBRPD beaches this very fix targets. `"alameda"` is a token of `"shinn pond alameda
+    trails"` but does not lead it, which is what still rejects the mis-map.
+  - **Multiple qualifying keys are RANKED, not coin-flipped**: a key that leads the posting beats
+    one that merely appears inside it (picks Cardiff over San Elijo for `"Cardiff/ San Elijo
+    Lagoon - ..."`), then the more specific key wins (`"huntington city"` over `"huntington"`).
+    Only a tie at the top rank is a miss. **Known limitation:** `"<feature> on <beach>"` phrasing
+    ranks wrong — `"Santa Monica Canyon on Will Rogers State Beach"` picks Santa Monica, because
+    it is structurally identical to the Cardiff case with the opposite correct answer. Use the
+    alias CSV for those.
   - **The fuzzy layer needed the same guard, and this is a trap for the next person.**
     `rapidfuzz.fuzz.token_set_ratio` scores **100** whenever one token set is a *subset* of the
     other, so guarding only the substring layer left the identical mis-map fully intact
@@ -153,9 +169,19 @@ problems, fixed separately:
     committed run (45 live_list, 1 csv). ⚠️ **`rapidfuzz` is an optional import**: without it
     installed the whole layer is skipped, so a dev sandbox silently passes tests that CI fails.
     `test_substring_rule_rejects_single_incidental_token_match` now asserts `HAS_RAPIDFUZZ`.
-  - **Measured, all 850 beaches × both name columns, all 15 counties:** 1017 identical, 683
-    newly-correct (site names the `beach_name`-only index could never see), **0** that previously
-    resolved correctly and now do not.
+  - **Layer order: exact `beach_name` → alias CSV → exact secondary → substring → fuzzy.** The
+    curated alias outranks the *secondary index*, not just the heuristics, because a site-level
+    `name` can collide with a different beach's group name and only a human can adjudicate: LA has
+    two Mother's Beaches ~40 km apart (Long Beach's site is literally `"Mothers' Beach"`; Marina
+    del Rey's carries it in `beach_name`), and neither index looks ambiguous on its own.
+  - **Measured two ways.** Exact registry names (all 850 beaches × both name columns): 1017
+    identical, 683 newly-correct, 0 lost. That corpus is exactly what the new exact index is built
+    from, so it is blind to substring/fuzzy regressions — the review of this change caught the
+    1,773-row loss above precisely because it was invisible there. The honest test is a
+    **decorated**-posting replay (registry names × 8 realistic county qualifiers, 13,384 probes):
+    correct-group **7278 → 8214**, wrong-group **1148 → 615** vs `main`. The 9 newly-wrong vs the
+    mid-PR state are 2 underlying strings: the deliberate Mothers alias and the `on`-phrasing
+    limitation above.
 - **Layer order is now confidence order:** exact `beach_name` → exact secondary → **alias CSV** →
   token-guarded substring → fuzzy. The curated alias file deliberately outranks the heuristic so
   an operator can correct a bad match by adding a row. Alias rows may now **fan out**: repeated

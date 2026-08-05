@@ -898,3 +898,132 @@ def test_alias_csv_outranks_the_substring_heuristic(tmp_path, monkeypatch):
     )
     assert kind == "csv"
     assert beach_ids == ["ebrpd-del-valle-east"]
+
+
+# ---------- Regressions found in review of this change ---------- #
+
+
+def test_single_token_roster_key_still_matches_a_decorated_posting():
+    """40% of roster keys collapse to ONE token after _normalize_name strips
+    "beach"/"creek"/"state"/... ("doheny", "zuma", "crown"). Counties post
+    decorated names, so a shared-token-count rule alone can never match them —
+    it silently drops every decorated posting for 40% of the roster.
+
+    The token-PREFIX arm of _match_is_anchored is what keeps these working, so
+    this test is the guard against re-tightening it away.
+    """
+    beaches = pd.DataFrame([
+        {"beach_id": "doheny", "name": "San Juan Creek", "beach_name": "Doheny State Beach",
+         "county": "Orange", "region": "S", "station_code": "OC-DOH-01",
+         "support_status": "production", "latitude": 33.4, "longitude": -117.6},
+    ])
+    resolver = StationResolver(beaches)
+    for posting in (
+        "Doheny State Beach - 100 feet up and down coast of the San Juan Creek outlet",
+        "Doheny Beach at the storm drain",
+        "Doheny State Beach",
+    ):
+        beach_ids, _ = resolver.resolve_all_by_name("Orange", posting)
+        assert beach_ids == ["doheny"], f"decorated posting {posting!r} must still resolve"
+
+
+def test_incidental_token_is_rejected_even_though_prefix_arm_exists():
+    """The prefix arm must not re-open the Shinn Pond hole: "alameda" is a token
+    of "shinn pond alameda trails" but does NOT lead it."""
+    resolver = StationResolver(_ebrpd_marin_beaches())
+    beach_ids, kind = resolver.resolve_all_by_name(
+        "East Bay Parks District", "Shinn Pond at Alameda Creek Trails"
+    )
+    assert beach_ids == []
+    assert kind == "miss"
+
+
+def test_more_specific_key_wins_over_a_shorter_prefix():
+    """"Huntington City Beach ..." matches both "huntington" and "huntington
+    city"; the specific one must win rather than dict order deciding."""
+    beaches = pd.DataFrame([
+        {"beach_id": "hb-state", "name": "Brookhurst", "beach_name": "Huntington State Beach",
+         "county": "Orange", "region": "S", "station_code": "H1",
+         "support_status": "production", "latitude": 33.6, "longitude": -118.0},
+        {"beach_id": "hb-city", "name": "27th St", "beach_name": "Huntington City Beach",
+         "county": "Orange", "region": "S", "station_code": "H2",
+         "support_status": "production", "latitude": 33.6, "longitude": -118.0},
+    ])
+    resolver = StationResolver(beaches)
+    assert resolver.resolve_all_by_name("Orange", "Huntington City Beach near the pier")[0] == ["hb-city"]
+    assert resolver.resolve_all_by_name("Orange", "Huntington State Beach at the outlet")[0] == ["hb-state"]
+
+
+def test_allowlisted_only_day_is_not_a_county_regression():
+    """EBRPD routinely posts ONLY its freshwater venues, which have no beach_id.
+    Counting that as a county-wide resolution regression hard-fails the run
+    before training and costs the day's forecast — while the gate's own
+    numerator says 0 unexpected. The two must never disagree."""
+    report = CountyReport(
+        county="East Bay Parks District",
+        success=True,
+        last_attempted_at="2026-08-05T16:00:00Z",
+        source_url="https://example.test",
+    )
+    report.advisories_parsed = 3
+    previous = {"counties": [{"county": "East Bay Parks District", "matched_via_live_list": 9}]}
+
+    # Every unresolved name is allowlisted -> not a regression.
+    assert detect_county_resolution_regressions([report], previous, {"East Bay Parks District": 0}) == []
+    # A genuinely unresolvable name -> still a regression.
+    assert detect_county_resolution_regressions([report], previous, {"East Bay Parks District": 2})
+
+
+def test_alias_outranks_the_secondary_index_for_cross_beach_name_collisions(tmp_path, monkeypatch):
+    """LA has two distinct Mother's Beaches ~40km apart: Long Beach's site is
+    literally named "Mothers' Beach" while Marina del Rey's carries it in
+    beach_name. Neither index looks ambiguous on its own, so only the curated
+    alias can adjudicate — which requires it to outrank the secondary index."""
+    import fetch_county_advisories as fca
+
+    beaches = pd.DataFrame([
+        {"beach_id": "mdr", "name": "Kayak Area",
+         "beach_name": "Marina Del Rey Beach - Mothers Beach", "county": "Los Angeles",
+         "region": "S", "station_code": "MDRH-3", "support_status": "production",
+         "latitude": 33.97, "longitude": -118.45},
+        {"beach_id": "alamitos", "name": "Mothers' Beach", "beach_name": "Alamitos Bay Beach",
+         "county": "Los Angeles", "region": "S", "station_code": "B-22",
+         "support_status": "production", "latitude": 33.75, "longitude": -118.11},
+    ])
+    # Baseline with NO alias file: the site-level index claims it for the
+    # wrong beach (this is the bug the shipped alias row exists to prevent).
+    monkeypatch.setattr(fca, "_STATIC_ALIAS_CSV", tmp_path / "absent.csv")
+    assert StationResolver(beaches).resolve_all_by_name("Los Angeles", "Mothers Beach")[0] == ["alamitos"]
+
+    alias_csv = tmp_path / "alias.csv"
+    alias_csv.write_text(
+        "county,beach_name_normalized,station_code,beach_id,notes\n"
+        "Los Angeles,mothers,,mdr,disambiguates the two LA Mother's Beaches\n"
+    )
+    monkeypatch.setattr(fca, "_STATIC_ALIAS_CSV", alias_csv)
+    beach_ids, kind = StationResolver(beaches).resolve_all_by_name("Los Angeles", "Mothers Beach")
+    assert beach_ids == ["mdr"]
+    assert kind == "csv"
+
+
+def test_shipped_alias_disambiguates_the_two_la_mothers_beaches():
+    """Pins the shipped alias row against the REAL registry, so removing it
+    (or reordering the alias layer back below the secondary index) fails."""
+    beaches = pd.read_parquet(ROOT.parent / "data" / "curated" / "beaches.parquet")
+    resolver = StationResolver(beaches)
+    beach_ids, kind = resolver.resolve_all_by_name("Los Angeles", "Mothers Beach")
+    assert kind == "csv"
+    assert beach_ids == ["ca034301-los-angeles-marina-del-rey-beach-mothers-beach-mdrh-3"]
+
+
+def test_allowlist_reason_may_contain_a_hash(tmp_path):
+    """Comment stripping is line-based: a '#' inside a quoted reason must not
+    truncate the row's remaining columns."""
+    csv_path = tmp_path / "unmapped.csv"
+    csv_path.write_text(
+        "# leading comment\n"
+        "county,scraped_name_normalized,reason,review_by\n"
+        'Marin,ghost venue,"outfall #3 has no registry counterpart",2099-01-01\n'
+    )
+    loaded = load_unmapped_venues(csv_path, today=pd.Timestamp("2026-08-05"))
+    assert loaded == {("Marin", "ghost venue"): "outfall #3 has no registry counterpart"}

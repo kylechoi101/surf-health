@@ -67,10 +67,30 @@ def check_unresolved(curated_dir: Path) -> tuple[bool, str | None]:
         return False, f"unresolved_advisories.parquet unreadable: {e}"
     today_key = _today_utc()
     today_rows = df[df.get("scraped_at", pd.Series(dtype="object")).astype(str).str.startswith(today_key)]
+    # Exclude known-unmapped venues, exactly as the G.1 gate in
+    # fetch_county_advisories.py does. Those rows are appended every single run
+    # (EBRPD's freshwater lakes have no beach_id to resolve to), so counting
+    # them here would keep this streak alarming on a condition the gate has
+    # deliberately excused — two health signals disagreeing about the same file.
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from fetch_county_advisories import load_unmapped_venues, _normalize_name
+
+        allowlist = load_unmapped_venues()
+        if allowlist and not today_rows.empty:
+            def _is_expected(row) -> bool:
+                key = str(row.get("scraped_name_normalized") or "") or _normalize_name(
+                    str(row.get("scraped_name") or "")
+                )
+                return (str(row.get("source_county") or ""), key) in allowlist
+
+            today_rows = today_rows[~today_rows.apply(_is_expected, axis=1)]
+    except Exception:  # noqa: BLE001 - never let the allowlist break the check
+        pass
     n = len(today_rows)
     # Per spec G.1: alarm if >5 absolute OR >10% relative of scraped.
     if n > 5:
-        return False, f"unresolved_count_today={n} (> 5 absolute threshold)"
+        return False, f"unresolved_count_today={n} (> 5 absolute threshold, known-unmapped excluded)"
     return True, None
 
 
