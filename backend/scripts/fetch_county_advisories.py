@@ -8,12 +8,24 @@ AND rebuilds the advisory-derived columns in beach_day.parquet so the
 training feature (advisory_active_prev_14d) reflects the same fresh state.
 
 Each county is a (station_lookup_fn, advisory_parser_fn) pair. Name→station
-code resolution is hybrid:
-  1. Auto-built from beaches.parquet (county-filtered station_code + beach_name)
-  2. Static alias CSV in _static_data/county_beach_name_to_station.csv
-  3. rapidfuzz fuzzy fallback (≥0.90, gap≥0.20 vs runner-up, same county)
+code resolution is hybrid (see StationResolver for the full layer order):
+  1. Auto-built from beaches.parquet (county-filtered station_code + beach_name,
+     plus an exact-only secondary index on the site-level name/station_code)
+  2. Static alias CSV in _static_data/county_beach_name_to_station.csv, which
+     may fan one scraped posting out to several beach_ids
+  3. Token-guarded substring match, then a rapidfuzz fuzzy fallback
+     (≥0.90, gap≥0.20 vs runner-up, same county)
 
-Per-run telemetry written to data/curated/county_advisories_report.json.
+Per-run telemetry written to data/curated/county_advisories_report.json; the
+G.1 gate verdict to data/curated/system_health.json under `scraper_gate`.
+
+G.1 gate severity (changed 2026-08-05): a SOFT trip no longer aborts in place.
+It publishes the verdict and returns 0 so the daily pipeline still produces a
+forecast, and scripts/verify_scraper_gate.py fails the job after the data
+commit. Only a HARD trip — mass resolution loss, or a county that resolved
+advisories last run and resolves none now — exits non-zero here, because that
+means the advisory feed itself cannot be trusted by the training step that
+consumes advisory_active_prev_14d.
 
 Run after the state-feed normalization step in the daily-forecast pipeline:
     python scripts/fetch_county_advisories.py --curated ../data/curated/
@@ -21,10 +33,11 @@ Run after the state-feed normalization step in the daily-forecast pipeline:
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import re
 import sys
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -230,12 +243,68 @@ _STATIC_ALIAS_CSV = (
     / "county_beach_name_to_station.csv"
 )
 
+# Minimum length for any normalized key we are willing to match on. Applies to
+# the secondary index and the substring rule alike — below this, keys like
+# "bay" collide with half the roster.
+_MIN_MATCH_KEY_LEN = 4
+
+# Heuristic matches (Layer A.2 substring, Layer C fuzzy) must be ANCHORED — see
+# _match_is_anchored. The old rule accepted ANY containment over a 4-character
+# floor, which is how "Shinn Pond at Alameda Creek Trails" (a Fremont freshwater
+# pond) resolved onto "Alameda Point Encinal Beach Mid" — a bay swim beach — on
+# the single shared token "alameda". A dropped advisory is a miss; a mis-mapped
+# one posts a warning on the wrong beach and clears the real one, so the
+# heuristic layers have to be the conservative ones.
+_MIN_SUBSTRING_SHARED_TOKENS = 2
+
+# A fuzzy candidate that is not anchored must instead be a near-identical string
+# end to end, scored with the length-sensitive `fuzz.ratio` rather than
+# `token_set_ratio`. This is what still lets a genuine MISSPELLING through
+# (which by definition shares no exact token) while rejecting "roster key
+# happens to appear somewhere in the posting".
+_MIN_FUZZY_WHOLE_STRING_RATIO = 90
+
+
+def _is_token_prefix(shorter: list[str], longer: list[str]) -> bool:
+    return len(shorter) <= len(longer) and longer[: len(shorter)] == shorter
+
+
+def _match_is_anchored(norm: str, key: str) -> bool:
+    """Is `key` naming the SUBJECT of posting `norm` (or vice versa)?
+
+    Two ways to qualify:
+
+      * >= _MIN_SUBSTRING_SHARED_TOKENS shared tokens — enough overlap that the
+        match cannot rest on one incidental word.
+      * one side is a token-PREFIX of the other. Counties decorate a beach name
+        with trailing location detail ("Doheny State Beach - 100 feet up and
+        down coast of the San Juan Creek outlet"), so the roster key leads the
+        posting. This is what separates a decorated name from an incidental
+        mention: "alameda" is a token of "shinn pond alameda trails" but not its
+        prefix, whereas "doheny" leads "doheny 100 feet up and down coast...".
+
+    The prefix arm is NOT optional. `_normalize_name` strips the noise tokens
+    (beach, creek, bay, point, park, state...), which collapses 131 of 324
+    roster keys — 40% — to a single token: "doheny", "zuma", "stinson",
+    "crown". A shared-token count alone can never reach 2 against those, so a
+    shared-tokens-only rule silently drops EVERY decorated posting for 40% of
+    the roster (measured: 1,773 correct resolutions lost across all 15
+    counties, incl. the two EBRPD beaches this scraper fix targets).
+    """
+    norm_tokens, key_tokens = norm.split(), key.split()
+    if len(set(norm_tokens) & set(key_tokens)) >= _MIN_SUBSTRING_SHARED_TOKENS:
+        return True
+    return _is_token_prefix(norm_tokens, key_tokens) or _is_token_prefix(key_tokens, norm_tokens)
+
 
 class StationResolver:
     """Resolve a (county, beach_name) tuple to a beach_id using:
-    Layer A — live county station_lookup (passed in per-county)
-    Layer B — static alias CSV (county, beach_name_normalized → station_code)
-    Layer C — rapidfuzz against the live county station_lookup
+    Layer A   — live county station_lookup, keyed on `beach_name` (exact)
+    Layer A.1 — secondary index keyed on the per-site `name` / `station_code`
+                (exact only; see __init__)
+    Layer A.2 — substring against the Layer A keys (token-guarded)
+    Layer B   — static alias CSV (county, beach_name_normalized → beach_id(s))
+    Layer C   — rapidfuzz against the live county station_lookup
     """
 
     def __init__(self, beaches: pd.DataFrame) -> None:
@@ -248,6 +317,44 @@ class StationResolver:
                 for _, row in grp.iterrows()
                 if row.get("beach_name")
             }
+        # Secondary per-county index keyed on the SITE-level `name` and
+        # `station_code` columns: { county: { normalized: beach_id } }.
+        #
+        # `beach_name` is a site *group* ("Crown Beach (Alameda Co)" covers six
+        # sampling points), and some rows carry a county-wide placeholder in it
+        # — all of Marin's GREEN BRIDGE identity lives in `name`/`station_code`
+        # while its `beach_name` reads "All_Marin_County", so a beach_name-only
+        # index cannot see it at all. Two consequences this index fixes:
+        #   * GREEN BRIDGE was unresolvable (its Marin sibling Inkwells only
+        #     resolved because a SECOND registry row happens to carry
+        #     beach_name="Inkwells");
+        #   * every site under a shared beach_name collapsed to one arbitrary
+        #     beach_id, so "Del Valle WEST Swim Beach" resolved onto the EAST
+        #     beach's id — the west posting landed on the wrong beach and the
+        #     west beach showed clean.
+        #
+        # EXACT MATCHES ONLY. These keys are numerous (~1.4k) and noisier than
+        # beach_name (a few counties carry junk like "Open"), so they must never
+        # feed the substring or fuzzy layers. Keys that map to more than one
+        # beach_id within a county are dropped as ambiguous rather than
+        # resolved arbitrarily — 13 keys statewide as of 2026-08.
+        self._secondary_name_lookup: dict[str, dict[str, str]] = {}
+        for cnty, grp in beaches.groupby("county"):
+            candidates: dict[str, set[str]] = {}
+            for _, row in grp.iterrows():
+                for column in ("name", "station_code"):
+                    value = row.get(column)
+                    if not value or pd.isna(value):
+                        continue
+                    key = _normalize_name(str(value))
+                    if len(key) < _MIN_MATCH_KEY_LEN:
+                        continue
+                    candidates.setdefault(key, set()).add(str(row["beach_id"]))
+            self._secondary_name_lookup[str(cnty)] = {
+                key: next(iter(ids))
+                for key, ids in candidates.items()
+                if len(ids) == 1
+            }
         # Per-county station_code → beach_id
         self._station_code_lookup: dict[str, dict[str, str]] = {}
         for cnty, grp in beaches.groupby("county"):
@@ -256,14 +363,24 @@ class StationResolver:
                 for _, row in grp.iterrows()
                 if row.get("station_code")
             }
-        # Static alias CSV
-        self._alias_lookup: dict[tuple[str, str], str] = {}
+        # Static alias CSV. One scraped name may legitimately map to MANY
+        # beach_ids: EBRPD posts "Crown Beach Regional Shoreline" as a single
+        # district-wide notice covering all six sampled points, so the alias
+        # file carries one row per covered beach_id and the advisory fans out
+        # (see resolve_all_by_name). Repeated (county, name) keys accumulate
+        # instead of overwriting.
+        self._alias_lookup: dict[tuple[str, str], list[str]] = {}
         if _STATIC_ALIAS_CSV.exists():
             try:
                 alias_df = pd.read_csv(_STATIC_ALIAS_CSV)
                 for _, row in alias_df.iterrows():
                     key = (str(row["county"]), _normalize_name(str(row["beach_name_normalized"])))
-                    self._alias_lookup[key] = str(row.get("beach_id") or row.get("station_code") or "")
+                    target = str(row.get("beach_id") or row.get("station_code") or "")
+                    if not target or target == "nan":
+                        continue
+                    bucket = self._alias_lookup.setdefault(key, [])
+                    if target not in bucket:
+                        bucket.append(target)
             except Exception as e:
                 print(f"  [resolver] could not load alias CSV: {e}", file=sys.stderr)
 
@@ -281,43 +398,133 @@ class StationResolver:
                     return bid_full, "station_code_suffix"
         return None, "miss"
 
-    def resolve_by_name(self, county: str, beach_name: str) -> tuple[str | None, str]:
-        """Hybrid name resolution. Returns (beach_id, match_kind)."""
+    def resolve_all_by_name(self, county: str, beach_name: str) -> tuple[list[str], str]:
+        """Hybrid name resolution. Returns (beach_ids, match_kind).
+
+        Returns a LIST because one scraped posting can legitimately cover
+        several sampled beaches (a district-wide EBRPD notice over the six
+        Crown Beach points). Every layer but the alias CSV is single-valued;
+        only a curated multi-row alias entry fans out.
+
+        Layer order is confidence order — exact identity first, curated human
+        mapping next, heuristics last. The alias CSV deliberately outranks the
+        substring layer so an operator can correct a bad heuristic match by
+        adding a row rather than by tuning the heuristic.
+        """
         norm = _normalize_name(beach_name)
         if not norm:
-            return None, "miss"
+            return [], "miss"
 
-        # Layer A: live county lookup (exact normalized match)
+        # Layer A: live county lookup on beach_name (exact normalized match)
         county_lookup = self._beach_name_lookup.get(county, {})
         if norm in county_lookup:
-            return county_lookup[norm], "live_list"
-        # Layer A.1: substring match either direction
-        for key, bid in county_lookup.items():
-            if norm in key or key in norm:
-                # Require minimum overlap to avoid "venice" matching everything
-                if len(norm) >= 4 and len(key) >= 4:
-                    return bid, "live_list"
+            return [county_lookup[norm]], "live_list"
 
-        # Layer B: alias CSV
-        bid = self._alias_lookup.get((county, norm))
-        if bid:
-            # If CSV gave a station_code, translate to beach_id
-            if not bid.startswith("ca"):
-                resolved, _ = self.resolve_by_station_code(county, bid)
-                if resolved:
-                    return resolved, "csv"
+        # Layer B: alias CSV (curated; may fan out to several beach_ids).
+        #
+        # Runs ahead of the secondary index, not just ahead of the heuristics: a
+        # site-level `name` can collide with a DIFFERENT beach's group name in
+        # the same county, and only a human can adjudicate. LA has two distinct
+        # Mother's Beaches — Long Beach's Alamitos Bay site is literally named
+        # "Mothers' Beach", while Marina del Rey's carries it in `beach_name`
+        # ("Marina Del Rey Beach - Mothers Beach") — so a bare "Mothers Beach"
+        # posting hit the secondary index and silently moved 40 km. The
+        # ambiguity guard cannot see that: the two keys normalize differently,
+        # so neither index looks ambiguous on its own.
+        aliases = self._alias_lookup.get((county, norm)) or []
+        resolved_aliases: list[str] = []
+        for target in aliases:
+            # If CSV gave a station_code rather than a beach_id, translate it.
+            if target.startswith("ca"):
+                resolved_aliases.append(target)
             else:
-                return bid, "csv"
+                translated, _ = self.resolve_by_station_code(county, target)
+                if translated:
+                    resolved_aliases.append(translated)
+        if resolved_aliases:
+            return resolved_aliases, "csv"
 
-        # Layer C: fuzzy match (only if rapidfuzz available)
+        # Layer A.1: secondary index on site-level name/station_code (exact
+        # only — see __init__ for why these keys never feed the fuzzy layers).
+        secondary = self._secondary_name_lookup.get(county, {})
+        if norm in secondary:
+            return [secondary[norm]], "live_list"
+
+        # Layer A.2: substring match either direction, token-guarded. Requires
+        # _MIN_SUBSTRING_SHARED_TOKENS shared tokens so a single incidental
+        # token ("alameda") can no longer carry a match onto the wrong beach.
+        # Ambiguity is a miss, not a coin flip: when several roster keys
+        # qualify we drop to the unresolved sink rather than let dict order
+        # decide which beach gets the advisory.
+        if len(norm) >= _MIN_MATCH_KEY_LEN:
+            norm_tokens = norm.split()
+            candidates = [
+                (key, bid)
+                for key, bid in county_lookup.items()
+                if len(key) >= _MIN_MATCH_KEY_LEN
+                and (norm in key or key in norm)
+                and _match_is_anchored(norm, key)
+            ]
+            # Several roster keys can legitimately qualify ("Huntington City
+            # Beach near the creek mouth" matches both "huntington" and
+            # "huntington city"). Rank rather than coin-flip on dict order:
+            #   1. a key that LEADS the posting names its subject, beating one
+            #      that merely appears inside it — this is what picks Cardiff
+            #      over San Elijo for "Cardiff/ San Elijo Lagoon - ...";
+            #   2. then the more specific (longer) key — "huntington city"
+            #      over "huntington".
+            # Only a tie at the top rank is genuinely ambiguous, and that is
+            # still a miss rather than an arbitrary pick.
+            if candidates:
+                def _rank(item: tuple[str, str]) -> tuple[int, int]:
+                    key = item[0]
+                    return (
+                        1 if _is_token_prefix(key.split(), norm_tokens) else 0,
+                        len(key.split()),
+                    )
+
+                best = max(_rank(c) for c in candidates)
+                winners = {bid for c, bid in ((c, c[1]) for c in candidates) if _rank(c) == best}
+                if len(winners) == 1:
+                    return [next(iter(winners))], "live_list"
+
+        # Layer C: fuzzy match (only if rapidfuzz available), under the SAME
+        # conservatism as Layer A.2.
+        #
+        # `token_set_ratio` scores 100 whenever one token set is a subset of the
+        # other, so on its own it re-admits the exact mis-map the substring
+        # guard rejects: token_set_ratio("shinn pond alameda trails",
+        # "alameda") == 100 with a 39-point gap to the runner-up, which is how
+        # a Fremont freshwater pond kept resolving onto Alameda Point. A match
+        # must therefore ALSO be either token-anchored (>= 2 shared tokens, the
+        # Layer A.2 rule) or a near-identical string overall (`ratio`, which is
+        # length-sensitive and so immune to the subset pathology — it scores
+        # that pair 43.8). This costs nothing measurable: the fuzzy layer
+        # matched 0 advisories in the last committed run (45 live_list, 1 csv).
         if HAS_RAPIDFUZZ and county_lookup:
             candidates = list(county_lookup.keys())
             top = process.extract(norm, candidates, scorer=fuzz.token_set_ratio, limit=2)
             if top and top[0][1] >= 90:
                 if len(top) == 1 or (top[0][1] - top[1][1] >= 20):
-                    return county_lookup[top[0][0]], "fuzzy"
+                    key = top[0][0]
+                    if (
+                        _match_is_anchored(norm, key)
+                        or fuzz.ratio(norm, key) >= _MIN_FUZZY_WHOLE_STRING_RATIO
+                    ):
+                        return [county_lookup[key]], "fuzzy"
 
-        return None, "miss"
+        return [], "miss"
+
+    def resolve_by_name(self, county: str, beach_name: str) -> tuple[str | None, str]:
+        """Single-valued name resolution. Returns (beach_id, match_kind).
+
+        Kept for callers that must land on exactly one beach — notably
+        `persist_samples`: a scraped MPN reading is one physical measurement
+        and must not be duplicated across a fan-out group the way a
+        district-wide advisory is.
+        """
+        beach_ids, kind = self.resolve_all_by_name(county, beach_name)
+        return (beach_ids[0] if beach_ids else None), kind
 
 
 # ---------- San Diego (sdbeachinfo.com) ---------- #
@@ -604,11 +811,13 @@ def fetch_san_mateo_advisories(client: httpx.Client, resolver: StationResolver) 
     # Also honor the static alias CSV — same county-specific keys the
     # other counties' resolvers use. Catches semantic mismatches like
     # "Fitzgerald Marine Reserve" → moss-beach station.
-    for (cnty, norm_alias), aid in resolver._alias_lookup.items():
+    # `_alias_lookup` values are lists (one scraped name may cover several
+    # beach_ids); San Mateo's line-scanner is single-valued, so take the first
+    # target. No San Mateo alias fans out today.
+    for (cnty, norm_alias), aids in resolver._alias_lookup.items():
         if cnty != "San Mateo":
             continue
-        if not aid or aid == "nan":
-            continue
+        aid = next((a for a in aids if a and a != "nan"), "")
         if aid.startswith("ca") and len(norm_alias) >= 4:
             sm_lookup.setdefault(norm_alias, aid)
 
@@ -1501,7 +1710,11 @@ def resolve_advisories(
     to `unresolved_sink` so main() can persist it to
     unresolved_advisories.parquet and fail the workflow when the drop
     rate is too high. Without this, scraper bugs (e.g. ocbeachinfo.com
-    schema drift) silently vanished from the active set."""
+    schema drift) silently vanished from the active set.
+
+    One scraped posting may resolve to SEVERAL beaches (a district-wide
+    notice over a multi-point beach group); each gets its own
+    CountyAdvisory so downstream merge logic stays one-row-per-beach."""
     resolved: list[CountyAdvisory] = []
     for ca in advisories:
         if ca.beach_id:
@@ -1516,16 +1729,19 @@ def resolve_advisories(
                 report.matched_via_live_list += 1
                 resolved.append(ca)
                 continue
-        bid, kind = resolver.resolve_by_name(ca.county, ca.area)
-        if bid:
-            ca.beach_id = bid
+        beach_ids, kind = resolver.resolve_all_by_name(ca.county, ca.area)
+        if beach_ids:
             if kind == "csv":
                 report.matched_via_csv += 1
             elif kind == "fuzzy":
                 report.matched_via_fuzzy += 1
             else:
                 report.matched_via_live_list += 1
+            ca.beach_id = beach_ids[0]
             resolved.append(ca)
+            # Fan-out: replicate the posting onto every other covered beach.
+            for extra_id in beach_ids[1:]:
+                resolved.append(replace(ca, beach_id=extra_id))
         else:
             report.unmatched_names.append(ca.area)
             if unresolved_sink is not None:
@@ -1537,6 +1753,7 @@ def resolve_advisories(
                 unresolved_sink.append({
                     "source_county": ca.county,
                     "scraped_name": ca.area,
+                    "scraped_name_normalized": _normalize_name(ca.area),
                     "scraped_date": started_naive,
                     "scraped_at": pd.Timestamp.now(tz="UTC").tz_localize(None),
                 })
@@ -1548,15 +1765,172 @@ def resolve_advisories(
 
 _UNRESOLVED_PARQUET = "unresolved_advisories.parquet"
 
-# Hard floor (G.1): if more than this many advisories failed to resolve this
-# run, fail the workflow regardless of percentage. Tracks the absolute pain
-# threshold ("OC's whole schema changed and we silently dropped 12 entries").
+# Soft floor (G.1): more than this many UNEXPECTED unresolved advisories marks
+# the run as gate-failed. Tracks the absolute pain threshold ("OC's whole schema
+# changed and we silently dropped 12 entries").
 _UNRESOLVED_ABSOLUTE_FLOOR = 5
 
 # Relative threshold (G.1): if more than 10% of scraped advisories failed
-# to resolve, fail the workflow. Tracks proportional regressions for
+# to resolve, mark the run gate-failed. Tracks proportional regressions for
 # counties that publish a small number per day.
 _UNRESOLVED_RATIO_THRESHOLD = 0.10
+
+# Hard abort (G.1/C2): at this many unexpected unresolved names the advisory
+# feed itself is untrustworthy — a county's schema has moved under us — and the
+# run must stop BEFORE training consumes advisory_active_prev_14d. Below it, the
+# soft gate keeps the pipeline running and fails the job after the commit (see
+# the module docstring and scripts/verify_scraper_gate.py).
+_UNRESOLVED_HARD_FLOOR = 15
+
+# Static allowlist of venues that have no beach_id to resolve to.
+_UNMAPPED_VENUES_CSV = (
+    Path(__file__).resolve().parent.parent
+    / "app" / "data" / "pipeline" / "_static_data"
+    / "unmapped_advisory_venues.csv"
+)
+
+# Where the gate verdict is published for scripts/verify_scraper_gate.py.
+_HEALTH_FILE = "system_health.json"
+
+
+def load_unmapped_venues(
+    path: Path | None = None,
+    today: pd.Timestamp | None = None,
+) -> dict[tuple[str, str], str]:
+    """Load the known-unmapped venue allowlist.
+
+    Returns { (county, normalized_name): reason } for entries whose `review_by`
+    date has NOT passed. An expired row is dropped from the allowlist so the
+    venue starts counting against the gate again — the allowlist is a deferral,
+    not a permanent mute. A malformed or missing file yields an empty allowlist
+    (fail-closed: everything counts).
+    """
+    path = path or _UNMAPPED_VENUES_CSV
+    today = today or pd.Timestamp.now().normalize()
+    if not path.exists():
+        return {}
+    try:
+        # Strip whole comment LINES only. `pd.read_csv(comment="#")` truncates
+        # at a '#' anywhere on the line, including inside a quoted reason, which
+        # would silently drop that row's remaining columns (e.g. a future
+        # justification mentioning "site #3").
+        body = "".join(
+            line for line in path.read_text().splitlines(keepends=True)
+            if not line.lstrip().startswith("#")
+        )
+        frame = pd.read_csv(io.StringIO(body))
+    except Exception as exc:  # pragma: no cover - defensive
+        print(f"  [gate] could not load unmapped-venue allowlist: {exc}", file=sys.stderr)
+        return {}
+
+    allowed: dict[tuple[str, str], str] = {}
+    for _, row in frame.iterrows():
+        county = str(row.get("county") or "").strip()
+        name = _normalize_name(str(row.get("scraped_name_normalized") or ""))
+        if not county or not name:
+            continue
+        review_by = pd.to_datetime(row.get("review_by"), errors="coerce")
+        if pd.notna(review_by) and review_by.normalize() < today:
+            print(
+                f"  [gate] allowlist entry expired ({county} / {name}, review_by="
+                f"{review_by.date()}) — counting it against the gate again.",
+                file=sys.stderr,
+            )
+            continue
+        allowed[(county, name)] = str(row.get("reason") or "")
+    return allowed
+
+
+def load_previous_report(curated_dir: Path) -> dict:
+    """Read the PREVIOUS run's county_advisories_report.json.
+
+    Must be called before main() overwrites it. data/curated is versioned, so
+    the CI checkout carries the last committed run's telemetry.
+    """
+    report_path = curated_dir / "county_advisories_report.json"
+    if not report_path.exists():
+        return {}
+    try:
+        return json.loads(report_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _resolved_count(report: CountyReport) -> int:
+    return report.matched_via_live_list + report.matched_via_csv + report.matched_via_fuzzy
+
+
+def split_unresolved(
+    unresolved_rows: list[dict],
+    allowlist: dict[tuple[str, str], str],
+) -> tuple[list[dict], list[dict]]:
+    """Partition unresolved rows into (expected, unexpected) by the allowlist."""
+    expected: list[dict] = []
+    unexpected: list[dict] = []
+    for row in unresolved_rows:
+        key = (
+            str(row.get("source_county") or ""),
+            str(
+                row.get("scraped_name_normalized")
+                or _normalize_name(str(row.get("scraped_name") or ""))
+            ),
+        )
+        (expected if key in allowlist else unexpected).append(row)
+    return expected, unexpected
+
+
+def detect_county_resolution_regressions(
+    reports: list[CountyReport],
+    previous_payload: dict,
+    unexpected_by_county: dict[str, int] | None = None,
+) -> list[str]:
+    """Detect counties that resolved advisories last run and resolve none now.
+
+    This is the signal G.1 actually exists for — a county changing its naming
+    convention so every posting stops matching — and it is what the ratio
+    threshold only approximates. Unlike the ratio it does not depend on
+    statewide scrape volume, so a quiet day cannot mask or manufacture it.
+
+    Two things are NOT regressions:
+
+    * a county with nothing posted today — it must have parsed advisories this
+      run and resolved none of them;
+    * a county whose every unresolved name is on the known-unmapped allowlist.
+      EBRPD routinely posts only its freshwater venues (Lake Temescal, Big
+      Break, Martinez Shoreline), none of which has a beach_id to resolve to.
+      Without this check that ordinary day is a HARD failure that aborts the
+      run before training and costs the whole day's forecast — the exact
+      outage this gate was re-shaped to prevent, and the gate would be
+      contradicting its own numerator (0 unexpected) while doing it.
+      `unexpected_by_county` is that same allowlist-filtered count, so the two
+      cannot disagree.
+    """
+    prior_resolved: dict[str, int] = {}
+    for entry in (previous_payload.get("counties") or []):
+        if not isinstance(entry, dict):
+            continue
+        prior_resolved[str(entry.get("county"))] = (
+            int(entry.get("matched_via_live_list") or 0)
+            + int(entry.get("matched_via_csv") or 0)
+            + int(entry.get("matched_via_fuzzy") or 0)
+        )
+
+    regressions: list[str] = []
+    for report in reports:
+        if not report.success or report.advisories_parsed <= 0:
+            continue
+        if _resolved_count(report) > 0:
+            continue
+        # Every name it failed on is a known-unmapped venue -> ordinary day.
+        if unexpected_by_county is not None and unexpected_by_county.get(report.county, 0) <= 0:
+            continue
+        if prior_resolved.get(report.county, 0) > 0:
+            regressions.append(
+                f"{report.county}: parsed {report.advisories_parsed} advisories but resolved "
+                f"0 (previous run resolved {prior_resolved[report.county]}) — the source's "
+                f"naming convention likely changed."
+            )
+    return regressions
 
 
 def persist_unresolved(
@@ -1581,6 +1955,103 @@ def persist_unresolved(
         combined = new_df
     combined.to_parquet(parquet_path, index=False)
     return len(new_df)
+
+
+def evaluate_scraper_gate(
+    unresolved_rows: list[dict],
+    total_scraped: int,
+    regressions: list[str],
+    allowlist: dict[tuple[str, str], str],
+) -> dict:
+    """Score the G.1 observability gate and return the verdict payload.
+
+    The numerator is UNEXPECTED unresolved advisories only: venues on the
+    known-unmapped allowlist are reported but excluded, because a venue with no
+    possible beach_id would otherwise pin the counter at the threshold forever
+    and turn any single new posting into a workflow failure (which is exactly
+    how the 2026-08-05 run died at 5/49 = 10.2%).
+
+    Two severities:
+      * `hard_failed` — the advisory feed cannot be trusted (mass resolution
+        loss or a county-wide regression). The run must stop before training
+        consumes advisory_active_prev_14d.
+      * `passed=False` without `hard_failed` — a soft gate trip. The pipeline
+        continues (a dropped advisory is dropped whether or not we also skip
+        the forecast) and the job fails AFTER the data commit.
+    """
+    expected, unexpected = split_unresolved(unresolved_rows, allowlist)
+    unexpected_count = len(unexpected)
+    ratio = (unexpected_count / total_scraped) if total_scraped else 0.0
+    over_floor = unexpected_count > _UNRESOLVED_ABSOLUTE_FLOOR
+    over_ratio = total_scraped > 0 and ratio > _UNRESOLVED_RATIO_THRESHOLD
+    over_hard_floor = unexpected_count > _UNRESOLVED_HARD_FLOOR
+
+    blockers: list[str] = []
+    if over_hard_floor:
+        blockers.append(
+            f"{unexpected_count} advisories failed name resolution — above the hard floor "
+            f"of {_UNRESOLVED_HARD_FLOOR}. The advisory feed is not trustworthy this run."
+        )
+    elif over_floor:
+        blockers.append(
+            f"{unexpected_count} advisories failed name resolution (absolute floor "
+            f"{_UNRESOLVED_ABSOLUTE_FLOOR})."
+        )
+    if over_ratio:
+        blockers.append(
+            f"{ratio:.1%} of {total_scraped} scraped advisories failed name resolution "
+            f"(ratio threshold {_UNRESOLVED_RATIO_THRESHOLD:.0%})."
+        )
+    blockers.extend(regressions)
+
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "passed": not blockers,
+        "hard_failed": bool(over_hard_floor or regressions),
+        "total_scraped": total_scraped,
+        "unresolved_total": len(unresolved_rows),
+        "unresolved_unexpected": unexpected_count,
+        "unresolved_expected": len(expected),
+        "unresolved_ratio": round(ratio, 4),
+        "absolute_floor": _UNRESOLVED_ABSOLUTE_FLOOR,
+        "hard_floor": _UNRESOLVED_HARD_FLOOR,
+        "ratio_threshold": _UNRESOLVED_RATIO_THRESHOLD,
+        "blockers": blockers,
+        "unexpected_names": [
+            {"county": r.get("source_county"), "name": r.get("scraped_name")}
+            for r in unexpected[:25]
+        ],
+        "expected_names": [
+            {"county": r.get("source_county"), "name": r.get("scraped_name")}
+            for r in expected[:25]
+        ],
+        "county_regressions": regressions,
+    }
+
+
+def publish_scraper_gate(verdict: dict, curated_dir: Path) -> None:
+    """Merge the gate verdict into system_health.json under `scraper_gate`.
+
+    Read-modify-write so this cannot clobber what the pipeline already wrote;
+    the ML training step merges into the same file afterwards. Uses the
+    repo-wide strict writer so a non-finite value can never publish a bare NaN
+    token and break every downstream JSON consumer (see app/core/json_safe.py).
+    """
+    from app.core.json_safe import write_json
+
+    health_path = curated_dir / _HEALTH_FILE
+    payload: dict = {}
+    if health_path.exists():
+        try:
+            payload = json.loads(health_path.read_text())
+        except (json.JSONDecodeError, OSError) as exc:
+            print(
+                f"  [gate] existing {_HEALTH_FILE} unreadable ({exc}); writing a fresh one.",
+                file=sys.stderr,
+            )
+            payload = {}
+    payload["scraper_gate"] = verdict
+    write_json(health_path, payload)
 
 
 def merge_and_rebuild(
@@ -1909,6 +2380,13 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--only", type=str, help="Filter to one county")
     parser.add_argument("--skip-rebuild-beach-day", action="store_true")
+    parser.add_argument(
+        "--strict-gate",
+        action="store_true",
+        help="Exit non-zero on a SOFT gate trip too (default: soft trips only "
+        "mark system_health.json['scraper_gate'], and scripts/verify_scraper_gate.py "
+        "fails the job after the data commit). Useful when debugging locally.",
+    )
     args = parser.parse_args()
 
     if not args.curated.exists():
@@ -1917,6 +2395,10 @@ def main() -> int:
 
     beaches = pd.read_parquet(args.curated / "beaches.parquet")
     resolver = StationResolver(beaches)
+    # Snapshot the PREVIOUS run's telemetry before this run overwrites it —
+    # detect_county_resolution_regressions compares against it.
+    previous_report = load_previous_report(args.curated)
+    unmapped_allowlist = load_unmapped_venues()
 
     all_advisories: list[CountyAdvisory] = []
     reports: list[CountyReport] = []
@@ -1944,6 +2426,11 @@ def main() -> int:
                 )
                 advs = []
             total_scraped += len(advs)
+            # Authoritative per-county parse count. Every fetcher sets this
+            # itself, but detect_county_resolution_regressions keys its
+            # schema-drift check on it — so a fetcher that forgets must not
+            # silently opt its county out of the check.
+            rpt.advisories_parsed = len(advs)
             resolved = resolve_advisories(advs, resolver, rpt, unresolved_sink=unresolved_rows)
             print(
                 f"  {len(advs)} parsed → {len(resolved)} resolved "
@@ -1970,6 +2457,11 @@ def main() -> int:
                 )
                 advs = []
             total_scraped += len(advs)
+            # Authoritative per-county parse count. Every fetcher sets this
+            # itself, but detect_county_resolution_regressions keys its
+            # schema-drift check on it — so a fetcher that forgets must not
+            # silently opt its county out of the check.
+            rpt.advisories_parsed = len(advs)
             resolved = resolve_advisories(advs, resolver, rpt, unresolved_sink=unresolved_rows)
             print(
                 f"  {len(advs)} parsed → {len(resolved)} resolved "
@@ -2052,43 +2544,75 @@ def main() -> int:
     # we're trying to eliminate — make it a workflow-stopping signal so the
     # operator sees it before the bad data ships to prod.
     unresolved_count = persist_unresolved(unresolved_rows, args.curated)
-    ratio = (unresolved_count / total_scraped) if total_scraped else 0.0
+    # Score regressions on the SAME allowlist-filtered counts the gate uses, so
+    # a day of only known-unmapped postings can never hard-fail the run.
+    _, _unexpected_rows = split_unresolved(unresolved_rows, unmapped_allowlist)
+    unexpected_by_county: dict[str, int] = {}
+    for _row in _unexpected_rows:
+        _cty = str(_row.get("source_county") or "")
+        unexpected_by_county[_cty] = unexpected_by_county.get(_cty, 0) + 1
+    regressions = detect_county_resolution_regressions(
+        reports, previous_report, unexpected_by_county
+    )
+    verdict = evaluate_scraper_gate(
+        unresolved_rows,
+        total_scraped,
+        regressions,
+        unmapped_allowlist,
+    )
+    publish_scraper_gate(verdict, args.curated)
+
     by_county: dict[str, int] = {}
     for row in unresolved_rows:
         by_county[row["source_county"]] = by_county.get(row["source_county"], 0) + 1
 
     print("\n--- Unresolved advisories (G.1) ---")
     print(
-        f"  scraped={total_scraped}  unresolved={unresolved_count}  "
-        f"ratio={ratio:.1%}  floor={_UNRESOLVED_ABSOLUTE_FLOOR}  "
-        f"max_ratio={_UNRESOLVED_RATIO_THRESHOLD:.0%}"
+        f"  scraped={total_scraped}  unresolved={unresolved_count} "
+        f"(unexpected={verdict['unresolved_unexpected']}, "
+        f"known-unmapped={verdict['unresolved_expected']})  "
+        f"ratio={verdict['unresolved_ratio']:.1%}  floor={_UNRESOLVED_ABSOLUTE_FLOOR}  "
+        f"max_ratio={_UNRESOLVED_RATIO_THRESHOLD:.0%}  hard_floor={_UNRESOLVED_HARD_FLOOR}"
     )
     if by_county:
         for county_name in sorted(by_county):
             print(f"    {county_name:24s} {by_county[county_name]:3d}")
     if unresolved_rows:
-        sample = unresolved_rows[: min(10, len(unresolved_rows))]
-        for row in sample:
-            print(
-                f"    [dropped] {row['source_county']:20s} "
-                f"{str(row['scraped_name'])[:60]}"
-            )
+        allowed_keys = set(unmapped_allowlist)
+        for row in unresolved_rows[:10]:
+            key = (str(row["source_county"]), str(row.get("scraped_name_normalized") or ""))
+            tag = "known-unmapped" if key in allowed_keys else "dropped"
+            print(f"    [{tag}] {row['source_county']:20s} {str(row['scraped_name'])[:60]}")
 
-    over_floor = unresolved_count > _UNRESOLVED_ABSOLUTE_FLOOR
-    over_ratio = total_scraped > 0 and ratio > _UNRESOLVED_RATIO_THRESHOLD
-    if over_floor or over_ratio:
-        print(
-            f"\nFAIL: scraper observability gate tripped — "
-            f"{unresolved_count} advisories failed name resolution "
-            f"(absolute floor {_UNRESOLVED_ABSOLUTE_FLOOR}, "
-            f"ratio threshold {_UNRESOLVED_RATIO_THRESHOLD:.0%}). "
-            f"See {args.curated / _UNRESOLVED_PARQUET} for the full list. "
-            f"Likely cause: a county source changed its naming convention "
-            f"and the resolver lookup needs a new alias or station-code mapping.",
-            file=sys.stderr,
-        )
+    if verdict["passed"]:
+        return 0
+
+    severity = "HARD FAIL" if verdict["hard_failed"] else "FAIL (soft)"
+    print(
+        f"\n{severity}: scraper observability gate tripped. "
+        f"See {args.curated / _UNRESOLVED_PARQUET} for the full list. "
+        f"Likely cause: a county source changed its naming convention "
+        f"and the resolver lookup needs a new alias or station-code mapping.",
+        file=sys.stderr,
+    )
+    for blocker in verdict["blockers"]:
+        print(f"  - {blocker}", file=sys.stderr)
+
+    if verdict["hard_failed"] or args.strict_gate:
         return 1
 
+    # Soft trip: keep the pipeline running so the day still gets a forecast.
+    # The dropped advisories are dropped either way — aborting here does not
+    # recover them, it only also costs the forecast (which is exactly what
+    # happened on 2026-08-05). scripts/verify_scraper_gate.py reads the verdict
+    # we just published and fails the job AFTER the data commit, so the state
+    # is auditable in git before notify-failure fires.
+    print(
+        "  → continuing: the verdict is published to "
+        f"{_HEALTH_FILE}['scraper_gate'] and verify_scraper_gate.py will fail "
+        "the job after the data commit.",
+        file=sys.stderr,
+    )
     return 0
 
 

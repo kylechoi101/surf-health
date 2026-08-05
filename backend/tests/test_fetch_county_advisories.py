@@ -25,12 +25,35 @@ from fetch_county_advisories import (  # noqa: E402
     CountyReport,
     StationResolver,
     _UNRESOLVED_ABSOLUTE_FLOOR,
+    _UNRESOLVED_HARD_FLOOR,
     _UNRESOLVED_PARQUET,
     _UNRESOLVED_RATIO_THRESHOLD,
+    detect_county_resolution_regressions,
+    evaluate_scraper_gate,
+    load_unmapped_venues,
     merge_and_rebuild,
     persist_unresolved,
     resolve_advisories,
 )
+from verify_scraper_gate import resolve_gate  # noqa: E402
+
+
+def _state_board_stub(client, resolver):
+    """The State Board scraper runs first in main(); stub it out so tests don't
+    depend on the network or the live statewide roster size."""
+    return [], CountyReport(
+        county="State Board",
+        success=True,
+        last_attempted_at="2026-05-18T16:00:00Z",
+        source_url="https://example.test",
+    )
+
+
+def _read_gate(curated: Path) -> dict:
+    """The scraper_gate block main() publishes into system_health.json."""
+    import json
+
+    return json.loads((curated / "system_health.json").read_text())["scraper_gate"]
 
 
 def _make_beaches() -> pd.DataFrame:
@@ -147,10 +170,11 @@ def _write_minimal_curated(curated: Path) -> None:
     ).to_parquet(curated / "advisories.parquet", index=False)
 
 
-def test_main_exits_one_when_unresolved_exceeds_absolute_floor(tmp_path, monkeypatch):
-    """G.1: when more than the absolute floor of advisories fail resolution,
-    main() must exit non-zero. We stub the per-county fetcher to emit
-    UNRESOLVED rows so the gate trips."""
+def test_main_soft_trips_without_exiting_when_over_absolute_floor(tmp_path, monkeypatch):
+    """G.1 (2026-08-05 severity split): more than the absolute floor of
+    unresolved advisories is a SOFT trip. main() must publish a failed verdict
+    but still return 0, so the daily pipeline goes on to produce a forecast;
+    verify_scraper_gate.py is what fails the job after the data commit."""
     curated = tmp_path / "curated"
     _write_minimal_curated(curated)
 
@@ -194,12 +218,170 @@ def test_main_exits_one_when_unresolved_exceeds_absolute_floor(tmp_path, monkeyp
     monkeypatch.setattr(sys, "argv", ["fetch_county_advisories.py", "--curated", str(curated)])
 
     rc = fca.main()
-    assert rc == 1, "expected main() to exit 1 when unresolved_count > absolute floor"
+    assert rc == 0, "a soft gate trip must NOT abort the pipeline before training"
+
+    gate = _read_gate(curated)
+    assert gate["passed"] is False
+    assert gate["hard_failed"] is False
+    assert gate["unresolved_unexpected"] == _UNRESOLVED_ABSOLUTE_FLOOR + 1
+    assert any("absolute floor" in b for b in gate["blockers"])
+    # ...and the post-commit verifier is the thing that fails the job.
+    assert resolve_gate({"scraper_gate": gate})[0] is False
 
     parquet_path = curated / _UNRESOLVED_PARQUET
     assert parquet_path.exists()
     df = pd.read_parquet(parquet_path)
     assert len(df) == _UNRESOLVED_ABSOLUTE_FLOOR + 1
+
+
+def test_main_hard_fails_above_hard_floor(tmp_path, monkeypatch):
+    """G.1: mass resolution loss means the advisory feed cannot be trusted by
+    the training step that consumes advisory_active_prev_14d, so the scraper
+    must still abort in place."""
+    curated = tmp_path / "curated"
+    _write_minimal_curated(curated)
+
+    def _stub_fetch(client, resolver):
+        rpt = CountyReport(
+            county="Orange",
+            success=True,
+            last_attempted_at="2026-05-18T16:00:00Z",
+            source_url="https://example.test",
+        )
+        return [
+            CountyAdvisory(
+                county="Orange",
+                station_code=None,
+                area=f"Unknown Beach #{i}",
+                advisory_type="Posting",
+                started_at=pd.Timestamp("2026-05-18"),
+                advisory_website="https://example.test",
+            )
+            for i in range(_UNRESOLVED_HARD_FLOOR + 1)
+        ], rpt
+
+    import fetch_county_advisories as fca
+    monkeypatch.setattr(fca, "COUNTIES_FIRST_CLASS", [("Orange", _stub_fetch)])
+    monkeypatch.setattr(fca, "BEST_EFFORT_COUNTIES", {})
+    monkeypatch.setattr(fca, "fetch_state_board_advisories", _state_board_stub)
+    monkeypatch.setattr(sys, "argv", ["fetch_county_advisories.py", "--curated", str(curated)])
+
+    assert fca.main() == 1
+    gate = _read_gate(curated)
+    assert gate["hard_failed"] is True
+    assert any("hard floor" in b for b in gate["blockers"])
+
+
+def test_main_hard_fails_on_county_resolution_regression(tmp_path, monkeypatch):
+    """A county that resolved advisories last run and resolves NONE now is the
+    schema-drift signal G.1 exists for — independent of scrape volume."""
+    import json
+
+    curated = tmp_path / "curated"
+    _write_minimal_curated(curated)
+    # Previous run's telemetry: Orange resolved 4 advisories.
+    (curated / "county_advisories_report.json").write_text(
+        json.dumps({
+            "counties": [
+                {"county": "Orange", "matched_via_live_list": 4,
+                 "matched_via_csv": 0, "matched_via_fuzzy": 0},
+            ]
+        })
+    )
+
+    def _stub_fetch(client, resolver):
+        rpt = CountyReport(
+            county="Orange",
+            success=True,
+            last_attempted_at="2026-05-18T16:00:00Z",
+            source_url="https://example.test",
+        )
+        # Two parsed, neither resolvable — a renamed roster, not an empty day.
+        return [
+            CountyAdvisory(
+                county="Orange",
+                station_code=None,
+                area=f"OC::STATION::{i}",
+                advisory_type="Posting",
+                started_at=pd.Timestamp("2026-05-18"),
+                advisory_website="https://example.test",
+            )
+            for i in range(2)
+        ], rpt
+
+    import fetch_county_advisories as fca
+    monkeypatch.setattr(fca, "COUNTIES_FIRST_CLASS", [("Orange", _stub_fetch)])
+    monkeypatch.setattr(fca, "BEST_EFFORT_COUNTIES", {})
+    monkeypatch.setattr(fca, "fetch_state_board_advisories", _state_board_stub)
+    monkeypatch.setattr(sys, "argv", ["fetch_county_advisories.py", "--curated", str(curated)])
+
+    assert fca.main() == 1, "a county-wide resolution regression must hard-fail"
+    gate = _read_gate(curated)
+    assert gate["hard_failed"] is True
+    assert any("naming convention likely changed" in b for b in gate["blockers"])
+
+
+def test_county_with_nothing_posted_is_not_a_regression():
+    """An all-clear day (0 parsed) must never look like schema drift."""
+    quiet = CountyReport(
+        county="Ventura",
+        success=True,
+        last_attempted_at="2026-05-18T16:00:00Z",
+        source_url="https://example.test",
+    )
+    quiet.advisories_parsed = 0
+    previous = {"counties": [{"county": "Ventura", "matched_via_live_list": 3}]}
+    assert detect_county_resolution_regressions([quiet], previous) == []
+
+
+def test_known_unmapped_venues_do_not_trip_the_gate():
+    """A venue with no possible beach_id is reported but excluded from the
+    gate's numerator — otherwise it pins the counter at the threshold forever
+    and any single new posting fails the workflow (the 2026-08-05 outage)."""
+    allowlist = {("East Bay Parks District", "lake temescal"): "freshwater lake"}
+    rows = [
+        {"source_county": "East Bay Parks District",
+         "scraped_name": "Lake Temescal",
+         "scraped_name_normalized": "lake temescal"},
+        {"source_county": "East Bay Parks District",
+         "scraped_name": "Some New Venue",
+         "scraped_name_normalized": "some new venue"},
+    ]
+    verdict = evaluate_scraper_gate(rows, total_scraped=40, regressions=[], allowlist=allowlist)
+    assert verdict["unresolved_total"] == 2
+    assert verdict["unresolved_expected"] == 1
+    # Only the un-allowlisted name counts — 1/40 = 2.5%, under the 10% ratio.
+    assert verdict["unresolved_unexpected"] == 1
+    assert verdict["passed"] is True
+
+
+def test_expired_allowlist_entry_stops_suppressing(tmp_path):
+    """`review_by` is enforced: the allowlist is a deferral, not a permanent
+    mute, so a stale entry starts counting against the gate again."""
+    csv_path = tmp_path / "unmapped.csv"
+    csv_path.write_text(
+        "county,scraped_name_normalized,reason,review_by\n"
+        "Marin,ghost venue,no counterpart,2026-01-01\n"
+        "Marin,live venue,no counterpart,2099-01-01\n"
+    )
+    allowed = load_unmapped_venues(csv_path, today=pd.Timestamp("2026-08-05"))
+    assert ("Marin", "live venue") in allowed
+    assert ("Marin", "ghost venue") not in allowed
+
+
+def test_shipped_allowlist_entries_are_normalized_and_unexpired():
+    """The committed allowlist must be usable: names already normalized (so
+    they can match the sink's normalized key) and not silently expired."""
+    from fetch_county_advisories import _UNMAPPED_VENUES_CSV, _normalize_name
+
+    raw = pd.read_csv(_UNMAPPED_VENUES_CSV, comment="#")
+    assert not raw.empty
+    for name in raw["scraped_name_normalized"]:
+        assert _normalize_name(str(name)) == str(name), (
+            f"{name!r} is not in _normalize_name() form — it can never match the sink key"
+        )
+    loaded = load_unmapped_venues(_UNMAPPED_VENUES_CSV, today=pd.Timestamp.now().normalize())
+    assert len(loaded) == len(raw), "a shipped allowlist entry has already expired"
 
 
 def test_main_exits_zero_when_all_resolved(tmp_path, monkeypatch):
@@ -242,9 +424,10 @@ def test_main_exits_zero_when_all_resolved(tmp_path, monkeypatch):
     assert rc == 0
 
 
-def test_main_exits_one_on_ratio_threshold(tmp_path, monkeypatch):
+def test_main_soft_trips_on_ratio_threshold(tmp_path, monkeypatch):
     """G.1: ratio threshold trips even when absolute count is small.
-    With 1 unresolved out of 2 scraped (50% > 10%) the gate must fail."""
+    With 1 unresolved out of 2 scraped (50% > 10%) the gate must record a
+    failure — as a soft trip, so the pipeline still reaches training."""
     curated = tmp_path / "curated"
     _write_minimal_curated(curated)
 
@@ -292,7 +475,11 @@ def test_main_exits_one_on_ratio_threshold(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["fetch_county_advisories.py", "--curated", str(curated)])
 
     rc = fca.main()
-    assert rc == 1, "expected ratio-based G.1 gate to trip at 50% unresolved"
+    assert rc == 0, "a ratio-only trip is soft — it must not abort before training"
+    gate = _read_gate(curated)
+    assert gate["passed"] is False
+    assert gate["hard_failed"] is False
+    assert any("ratio threshold" in b for b in gate["blockers"])
 
 
 def test_merge_and_rebuild_scraper_wins_over_state_csv(tmp_path):
@@ -478,3 +665,365 @@ def test_state_board_advisories_are_unioned_into_merge(tmp_path):
     active = result[result["status"] == "active"]
     assert len(active) == 1
     assert active.iloc[0]["beach_id"] == "ca748587-san-diego-tourmaline-surfing-park-fm-030"
+
+
+# ---------- Resolver mapping (2026-08-05 regressions) ---------- #
+
+
+def _ebrpd_marin_beaches() -> pd.DataFrame:
+    """A registry slice reproducing the two shapes that broke resolution:
+
+    * Marin's GREEN BRIDGE, whose `beach_name` is the county-wide placeholder
+      "All_Marin_County" — its identity lives only in `name`/`station_code`.
+    * EBRPD's multi-point groups, where several sampled beaches share one
+      `beach_name` ("Del Valle", "Crown Beach (Alameda Co)").
+    """
+    def _row(beach_id, name, beach_name, county, station_code):
+        return {
+            "beach_id": beach_id,
+            "name": name,
+            "beach_name": beach_name,
+            "county": county,
+            "region": "North",
+            "station_code": station_code,
+            "support_status": "production",
+            "latitude": 37.9,
+            "longitude": -122.3,
+        }
+
+    return pd.DataFrame([
+        _row("marin-green-bridge", "GREEN BRIDGE", "All_Marin_County", "Marin", "GREEN BRIDGE"),
+        _row("marin-inkwells", "Inkwells", "All_Marin_County", "Marin", "Inkwells"),
+        _row("ebrpd-del-valle-west", "Del Valle WEST Swim Beach", "Del Valle",
+             "East Bay Parks District", "Del Valle West"),
+        _row("ebrpd-del-valle-east", "Del Valle EAST Swim Beach", "Del Valle",
+             "East Bay Parks District", "Del Valle East"),
+        _row("ebrpd-alameda-point-mid", "Alameda Point Encinal Beach Mid", "Alameda Point",
+             "East Bay Parks District", "Alameda Mid"),
+        _row("ebrpd-crown-crab-cove", "Crab Cove", "Crown Beach (Alameda Co)",
+             "East Bay Parks District", "Crown Crab Cove"),
+        _row("ebrpd-crown-bath-house", "Bath House", "Crown Beach (Alameda Co)",
+             "East Bay Parks District", "Crown Bath House"),
+    ])
+
+
+def test_secondary_index_resolves_site_name_under_placeholder_beach_name():
+    """GREEN BRIDGE is a production Marin beach whose beach_name is the
+    "All_Marin_County" placeholder, so a beach_name-only index cannot see it.
+    Its 2026-08-05 posting was dropped for exactly this reason."""
+    resolver = StationResolver(_ebrpd_marin_beaches())
+    beach_ids, kind = resolver.resolve_all_by_name("Marin", "Green Bridge")
+    assert beach_ids == ["marin-green-bridge"]
+    assert kind == "live_list"
+
+
+def test_multi_point_group_resolves_to_the_right_site_not_a_sibling():
+    """Both Del Valle beaches share beach_name "Del Valle", so the primary
+    index collapses them to one arbitrary id — the WEST posting used to land on
+    the EAST beach while WEST showed clean."""
+    resolver = StationResolver(_ebrpd_marin_beaches())
+    west, _ = resolver.resolve_all_by_name("East Bay Parks District", "Del Valle WEST Swim Beach")
+    east, _ = resolver.resolve_all_by_name("East Bay Parks District", "Del Valle EAST Swim Beach")
+    assert west == ["ebrpd-del-valle-west"]
+    assert east == ["ebrpd-del-valle-east"]
+
+
+def test_substring_rule_rejects_single_incidental_token_match():
+    """"Shinn Pond at Alameda Creek Trails" (a Fremont freshwater pond) used to
+    resolve onto "Alameda Point Encinal Beach Mid" on the single shared token
+    "alameda". A dropped advisory is a miss; a mis-mapped one posts a warning on
+    the wrong beach AND clears the real one, so this must now be a miss.
+
+    Covers BOTH layers that can make this match: the substring rule and the
+    fuzzy fallback. rapidfuzz's token_set_ratio scores a token-subset pair 100,
+    so guarding only the substring layer left the mis-map fully intact wherever
+    rapidfuzz is installed — which is CI and production, but not necessarily a
+    dev sandbox, so this test is silently weaker without it.
+    """
+    import fetch_county_advisories as fca
+
+    resolver = StationResolver(_ebrpd_marin_beaches())
+    beach_ids, kind = resolver.resolve_all_by_name(
+        "East Bay Parks District", "Shinn Pond at Alameda Creek Trails"
+    )
+    assert beach_ids == []
+    assert kind == "miss"
+    assert fca.HAS_RAPIDFUZZ, (
+        "rapidfuzz is missing, so the fuzzy layer was skipped and this test did "
+        "not actually exercise it — install it (it is in the CI dependency set)"
+    )
+
+
+def test_fuzzy_layer_still_matches_a_genuine_misspelling():
+    """The token guard must not turn the fuzzy layer off entirely: a near-
+    identical string is still a match via the length-sensitive `ratio`."""
+    beaches = pd.DataFrame([
+        {"beach_id": "stinson", "name": "Stinson", "beach_name": "Stinson Cove",
+         "county": "Marin", "region": "N", "station_code": "S1",
+         "support_status": "production", "latitude": 1.0, "longitude": 2.0},
+    ])
+    resolver = StationResolver(beaches)
+    # A misspelling: shares only 1 token with the roster key, so it survives
+    # solely on the whole-string ratio (91.7) — the path the guard preserves.
+    beach_ids, kind = resolver.resolve_all_by_name("Marin", "Stinsen Cove")
+    assert beach_ids == ["stinson"]
+    assert kind == "fuzzy"
+
+
+def test_substring_rule_still_matches_on_two_shared_tokens():
+    """The guard must not break legitimate substring matches: EBRPD posts
+    "Del Valle Swim Beach" against roster key "del valle"."""
+    resolver = StationResolver(_ebrpd_marin_beaches().iloc[[2]])  # WEST only
+    beach_ids, kind = resolver.resolve_all_by_name(
+        "East Bay Parks District", "Del Valle Swim Beach Area"
+    )
+    assert beach_ids == ["ebrpd-del-valle-west"]
+    assert kind == "live_list"
+
+
+def test_ambiguous_substring_match_is_a_miss_not_a_coin_flip():
+    """When several roster keys qualify, dict order must not decide which beach
+    gets the advisory — drop to the unresolved sink instead."""
+    beaches = pd.DataFrame([
+        {"beach_id": "a", "name": "A", "beach_name": "Sunset Cove North", "county": "Marin",
+         "region": "N", "station_code": "A1", "support_status": "production",
+         "latitude": 1.0, "longitude": 2.0},
+        {"beach_id": "b", "name": "B", "beach_name": "Sunset Cove South", "county": "Marin",
+         "region": "N", "station_code": "B1", "support_status": "production",
+         "latitude": 1.0, "longitude": 2.0},
+    ])
+    resolver = StationResolver(beaches)
+    beach_ids, kind = resolver.resolve_all_by_name("Marin", "Sunset Cove")
+    assert beach_ids == []
+    assert kind == "miss"
+
+
+def test_ambiguous_secondary_key_is_dropped():
+    """Two sites sharing a normalized `name` within a county must not resolve
+    arbitrarily through the secondary index."""
+    beaches = pd.DataFrame([
+        {"beach_id": "a", "name": "North Cove", "beach_name": "Harbor One", "county": "Marin",
+         "region": "N", "station_code": "A1", "support_status": "production",
+         "latitude": 1.0, "longitude": 2.0},
+        {"beach_id": "b", "name": "North Cove", "beach_name": "Harbor Two", "county": "Marin",
+         "region": "N", "station_code": "B1", "support_status": "production",
+         "latitude": 1.0, "longitude": 2.0},
+    ])
+    resolver = StationResolver(beaches)
+    assert resolver.resolve_all_by_name("Marin", "North Cove")[0] == []
+
+
+def test_alias_fan_out_replicates_advisory_onto_every_covered_beach(tmp_path, monkeypatch):
+    """EBRPD posts ONE district-wide notice for Crown Beach, which the registry
+    splits into several sampled points. Resolving to a single point would leave
+    the rest showing clean under a live district posting."""
+    import fetch_county_advisories as fca
+
+    alias_csv = tmp_path / "alias.csv"
+    alias_csv.write_text(
+        "county,beach_name_normalized,station_code,beach_id,notes\n"
+        "East Bay Parks District,crown regional shoreline,,ebrpd-crown-crab-cove,fan-out\n"
+        "East Bay Parks District,crown regional shoreline,,ebrpd-crown-bath-house,fan-out\n"
+    )
+    monkeypatch.setattr(fca, "_STATIC_ALIAS_CSV", alias_csv)
+
+    resolver = StationResolver(_ebrpd_marin_beaches())
+    beach_ids, kind = resolver.resolve_all_by_name(
+        "East Bay Parks District", "Crown Beach Regional Shoreline"
+    )
+    assert kind == "csv"
+    assert sorted(beach_ids) == ["ebrpd-crown-bath-house", "ebrpd-crown-crab-cove"]
+
+    rpt = CountyReport(
+        county="East Bay Parks District",
+        success=True,
+        last_attempted_at="2026-08-05T16:00:00Z",
+        source_url="https://example.test",
+    )
+    resolved = resolve_advisories(
+        [CountyAdvisory(
+            county="East Bay Parks District",
+            station_code=None,
+            area="Crown Beach Regional Shoreline",
+            advisory_type="Posting",
+            started_at=pd.Timestamp("2026-08-05"),
+            advisory_website="https://example.test",
+        )],
+        resolver,
+        rpt,
+    )
+    assert sorted(a.beach_id for a in resolved) == [
+        "ebrpd-crown-bath-house", "ebrpd-crown-crab-cove",
+    ]
+    # One scraped posting, so it counts once against the telemetry.
+    assert rpt.matched_via_csv == 1
+
+
+def test_resolve_by_name_stays_single_valued_for_samples(tmp_path, monkeypatch):
+    """A scraped MPN reading is ONE physical measurement — persist_samples must
+    not fan it out across a group the way a district-wide advisory is."""
+    import fetch_county_advisories as fca
+
+    alias_csv = tmp_path / "alias.csv"
+    alias_csv.write_text(
+        "county,beach_name_normalized,station_code,beach_id,notes\n"
+        "East Bay Parks District,crown regional shoreline,,ebrpd-crown-crab-cove,fan-out\n"
+        "East Bay Parks District,crown regional shoreline,,ebrpd-crown-bath-house,fan-out\n"
+    )
+    monkeypatch.setattr(fca, "_STATIC_ALIAS_CSV", alias_csv)
+
+    resolver = StationResolver(_ebrpd_marin_beaches())
+    beach_id, kind = resolver.resolve_by_name(
+        "East Bay Parks District", "Crown Beach Regional Shoreline"
+    )
+    assert isinstance(beach_id, str)
+    assert kind == "csv"
+
+
+def test_alias_csv_outranks_the_substring_heuristic(tmp_path, monkeypatch):
+    """The curated alias file is the operator's escape hatch: it must be able to
+    correct a bad heuristic match, which requires it to run first."""
+    import fetch_county_advisories as fca
+
+    alias_csv = tmp_path / "alias.csv"
+    alias_csv.write_text(
+        "county,beach_name_normalized,station_code,beach_id,notes\n"
+        "East Bay Parks District,del valle swim area,,ebrpd-del-valle-east,operator override\n"
+    )
+    monkeypatch.setattr(fca, "_STATIC_ALIAS_CSV", alias_csv)
+
+    resolver = StationResolver(_ebrpd_marin_beaches())
+    beach_ids, kind = resolver.resolve_all_by_name(
+        "East Bay Parks District", "Del Valle Swim Area"
+    )
+    assert kind == "csv"
+    assert beach_ids == ["ebrpd-del-valle-east"]
+
+
+# ---------- Regressions found in review of this change ---------- #
+
+
+def test_single_token_roster_key_still_matches_a_decorated_posting():
+    """40% of roster keys collapse to ONE token after _normalize_name strips
+    "beach"/"creek"/"state"/... ("doheny", "zuma", "crown"). Counties post
+    decorated names, so a shared-token-count rule alone can never match them —
+    it silently drops every decorated posting for 40% of the roster.
+
+    The token-PREFIX arm of _match_is_anchored is what keeps these working, so
+    this test is the guard against re-tightening it away.
+    """
+    beaches = pd.DataFrame([
+        {"beach_id": "doheny", "name": "San Juan Creek", "beach_name": "Doheny State Beach",
+         "county": "Orange", "region": "S", "station_code": "OC-DOH-01",
+         "support_status": "production", "latitude": 33.4, "longitude": -117.6},
+    ])
+    resolver = StationResolver(beaches)
+    for posting in (
+        "Doheny State Beach - 100 feet up and down coast of the San Juan Creek outlet",
+        "Doheny Beach at the storm drain",
+        "Doheny State Beach",
+    ):
+        beach_ids, _ = resolver.resolve_all_by_name("Orange", posting)
+        assert beach_ids == ["doheny"], f"decorated posting {posting!r} must still resolve"
+
+
+def test_incidental_token_is_rejected_even_though_prefix_arm_exists():
+    """The prefix arm must not re-open the Shinn Pond hole: "alameda" is a token
+    of "shinn pond alameda trails" but does NOT lead it."""
+    resolver = StationResolver(_ebrpd_marin_beaches())
+    beach_ids, kind = resolver.resolve_all_by_name(
+        "East Bay Parks District", "Shinn Pond at Alameda Creek Trails"
+    )
+    assert beach_ids == []
+    assert kind == "miss"
+
+
+def test_more_specific_key_wins_over_a_shorter_prefix():
+    """"Huntington City Beach ..." matches both "huntington" and "huntington
+    city"; the specific one must win rather than dict order deciding."""
+    beaches = pd.DataFrame([
+        {"beach_id": "hb-state", "name": "Brookhurst", "beach_name": "Huntington State Beach",
+         "county": "Orange", "region": "S", "station_code": "H1",
+         "support_status": "production", "latitude": 33.6, "longitude": -118.0},
+        {"beach_id": "hb-city", "name": "27th St", "beach_name": "Huntington City Beach",
+         "county": "Orange", "region": "S", "station_code": "H2",
+         "support_status": "production", "latitude": 33.6, "longitude": -118.0},
+    ])
+    resolver = StationResolver(beaches)
+    assert resolver.resolve_all_by_name("Orange", "Huntington City Beach near the pier")[0] == ["hb-city"]
+    assert resolver.resolve_all_by_name("Orange", "Huntington State Beach at the outlet")[0] == ["hb-state"]
+
+
+def test_allowlisted_only_day_is_not_a_county_regression():
+    """EBRPD routinely posts ONLY its freshwater venues, which have no beach_id.
+    Counting that as a county-wide resolution regression hard-fails the run
+    before training and costs the day's forecast — while the gate's own
+    numerator says 0 unexpected. The two must never disagree."""
+    report = CountyReport(
+        county="East Bay Parks District",
+        success=True,
+        last_attempted_at="2026-08-05T16:00:00Z",
+        source_url="https://example.test",
+    )
+    report.advisories_parsed = 3
+    previous = {"counties": [{"county": "East Bay Parks District", "matched_via_live_list": 9}]}
+
+    # Every unresolved name is allowlisted -> not a regression.
+    assert detect_county_resolution_regressions([report], previous, {"East Bay Parks District": 0}) == []
+    # A genuinely unresolvable name -> still a regression.
+    assert detect_county_resolution_regressions([report], previous, {"East Bay Parks District": 2})
+
+
+def test_alias_outranks_the_secondary_index_for_cross_beach_name_collisions(tmp_path, monkeypatch):
+    """LA has two distinct Mother's Beaches ~40km apart: Long Beach's site is
+    literally named "Mothers' Beach" while Marina del Rey's carries it in
+    beach_name. Neither index looks ambiguous on its own, so only the curated
+    alias can adjudicate — which requires it to outrank the secondary index."""
+    import fetch_county_advisories as fca
+
+    beaches = pd.DataFrame([
+        {"beach_id": "mdr", "name": "Kayak Area",
+         "beach_name": "Marina Del Rey Beach - Mothers Beach", "county": "Los Angeles",
+         "region": "S", "station_code": "MDRH-3", "support_status": "production",
+         "latitude": 33.97, "longitude": -118.45},
+        {"beach_id": "alamitos", "name": "Mothers' Beach", "beach_name": "Alamitos Bay Beach",
+         "county": "Los Angeles", "region": "S", "station_code": "B-22",
+         "support_status": "production", "latitude": 33.75, "longitude": -118.11},
+    ])
+    # Baseline with NO alias file: the site-level index claims it for the
+    # wrong beach (this is the bug the shipped alias row exists to prevent).
+    monkeypatch.setattr(fca, "_STATIC_ALIAS_CSV", tmp_path / "absent.csv")
+    assert StationResolver(beaches).resolve_all_by_name("Los Angeles", "Mothers Beach")[0] == ["alamitos"]
+
+    alias_csv = tmp_path / "alias.csv"
+    alias_csv.write_text(
+        "county,beach_name_normalized,station_code,beach_id,notes\n"
+        "Los Angeles,mothers,,mdr,disambiguates the two LA Mother's Beaches\n"
+    )
+    monkeypatch.setattr(fca, "_STATIC_ALIAS_CSV", alias_csv)
+    beach_ids, kind = StationResolver(beaches).resolve_all_by_name("Los Angeles", "Mothers Beach")
+    assert beach_ids == ["mdr"]
+    assert kind == "csv"
+
+
+def test_shipped_alias_disambiguates_the_two_la_mothers_beaches():
+    """Pins the shipped alias row against the REAL registry, so removing it
+    (or reordering the alias layer back below the secondary index) fails."""
+    beaches = pd.read_parquet(ROOT.parent / "data" / "curated" / "beaches.parquet")
+    resolver = StationResolver(beaches)
+    beach_ids, kind = resolver.resolve_all_by_name("Los Angeles", "Mothers Beach")
+    assert kind == "csv"
+    assert beach_ids == ["ca034301-los-angeles-marina-del-rey-beach-mothers-beach-mdrh-3"]
+
+
+def test_allowlist_reason_may_contain_a_hash(tmp_path):
+    """Comment stripping is line-based: a '#' inside a quoted reason must not
+    truncate the row's remaining columns."""
+    csv_path = tmp_path / "unmapped.csv"
+    csv_path.write_text(
+        "# leading comment\n"
+        "county,scraped_name_normalized,reason,review_by\n"
+        'Marin,ghost venue,"outfall #3 has no registry counterpart",2099-01-01\n'
+    )
+    loaded = load_unmapped_venues(csv_path, today=pd.Timestamp("2026-08-05"))
+    assert loaded == {("Marin", "ghost venue"): "outfall #3 has no registry counterpart"}
