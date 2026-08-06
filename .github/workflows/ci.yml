@@ -12,6 +12,13 @@ permissions:
 jobs:
   backend:
     runs-on: ubuntu-latest
+    # Real runs finish in ~3 minutes. On 2026-08-06 a docs-only commit hung for
+    # ~16 minutes and was cancelled runner-side, which surfaces as a bare
+    # "failure" with zero failed jobs — indistinguishable at a glance from a
+    # genuine test break. With no timeout a hang can burn the 6-hour default
+    # before GitHub kills it. 20 minutes is ~6x headroom over the real runtime
+    # and turns a stall into a fast, clearly-labelled timeout.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
 
