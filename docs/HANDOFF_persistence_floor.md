@@ -1,7 +1,9 @@
 # Handoff — positive-persistence override → floor (PR #28)
 
-**Status: PR #28 is open and SHOULD NOT MERGE AS-IS.** One blocking decision is
-pending (§3). Written 2026-08-06.
+**Status: the §3 blocking decision was TAKEN — the calibration fix is folded into
+#28 (`_drop_pin_era_rows`), along with the NaN-fallback fix and the doc
+corrections. §3 and §4/§5 below are retained as the record of what was found and
+why; they are no longer outstanding except where marked.** Written 2026-08-06.
 
 ---
 
@@ -9,10 +11,10 @@ pending (§3). Written 2026-08-06.
 
 | | |
 |---|---|
-| Branch | `claude/high-card-probabilities-fzs6l6` @ `ed78fa3` |
+| Branch | `claude/high-card-probabilities-fzs6l6` |
 | PR | [#28](https://github.com/kylechoi101/surf-health/pull/28) — the serving change |
 | PR | [#29](https://github.com/kylechoi101/surf-health/pull/29) — PR template, independent, mergeable |
-| Tests | 548 pass, `ruff check` clean |
+| Tests | 550 pass, `ruff check` clean |
 | Deployed? | **No.** The daily pipeline still runs the old override. |
 
 **What shipped in `ed78fa3`:** the serve-time positive-persistence *override*
@@ -84,18 +86,18 @@ excluding pins             0.1778               295       0.444
                                                    actual rate 0.632
 ```
 
-**Open question for the owner:** this pushes `max(y)` from 0.45 to 1.0 on a thin
-top bucket and puts 295 rows into Very High on the first run — a band empty since
-July. Either (a) fold the exclusion into #28, or (b) merge #28 as a
-discrimination-only fix and accept a 120-day transition at the 0.45 ceiling.
-Do not merge without choosing.
+**RESOLVED — option (a).** Folded into #28 as `_drop_pin_era_rows`, keyed on
+"legacy row AND precal == 1.0" so it is self-limiting. Verified on the real
+history: 482 rows excluded, `max(y)` 0.45 → 1.0, fit Brier 0.0684 → 0.0617 vs a
+flat-base-rate baseline of 0.0673. Expect ~295/2119 rows in Very High on the
+offline replay — a band empty since July, so watch the first run.
 
 ---
 
 ## 4. Corrections owed to my own claims
 
-These are wrong in `CLAUDE.md`, the commit message, and the PR body, and must be
-fixed before merge:
+**All three are now corrected** in `CLAUDE.md` and the PR body. Kept here so a
+reader who saw the earlier text knows it was wrong rather than trusting it:
 
 1. **"This is also why Very High never fired" is an overclaim.** Very High is
    unreachable through the live map regardless of the pin. The 0 → 1,114
@@ -107,28 +109,31 @@ fixed before merge:
 
 ---
 
-## 5. Remaining review findings (verified, unfixed)
+## 5. Review findings
 
-- **M1 — NaN fallback.** `training.py:3658` still returns `1.0` for
+- **M1 — NaN fallback. FIXED.** It used to return `1.0` for
   persistence-positive rows, and `probabilities_precal` is snapshotted *after*
   it. So a failed prediction serves the loudest forecast in the product AND
   re-seeds pin contamination into the next day's calibrator, permanently at a low
-  rate. Fix: use `_LOW_THRESHOLD` for both branches and let the floor do the
-  work. Not covered by a test — `test_export_nan_probability_falls_back_to_safe_default`
-  uses the persistence-*negative* branch only.
-- **M2 — no test exercises the serving-calibrator-present path.**
+  rate. Both branches now use `_LOW_THRESHOLD`; the floor still lifts the row off
+  Low. Covered by
+  `test_export_nan_probability_on_persistence_positive_row_does_not_serve_one`.
+- **M2 — PARTIALLY ADDRESSED, still the biggest gap.**
   `_run_export_single_beach` never writes `forecast_history.parquet`, so
   `fit_serving_calibration` returns None in every test. The shipped bug was
   `pin × isotonic → plateau`; the isotonic half is untested end to end. Also
   uncovered: advisory floor + persistence floor on the same row, and the two-tier
   router (never runs in tests — the gate needs `winner == "xgb_undersample_ensemble"`).
-- **M4 — `test_export_persistence_floor_applies_without_serving_calibration`
-  passes on the old code.** It documents an invariant but is not a regression
-  test, and test 1 already covers that path with a tighter assertion. Drop or
-  strengthen it.
-- **L2/L3/L4 — stale comments.** `training.py:3641-3646` (now backwards),
-  `tests/test_exceedance.py:114-122`, and a 27-line orphaned block at
-  `training.py:3667-3693` describing code that moved.
+  `test_served_metrics.py` now covers the calibrator fit itself
+  (`test_fit_excludes_pin_era_rows_so_the_map_is_not_capped`), but nothing still
+  exercises model → isotonic → floor → advisory floor → band as one chain through
+  `_export_forecasts`. **Worth doing next.**
+- **M4 — FIXED.** `test_export_persistence_floor_applies_without_serving_calibration`
+  passed on the old code too (the pin satisfied both assertions), so it was not a
+  regression test. Replaced with the M1 NaN-branch test above.
+- **L2/L3/L4 — FIXED.** The backwards header, the `test_exceedance.py` note, and
+  the 27-line orphan are corrected; the orphan now points at CLAUDE.md instead of
+  restating numbers, per this repo's own rule that pinned figures drift.
 - **L5** — `persistence_floor_applied` does not actually "mirror
   `advisory_floor_applied`": the latter is plumbed through the API schema and web
   bake; the new column stops at the parquet.

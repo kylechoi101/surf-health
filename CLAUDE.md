@@ -339,20 +339,49 @@ Brier gap on affected rows **0.1159**, cluster-bootstrap 95% CI over 285 beaches
 merely uninformative, a *miscalibrated* constant. Control rows (persistence-negative) moved
 0.05269 → 0.05260, confirming the change is confined to where it should be.
 
-- **This is also why "Very High" never fired.** The old arm put **0** rows in Very High; the new one
-  puts 1,114. The band's disappearance was previously attributed to honest recalibration ("expect
-  Very High to mostly vanish until real skill supports ≥0.70") — the real mechanism was the pin
-  collapsing everything onto a plateau below 0.70.
+- ⚠️ **The A/B refits the serving isotonic PER ARM; production cannot.** Production reuses one
+  calibrator fitted on a trailing 120d of `forecast_history.parquet`, so the table above is the
+  **ceiling this change reaches once the calibration history is clean**, not the first-run result.
+  The gap was material and is fixed by `_drop_pin_era_rows` (next bullet); without that fix,
+  pushing the same arm-B probabilities through the *live* calibrator gave Moderate 999 / High 1120
+  / **Very High 0**, mean 0.344, against a 0.632 realized rate — i.e. it would have **downgraded
+  47% of the highest-risk beaches from High to Moderate**.
+- **Pin-era rows are excluded from the serving-calibration fit**
+  (`served_metrics.py::_drop_pin_era_rows`). Until 2026-08-06 the pin was applied BEFORE
+  `p_exceed_precal` was snapshotted, so on those rows the recorded "pre-calibration probability" is
+  the constant 1.0, not a model output. On the 2026-08-05 history that was **482 of 13,813** rows in
+  the window, realizing 0.4149 — enough to pin the isotonic's top step at **y = 0.45** and cap
+  *every* served probability there. Excluding them: `max(y)` 0.45 → **1.0**, fit Brier 0.0684 →
+  **0.0617** (flat base rate 0.0673), and on the affected rows Brier 0.2541 → **0.1778** with Very
+  High 0 → 295. Keyed on "legacy row (no `persistence_floor_applied`) AND precal == 1.0", so it is
+  **self-limiting**: post-change rows are never dropped and the exclusion stops firing once the
+  window rolls past the change.
+- **"Very High" was unreachable, and the pin was only part of why.** An earlier draft of this
+  section claimed the pin was *the* reason the band never fired. It was not: the live isotonic's
+  ceiling capped output at 0.45 outright, so 0.70 could not be reached by any row regardless. The
+  pin was one contributor to that ceiling. Fixed by the exclusion above; expect Very High to return
+  in small numbers (295/2119 on the offline replay, 0.16% of the full served window).
 - **Caveats.** Scored on *sample-days*, not the between-sample regime where ~95% of served rows
   live; the pinned constant is 0.61 here vs 0.45 in production because the test population's base
   rate is 0.165 vs ~0.061 served (structure transfers, level does not); and the affected rows are
   overwhelmingly San Diego ddPCR beaches, so the label-regime caveat below applies.
+- **Reproduce:** `backend/scripts/compare_persistence_override_ab.py` (~25 min, needs a retrain).
+  Held-out predictions for both arms are committed to
+  `data/experiments/persistence_override_ab_predictions.parquet`, so any further cut is a recompute.
 - **The guard MODEL keeps the old semantics.** `hist_gbm_positive_persistence_guard` is a scored
   backtest candidate whose *definition* is the pin; changing it would silently rescore a different
   estimator against its own history. If it ever won promotion it would reintroduce the flattening —
   known and accepted, not an oversight.
-- **New audit columns:** `forecasts.parquet` gains `persistence_floor_applied` (mirrors
-  `advisory_floor_applied`), also added to `forecast_history.parquet`'s `_HISTORY_COLUMNS`. And
+- **The NaN/inf serving guard no longer falls back to 1.0** on persistence-positive rows (it now
+  uses `_LOW_THRESHOLD` for both branches). The old fallback re-created the exact constant this
+  change removed — a *failed* prediction became the loudest forecast in the product — and because
+  `probabilities_precal` is snapshotted after the guard, that 1.0 was written to
+  `forecast_history` and re-seeded the pin contamination in the next day's isotonic, permanently.
+- **New audit columns:** `forecasts.parquet` gains `persistence_floor_applied`, also added to
+  `forecast_history.parquet`'s `_HISTORY_COLUMNS` — where it doubles as the marker that identifies
+  legacy rows for `_drop_pin_era_rows`. NOTE it does *not* mirror `advisory_floor_applied` end to
+  end: that one is plumbed through the API schema and the web bake, this one stops at the parquet
+  and the history log. And
   `p_exceed_precal` is now genuinely the model's own pre-calibration probability — it used to be
   captured *after* the pin, so on exactly the rows that mattered the model's answer was absent from
   every shipped artifact and the change could not be measured retrospectively.

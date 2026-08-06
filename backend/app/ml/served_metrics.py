@@ -20,6 +20,7 @@ realized). This module closes that loop:
 from __future__ import annotations
 
 import os
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -323,6 +324,39 @@ def served_performance(
     return payload
 
 
+def _drop_pin_era_rows(pairs: pd.DataFrame) -> pd.DataFrame:
+    """Drop served rows whose ``p_fit`` is the old positive-persistence PIN, not a
+    model output.
+
+    Until 2026-08-06 the serve path did ``where(persistence >= 0.5, 1.0, p)``
+    BEFORE snapshotting ``p_exceed_precal``, so on those rows the recorded
+    "pre-calibration probability" is the constant 1.0. Measured on the 2026-08-05
+    history: 482 of 13,813 rows in the 120d window, realizing 0.4149 — enough to
+    pin the isotonic's top step at y=0.45 and cap EVERY served probability there,
+    which made the Very High band unreachable and sent 47% of persistence-positive
+    beaches to Moderate against a 0.632 realized rate.
+
+    Identified as ``p_fit == 1.0`` AND no ``persistence_floor_applied`` value —
+    that column only exists on rows written by the post-change code, so this is
+    self-limiting: it excludes only legacy rows and stops firing entirely once the
+    trailing window rolls past the change. A post-change row is never dropped,
+    even if a model legitimately outputs 1.0.
+    """
+    if "persistence_floor_applied" not in pairs.columns:
+        legacy = pd.Series(True, index=pairs.index)
+    else:
+        legacy = pairs["persistence_floor_applied"].isna()
+    pinned = legacy & (pd.to_numeric(pairs["p_fit"], errors="coerce") >= 1.0)
+    if not pinned.any():
+        return pairs
+    print(
+        f"[serving calibration] excluded {int(pinned.sum())} pin-era rows "
+        "(p_exceed_precal == 1.0 from the pre-2026-08-06 override).",
+        file=sys.stderr, flush=True,
+    )
+    return pairs.loc[~pinned]
+
+
 def fit_serving_calibration(
     curated_dir: Path,
     *,
@@ -335,6 +369,12 @@ def fit_serving_calibration(
     Fit on the trailing ``window_days`` of matched served-forecast/lab pairs.
     Returns None when history is too thin to beat noise — callers then serve
     the uncalibrated probability (exactly the pre-audit behavior).
+
+    Pin-era rows are excluded (see ``_drop_pin_era_rows``): before 2026-08-06 the
+    serve path OVERRODE persistence positives to 1.0 *before* ``p_exceed_precal``
+    was captured, so their x-value is a constant, not a model output. Fitting on
+    them caps this map's top step at the realized rate of that constant and
+    mis-calibrates every post-change probability pushed through it.
     """
     loaded = _matched_from_disk(curated_dir)
     if loaded is None:
@@ -345,6 +385,9 @@ def fit_serving_calibration(
         return None
     latest = pairs["date"].max()
     pairs = pairs[pairs["date"] > latest - pd.Timedelta(days=window_days)]
+    pairs = _drop_pin_era_rows(pairs)
+    if pairs.empty:
+        return None
     labels = pairs["outcome_matched"].astype(int).to_numpy()
     probabilities = pairs["p_fit"].astype(float).to_numpy()
     n_positive = int(labels.sum())

@@ -1464,19 +1464,28 @@ def test_export_persistence_falls_back_to_raw_value_without_the_method_aware_col
     assert bool(row["persistence_floor_applied"]) is True
 
 
-def test_export_persistence_floor_applies_without_serving_calibration(monkeypatch, tmp_path):
-    # The floor used to live INSIDE the `serving_calibration is not None` branch,
-    # so a run with too little served history to fit an isotonic got no floor at
-    # all. That hole was masked by the pre-calibration pin; with the pin gone it
-    # would be live. This harness has no forecast_history, so no calibrator is
-    # fitted -- the floor must still bind.
+def test_export_nan_probability_on_persistence_positive_row_does_not_serve_one(
+    monkeypatch, tmp_path
+):
+    # The NaN/inf guard used to fall back to 1.0 on persistence-positive rows,
+    # which re-created the very constant this change removed: a FAILED prediction
+    # became the loudest forecast in the product. Worse, probabilities_precal is
+    # snapshotted after the guard, so that 1.0 landed in forecast_history as
+    # p_exceed_precal and re-seeded the pin contamination in the next day's
+    # serving isotonic. Both branches now fall back to _LOW_THRESHOLD; the floor
+    # below still lifts the row off Low.
     row = _run_export_single_beach(
         tmp_path, monkeypatch,
-        winner="baseline", model_prob=0.01, last_obs=180.0,
+        winner="baseline", model_prob=0.0, last_obs=180.0,
         sample_recency_band="recent", advisory_floor=0,
+        raw_proba_override=[np.nan],
     )
-    assert row["p_exceed"] >= _LOW_THRESHOLD
-    assert row["risk_band"] != "Low"
+    assert np.isfinite(row["p_exceed"])
+    assert row["p_exceed"] != 1.0
+    assert row["p_exceed"] == pytest.approx(_LOW_THRESHOLD)
+    assert row["risk_band"] != "Low"  # persistence floor still holds
+    # ...and the value that feeds tomorrow's calibrator is not the old constant.
+    assert float(row["p_exceed_precal"]) == pytest.approx(_LOW_THRESHOLD)
 
 
 def test_export_does_not_floor_non_guard_winner_when_prior_below_stv(monkeypatch, tmp_path):

@@ -116,10 +116,15 @@ def test_culture_150_cfu_exceeds_under_104():
 # The 104-vs-1413 split used to stop at the ingest boundary. training's
 # persistence baseline re-derived exceedance from the raw value against a flat
 # 104, so San Diego ddPCR copy counts in (104, 1413] — already labelled CLEAN by
-# compute_exceeds_stv — produced a persistence positive, which
-# _positive_persistence_guarded_blend_probabilities hard-pins to 1.0. On
-# 2026-07-30 that put 34 of the 74 served "High" bands on beaches whose most
-# recent lab result was clean. These tests pin the fix at both ends.
+# compute_exceeds_stv — produced a persistence positive, which the serve path
+# then hard-pinned to 1.0. On 2026-07-30 that put 34 of the 74 served "High"
+# bands on beaches whose most recent lab result was clean. These tests pin the
+# fix at both ends.
+#
+# The serve path no longer pins (2026-08-06): a persistence positive now drives a
+# post-calibration floor at _LOW_THRESHOLD, so the same mistake costs a Moderate
+# band rather than a certainty. The blast radius shrank; the rule did not change,
+# and persistence is still the baseline every promotion gate scores against.
 
 
 def test_exceedance_last_obs_feature_carries_the_method_aware_decision():

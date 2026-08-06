@@ -3639,28 +3639,39 @@ def _export_forecasts(
             )
 
     # --- Runtime serving guards (apply to EVERY winner) ----------------------
-    # The deployed xgb_undersample_ensemble (and most other branches) do NOT
-    # apply the positive-persistence floor that the dedicated guard variant
-    # does. At serve time we never want the model to underperform "yesterday
-    # exceeded → today still elevated": where the last official observation
-    # exceeded the STV, the served probability must not collapse to Low.
+    # At serve time we never want the model to underperform "yesterday exceeded →
+    # today still elevated": where the last official observation exceeded the STV,
+    # the served probability must not collapse to Low. Since 2026-08-06 that is a
+    # post-calibration FLOOR (further below), not an override — the dedicated
+    # guard MODEL still pins to 1.0 in its own branch, because the pin is that
+    # candidate's definition rather than a serving policy.
     probabilities = np.asarray(probabilities, dtype=float)
     persistence_probabilities = _persistence_probabilities(
         baseline_forecast_features,
         _STV_THRESHOLD,
     )
-    # NaN/inf guard: a non-finite served probability is meaningless. Fall back
-    # to the positive-persistence signal for that row when one exists, else a
-    # safe Moderate-band default (0.20 = Low/Moderate cut), and warn loudly.
+    # NaN/inf guard: a non-finite served probability is meaningless. Fall back to
+    # the Low/Moderate cut (0.20) and warn loudly.
+    #
+    # This used to fall back to 1.0 on persistence-positive rows, which is now
+    # wrong twice over. (1) It re-creates exactly the constant this module stopped
+    # emitting, so a FAILED prediction would serve the loudest forecast in the
+    # product — the isotonic's top step, or a literal 1.0 / Very High when no
+    # calibrator can be fitted. (2) `probabilities_precal` is snapshotted just
+    # below, so that 1.0 lands in forecast_history as `p_exceed_precal` and
+    # becomes fit input for tomorrow's serving isotonic — permanently re-seeding
+    # the pin contamination that `_drop_pin_era_rows` exists to remove.
+    # `_LOW_THRESHOLD` for both branches is the consistent choice: the
+    # persistence floor further below still lifts these rows off Low, so the
+    # safety property holds without inventing confidence we do not have.
     nonfinite_mask = ~np.isfinite(probabilities)
     if nonfinite_mask.any():
         n_bad = int(nonfinite_mask.sum())
-        fallback = np.where(persistence_probabilities >= 0.5, 1.0, _LOW_THRESHOLD)
-        probabilities = np.where(nonfinite_mask, fallback, probabilities)
+        probabilities = np.where(nonfinite_mask, _LOW_THRESHOLD, probabilities)
         print(
             f"[serving guard] WARNING: {n_bad} forecast probabilit"
-            f"{'y' if n_bad == 1 else 'ies'} were NaN/inf; fell back to "
-            "persistence/safe default.",
+            f"{'y' if n_bad == 1 else 'ies'} were NaN/inf; fell back to the "
+            f"safe {_LOW_THRESHOLD:.2f} default.",
             file=sys.stderr, flush=True,
         )
     probabilities = np.clip(probabilities, 0.0, 1.0)
@@ -3668,29 +3679,15 @@ def _export_forecasts(
     # `_positive_persistence_guarded_blend_probabilities(..., alpha=1.0)`, i.e.
     # `where(persistence >= 0.5, 1.0, p)` — hard-pinning every beach whose last
     # official sample exceeded to 1.0 and discarding the model's own answer.
-    # That is now a post-calibration FLOOR only (see below). The override was a
-    # safety belt from a weaker model, and it had stopped protecting anything:
-    #   * `exceeds_stv_last_obs` is ALREADY a model feature (features.py:412 —
-    #     it is not in `_model_feature_columns`'s exclusion set), so the model
-    #     had learned what a prior exceedance is worth *in context*. The pin
-    #     replaced a learned, context-sensitive estimate with a constant.
-    #   * Downstream, the serving isotonic squashed that constant back down,
-    #     so every pinned beach landed on ONE plateau value regardless of its
-    #     own risk — on the shipped 2026-08-05 forecast, 17 beaches with lab
-    #     readings spanning 107..6628 all served exactly 0.45.
-    # Measured A/B on the 1095d window, temporal test split (11,973 held-out
-    # sample-days), one shared model, serving isotonic refit per arm:
-    #   overall            Brier 0.0846 -> 0.0640, AUCPR 0.573 -> 0.791,
-    #                      within-beach AUROC 0.616 -> 0.651
-    #   pinned rows only   Brier 0.2330 -> 0.1171, AUROC 0.500 -> 0.910,
-    #   (n=2119)           distinct served values 1 -> 43
-    #                      (Brier gap 0.1159, cluster-bootstrap 95% CI over 285
-    #                       beaches [0.0989, 0.1323])
-    # The pinned arm scored WORSE than the flat base rate (0.2330 vs 0.2325):
-    # it was not merely uninformative, it was a miscalibrated constant. Control
-    # rows (persistence-negative) moved 0.05269 -> 0.05260, i.e. untouched.
-    # The guard MODEL variant keeps the old semantics — it is a scored backtest
-    # candidate whose definition must not shift under the promotion gate.
+    # That is now a post-calibration FLOOR only (further below). The override was
+    # a safety belt from a weaker model, and it had stopped protecting anything:
+    # `exceeds_stv_last_obs` is ALREADY a model feature (features.py:412 — it is
+    # not in `_model_feature_columns`'s exclusion set), so the model had learned
+    # what a prior exceedance is worth *in context*, and the pin replaced that
+    # with a constant which the serving isotonic then squashed onto one plateau.
+    # Evidence, caveats, and the measured A/B live in CLAUDE.md ("Positive-
+    # persistence: override → FLOOR") — deliberately NOT restated here, because
+    # this repo's own convention is that pinned numbers drift.
 
     # --- Serving-regime recalibration (model_truth.md audit, 2026-07-23) -----
     # The calibrators above are fit on sample-days (fresh risk history); the

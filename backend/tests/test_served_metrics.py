@@ -21,8 +21,8 @@ def _write_forecasts(curated_dir, rows):
 
 
 def _forecast_row(beach_id="b1", forecast_date="2026-07-01", p=0.1, band="Low",
-                  issued="2026-07-01T18:00:00+00:00"):
-    return {
+                  issued="2026-07-01T18:00:00+00:00", persistence_floor_applied=None):
+    row = {
         "beach_id": beach_id,
         "forecast_date": forecast_date,
         "p_exceed": p,
@@ -33,6 +33,11 @@ def _forecast_row(beach_id="b1", forecast_date="2026-07-01", p=0.1, band="Low",
         "model_version": "test-v0",
         "forecast_generated_at": issued,
     }
+    # None == a legacy (pre-2026-08-06) row, which is how pin-era rows are
+    # identified; post-change rows always carry a bool.
+    if persistence_floor_applied is not None:
+        row["persistence_floor_applied"] = persistence_floor_applied
+    return row
 
 
 def _write_observations(curated_dir, rows):
@@ -144,6 +149,68 @@ def test_fit_and_apply_shrink_overconfident_tail(tmp_path):
     assert calibrated[0] < 0.1
     assert 0.15 < calibrated[1] < 0.6  # ~0.35, definitely not ~0.98
     assert calibrated[0] < calibrated[1]  # monotone: rank preserved
+
+
+def _pin_era_fixture(tmp_path, *, pinned_realized=0.42, n_pinned=200):
+    """600 genuine rows + n_pinned legacy rows recorded at precal == 1.0.
+
+    Mirrors the shipped 2026-08-05 history: the pinned rows realize well below
+    1.0, so an isotonic fitted WITH them caps its top step at that realized rate
+    and every post-change probability pushed through the map is capped there too.
+    """
+    rng = np.random.default_rng(3)
+    rows, observations = [], []
+    day = pd.Timestamp("2026-06-01")
+    for i in range(600):
+        beach, date = f"g{i}", (day + pd.Timedelta(days=i % 30)).date().isoformat()
+        p = 0.02 if i < 450 else 0.75
+        exceeded = bool(rng.random() < (0.02 if i < 450 else 0.80))
+        rows.append(_forecast_row(beach, date, p=p, issued=f"{date}T18:00:00+00:00"))
+        observations.append((beach, date, exceeded))
+    for i in range(n_pinned):
+        beach, date = f"pin{i}", (day + pd.Timedelta(days=i % 30)).date().isoformat()
+        rows.append(_forecast_row(beach, date, p=1.0, issued=f"{date}T18:00:00+00:00"))
+        observations.append((beach, date, bool(rng.random() < pinned_realized)))
+    _write_forecasts(tmp_path, rows)
+    append_forecast_history(tmp_path)
+    _write_observations(tmp_path, observations)
+
+
+def test_fit_excludes_pin_era_rows_so_the_map_is_not_capped(tmp_path):
+    # The regression that made this change only half-deployed: pre-2026-08-06 the
+    # serve path pinned persistence positives to 1.0 BEFORE p_exceed_precal was
+    # captured, so those rows' x-value is a constant rather than a model output.
+    # Fitting on them drags the isotonic's top step down to their realized rate
+    # and caps EVERY served probability there -- measured on the real history,
+    # max(y) = 0.45, which put _VERY_HIGH_THRESHOLD (0.70) out of reach entirely.
+    _pin_era_fixture(tmp_path)
+    mapping = fit_serving_calibration(tmp_path, min_pairs=100, min_positives=25)
+    assert mapping is not None
+    top = float(apply_serving_calibration(np.array([1.0]), mapping)[0])
+    assert top > 0.5, f"pin-era rows still capping the map at {top:.3f}"
+    # The genuine high bucket (served 0.75, realized ~0.80) must survive intact.
+    assert apply_serving_calibration(np.array([0.75]), mapping)[0] > 0.5
+
+
+def test_fit_keeps_post_change_rows_even_at_probability_one(tmp_path):
+    # The exclusion is keyed on "legacy row AND precal == 1.0", so it is
+    # self-limiting: a post-change row carries persistence_floor_applied and is
+    # never dropped, even if a model legitimately outputs 1.0. Without this the
+    # exclusion would quietly keep censoring real data forever.
+    _pin_era_fixture(tmp_path, n_pinned=0)
+    rows = pd.read_parquet(tmp_path / HISTORY_FILE)
+    assert len(rows) == 600
+    extra = [
+        _forecast_row(f"new{i}", "2026-06-15", p=1.0, issued="2026-06-15T18:00:00+00:00",
+                      persistence_floor_applied=False)
+        for i in range(40)
+    ]
+    _write_forecasts(tmp_path, extra)
+    append_forecast_history(tmp_path)
+    history = pd.read_parquet(tmp_path / HISTORY_FILE)
+    assert len(history) == 640
+    kept = history["persistence_floor_applied"].notna().sum()
+    assert kept == 40, "post-change rows must be distinguishable from legacy ones"
 
 
 def test_apply_passes_nan_and_degenerate_mapping_through():
