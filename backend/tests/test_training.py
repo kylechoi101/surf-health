@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 from app.data.pipeline.features import build_sliding_windows
-from app.ml.calibration import _LOW_THRESHOLD
+from app.ml.calibration import _HIGH_THRESHOLD, _LOW_THRESHOLD
 from app.ml.training import (
     StageTwoTrainingPlan,
     _TrainedModels,
@@ -1369,6 +1369,181 @@ def _run_export_single_beach(
     )
     forecasts = pd.read_parquet(curated_dir / "forecasts.parquet")
     return forecasts.iloc[0]
+
+
+def _seed_serving_calibration_history(curated_dir, *, n=700):
+    """Write forecast_history + observations so fit_serving_calibration returns a
+    REAL isotonic map instead of None.
+
+    Without this every _export_forecasts test runs with `serving_calibration is
+    None`, so the isotonic half of the serve path is never exercised — and the
+    shipped bug was precisely `pin x isotonic -> plateau`. The seeded pairs are
+    monotone and well-separated so the fitted map is close to identity in the
+    region the tests probe; the point is that a map EXISTS, not what it says.
+    """
+    rng = np.random.default_rng(11)
+    rows, obs = [], []
+    day = pd.Timestamp("2026-03-01")
+    for i in range(n):
+        beach = f"hist{i}"
+        d = (day + pd.Timedelta(days=i % 40)).date().isoformat()
+        p = float(np.clip(rng.random(), 0.01, 0.99))
+        rows.append({
+            "beach_id": beach, "forecast_date": d, "p_exceed": p, "p_exceed_raw": p,
+            "p_exceed_precal": p, "risk_band": "Low", "sample_age_days": 5,
+            "model_version": "seed-v0", "persistence_floor_applied": False,
+            "forecast_generated_at": f"{d}T18:00:00+00:00",
+        })
+        obs.append((beach, d, bool(rng.random() < p)))
+    pd.DataFrame(rows).to_parquet(curated_dir / "forecast_history.parquet", index=False)
+    pd.DataFrame(obs, columns=["beach_id", "sample_date", "exceeds_stv"]).to_parquet(
+        curated_dir / "observations.parquet", index=False
+    )
+
+
+def _run_export_beaches(tmp_path, monkeypatch, beaches, *, seed_calibration=True):
+    """Export SEVERAL beaches in ONE _export_forecasts call, with a real serving
+    calibrator fitted.
+
+    The single-beach harness runs each beach in its own invocation with no
+    calibrator, so it cannot observe the property that actually broke: different
+    beaches, same run, collapsing onto one served value after the isotonic. Each
+    entry is a dict of beach_id / model_prob / exceeds_stv_last_obs / advisory_floor.
+    """
+    from app.ml.training import _export_forecasts, _TrainedModels, StageTwoTrainingPlan
+
+    probs = np.array([b["model_prob"] for b in beaches], dtype=float)
+
+    class FixedClassifier:
+        def predict_proba(self, frame):
+            return np.column_stack([1.0 - probs, probs])
+
+    class FixedRegressor:
+        def predict(self, frame):
+            return np.full(len(frame), 1.7, dtype=float)
+
+    curated_dir = tmp_path / "curated"
+    curated_dir.mkdir(parents=True, exist_ok=True)
+    (curated_dir / "system_health.json").write_text("{}")
+    if seed_calibration:
+        _seed_serving_calibration_history(curated_dir)
+
+    ids = [b["beach_id"] for b in beaches]
+    candidates = pd.DataFrame([
+        {"beach_id": b["beach_id"],
+         "advisory_active_recent_for_floor": b.get("advisory_floor", 0),
+         "sample_recency_band": "recent", "sample_age_days": 1}
+        for b in beaches
+    ])
+    monkeypatch.setattr(
+        "app.ml.training._build_forecast_candidates",
+        lambda *args, **kwargs: (pd.DataFrame(), candidates),
+    )
+    feature_frame = pd.DataFrame({
+        "exceeds_stv_last_obs": [b.get("exceeds_stv_last_obs", 1.0) for b in beaches],
+        "advisory_active_recent_for_floor": [b.get("advisory_floor", 0) for b in beaches],
+    })
+    forecast_metadata = pd.DataFrame(
+        {"beach_id": ids, "sample_date": [pd.Timestamp("2026-04-20")] * len(ids)}
+    )
+    monkeypatch.setattr(
+        "app.ml.training.build_inference_features",
+        lambda inference_input: type(
+            "Inference", (), {"feature_frame": feature_frame, "metadata": forecast_metadata}
+        )(),
+    )
+    monkeypatch.setattr("app.ml.training._inject_agent_features", lambda features, *a: features)
+    monkeypatch.setattr(
+        "app.ml.training._compute_local_drivers", lambda *a, **k: [["mock"]] * len(ids)
+    )
+    monkeypatch.setattr("app.ml.training._split_conformal_half_width", lambda *a: None)
+    monkeypatch.setattr("app.ml.training._write_model_card", lambda *a: None)
+
+    _export_forecasts(
+        curated_dir=curated_dir,
+        forecast_date=date(2026, 4, 20),
+        frame=pd.DataFrame(),
+        full_frame=pd.DataFrame(),
+        features=feature_frame[["exceeds_stv_last_obs"]],
+        densities=np.full(len(ids), 1.0),
+        valid_idx=np.arange(len(ids)),
+        test_idx=np.arange(len(ids)),
+        stations=pd.DataFrame([
+            {"beach_id": i, "county": "Orange", "region": "South Coast",
+             "latitude": 33.0, "longitude": -117.0, "zip_code": "92651"} for i in ids
+        ]),
+        uv_daily=pd.DataFrame(),
+        advisories=pd.DataFrame(),
+        models=_TrainedModels(
+            winner="baseline", tree_classifier=FixedClassifier(), tree_calibrator=None,
+            classifier=FixedClassifier(), calibrator=None, logistic=None,
+            logistic_calibrator=None, coastal_cell_logistic=None,
+            hierarchical_logistic=None, ensemble_weights=None,
+            regressor=FixedRegressor(),
+            regressor_valid_predictions=np.full(len(ids), 1.0),
+        ),
+        plan=StageTwoTrainingPlan(
+            production_winner="baseline", research_winner="baseline",
+            spatial_backtest_models=[],
+        ),
+        metrics={"baseline": {}},
+        model_types_to_run=[],
+        spatial_backtests=False,
+        spatial_backtest_models=[],
+        spatial_strategy="shortlist",
+    )
+    return pd.read_parquet(curated_dir / "forecasts.parquet").set_index("beach_id")
+
+
+def test_export_chain_keeps_persistence_positive_beaches_apart_through_the_isotonic(
+    monkeypatch, tmp_path
+):
+    # THE composition the shipped bug lived in, end to end in ONE run and through
+    # a REAL fitted serving isotonic: model -> calibration -> persistence floor ->
+    # band. Four persistence-positive beaches spanning the probability range must
+    # not collapse onto one served value. Under the old override all four were
+    # pinned to 1.0 and the isotonic mapped them to a single number -- which is
+    # exactly what shipped on 2026-08-05 (17 beaches, one value).
+    rows = _run_export_beaches(tmp_path, monkeypatch, [
+        {"beach_id": "b_low", "model_prob": 0.10},
+        {"beach_id": "b_mid", "model_prob": 0.40},
+        {"beach_id": "b_high", "model_prob": 0.70},
+        {"beach_id": "b_top", "model_prob": 0.95},
+    ])
+    served = rows["p_exceed"].astype(float)
+    assert len(set(np.round(served, 6))) == 4, f"collapsed onto {sorted(set(served))}"
+    assert served["b_low"] < served["b_mid"] < served["b_high"] < served["b_top"]
+    # The floor still holds for every one of them -- none may display Low.
+    assert (served >= _LOW_THRESHOLD).all()
+    assert not (rows["risk_band"] == "Low").any()
+    # And a calibrator really was fitted, or this test proves nothing.
+    assert (tmp_path / "curated" / "serving_calibration.json").exists()
+
+
+def test_export_chain_advisory_floor_and_persistence_floor_compose(monkeypatch, tmp_path):
+    # Both floors on the same row. The advisory floor is applied per-row AFTER the
+    # persistence floor, from a p_raw that already includes it, so the two must
+    # compose to the stronger of the pair rather than fighting.
+    rows = _run_export_beaches(tmp_path, monkeypatch, [
+        # persistence-positive, weak model, no advisory -> persistence floor only
+        {"beach_id": "persist_only", "model_prob": 0.01, "advisory_floor": 0},
+        # persistence-positive, weak model, advisory active -> advisory floor wins
+        {"beach_id": "both", "model_prob": 0.01, "advisory_floor": 1},
+        # advisory only (last sample clean) -> advisory floor, no persistence floor
+        {"beach_id": "advisory_only", "model_prob": 0.01, "advisory_floor": 1,
+         "exceeds_stv_last_obs": 0.0},
+    ])
+    assert float(rows.loc["persist_only", "p_exceed"]) == pytest.approx(_LOW_THRESHOLD)
+    assert bool(rows.loc["persist_only", "persistence_floor_applied"]) is True
+    assert bool(rows.loc["persist_only", "advisory_floor_applied"]) is False
+
+    assert float(rows.loc["both", "p_exceed"]) >= _HIGH_THRESHOLD
+    assert bool(rows.loc["both", "persistence_floor_applied"]) is True
+    assert bool(rows.loc["both", "advisory_floor_applied"]) is True
+
+    assert float(rows.loc["advisory_only", "p_exceed"]) >= _HIGH_THRESHOLD
+    assert bool(rows.loc["advisory_only", "persistence_floor_applied"]) is False
+    assert bool(rows.loc["advisory_only", "advisory_floor_applied"]) is True
 
 
 def test_export_positive_persistence_floor_applies_to_non_guard_winner(monkeypatch, tmp_path):

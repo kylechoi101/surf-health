@@ -14,7 +14,7 @@ why; they are no longer outstanding except where marked.** Written 2026-08-06.
 | Branch | `claude/high-card-probabilities-fzs6l6` |
 | PR | [#28](https://github.com/kylechoi101/surf-health/pull/28) — the serving change |
 | PR | [#29](https://github.com/kylechoi101/surf-health/pull/29) — PR template, independent, mergeable |
-| Tests | 550 pass, `ruff check` clean |
+| Tests | 553 pass, `ruff check` clean |
 | Deployed? | **No.** The daily pipeline still runs the old override. |
 
 **What shipped in `ed78fa3`:** the serve-time positive-persistence *override*
@@ -42,7 +42,7 @@ Full detail is in `CLAUDE.md` § "Positive-persistence: override → FLOOR".
 
 ---
 
-## 3. THE BLOCKING DECISION
+## 3. THE BLOCKING DECISION (resolved — see §3.1 for what it did NOT fix)
 
 An Opus code review found, and I independently verified, that **the shipped code
 is not the arm that was measured.**
@@ -75,7 +75,7 @@ a downgrade on the highest-risk beaches, in the unsafe direction, until the
 ### The candidate fix, measured
 
 Exclude pin artifacts (`p_fit == 1.0`) from `fit_serving_calibration`
-(`served_metrics.py:326-367`). Justified, not a hack: the 13,331 non-pinned rows
+(`served_metrics.py::_drop_pin_era_rows`). Justified, not a hack: the 13,331 non-pinned rows
 were never overridden, so they are genuine model probabilities — exactly what
 post-change rows look like. The 482 pinned rows are the synthetic ones.
 
@@ -85,6 +85,16 @@ current (pin-era)          0.2541                 0       0.344
 excluding pins             0.1778               295       0.444
                                                    actual rate 0.632
 ```
+
+### 3.1 ⚠️ What the exclusion does and does not do
+
+It restores the TOP of the scale. It does **not** undo the High→Moderate
+reclassification: the Moderate count is **999 either way**, because the exclusion
+only changes the map above x≈0.617. That ~47% shift is a consequence of removing
+the override and it stands — justified on its own evidence (realized rates by
+served band under the new map are Moderate 0.293 / High 0.912 / Very High 1.000),
+not because the exclusion cancels it. An earlier version of this file and of
+CLAUDE.md claimed otherwise; both are corrected.
 
 **RESOLVED — option (a).** Folded into #28 as `_drop_pin_era_rows`, keyed on
 "legacy row AND precal == 1.0" so it is self-limiting. Verified on the real
@@ -124,10 +134,15 @@ reader who saw the earlier text knows it was wrong rather than trusting it:
   `pin × isotonic → plateau`; the isotonic half is untested end to end. Also
   uncovered: advisory floor + persistence floor on the same row, and the two-tier
   router (never runs in tests — the gate needs `winner == "xgb_undersample_ensemble"`).
-  `test_served_metrics.py` now covers the calibrator fit itself
-  (`test_fit_excludes_pin_era_rows_so_the_map_is_not_capped`), but nothing still
-  exercises model → isotonic → floor → advisory floor → band as one chain through
-  `_export_forecasts`. **Worth doing next.**
+  **CLOSED (round 3).** `_run_export_beaches` + `_seed_serving_calibration_history`
+  export several beaches in ONE `_export_forecasts` call with a REAL fitted
+  isotonic. `test_export_chain_keeps_persistence_positive_beaches_apart_through_the_isotonic`
+  and `test_export_chain_advisory_floor_and_persistence_floor_compose` cover the
+  full model → calibration → persistence floor → advisory floor → band chain, and
+  both fail behaviourally against `ed78fa3^` (1.0 vs 0.2; the old code also trips
+  the degenerate-Very-High sanity guard at 66.7%). Still uncovered: the two-tier
+  router, which needs `winner == "xgb_undersample_ensemble"` and a non-None
+  offset model.
 - **M4 — FIXED.** `test_export_persistence_floor_applies_without_serving_calibration`
   passed on the old code too (the pin satisfied both assertions), so it was not a
   regression test. Replaced with the M1 NaN-branch test above.
