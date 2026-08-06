@@ -419,13 +419,33 @@ culture flags 0.122, PCR flags 0.603, PCR-flags-alone 48.8%, culture-flags-alone
   CCE/100 mL for Method 1611). It is a CDPH-developed value fitted directly against **raw ddPCR
   copies** (Crain et al. 2021, "Intrinsic Copy Number Equation", 1,993 paired results), approved by
   EPA Region 9 (2020-10-06) and authorized under H&SC §115880(d). San Diego DEH uses it to issue the
-  Bacterial Exceedance Advisories this product predicts. ⚠️ Sourced via search snippets only —
-  epa.gov / sandiegocounty.gov / sccwrp.org are 403 from the CI network policy; verify the PDFs from
-  an unrestricted network before citing in the model card.
-- **The divergence is a published property of the method,** not a bug here: a 2026 follow-up at
-  Coronado (*J. Microbiol. Methods* 240:107346) reports index of agreement 0.25 and a **56.3%
-  ddPCR false-positive rate** against the Enterolert action value — which our 48.8% independently
-  reproduces. No alternative threshold is fittable from our data: the "pairs" are a median **2.27 h**
+  Bacterial Exceedance Advisories this product predicts. The 2026 Coronado paper confirms the
+  provenance verbatim — "The ICE was used to propose a new ddPCR-based BAV of 1413 copies/100 mL",
+  EPA approval 2020-10-06, in use "since May 5, 2022" (which matches our data exactly) — and notes
+  that "some beaches have experienced more frequent BAV exceedances". ⚠️ The SD County / EPA /
+  SCCWRP pages themselves are still 403 from the CI network policy and remain unverified.
+- **The divergence is a published property of the method,** not a bug here. Verified against the
+  **primary source** (Verbyla & Lacarra, *J. Microbiol. Methods* 240:107346, Jan 2026 — PDF read
+  2026-08-06, no longer a search-snippet citation). Coronado, 3 beaches, daily sampling, summer
+  2023:
+  - **The method fails EPA's own comparability criteria at these beaches.** Per the paper quoting
+    US EPA (2014): "An IA value of 0.70 or greater demonstrates acceptable equivalence…; if IA is
+    less than 0.70, then an R² value of at least 0.60 demonstrates acceptable equivalence."
+    Measured at Coronado: **IA = 0.25** and **R² = 0.41** — *neither* gate is met, so by that rule
+    ddPCR there qualifies neither for the same numerical limits nor for regression-derived new
+    ones. ⚠️ Scope: three beaches, one summer. The EPA approval rests on Crain's county-wide
+    N=1,993, not on this.
+  - **56.3% ddPCR false-positive rate** against the Enterolert action value — our 48.8%
+    PCR-flags-alone rate independently reproduces it on a different corpus.
+  - **Their own numbers mirror ours.** Coronado ddPCR median **1,669** copies and geometric mean
+    **3,101** — *both above the 1413 BAV* — while Enterolert median 7.8 MPN and geomean 18.0 sit
+    "well below" 104. We measured median ddPCR 2,240 vs threshold 1413. Same shape.
+  - **The conversion is not portable.** The ICE fitted on Coronado data has slope **0.00385**
+    against the county-wide ICE's **0.06183** — a ~16× shallower relationship at one location than
+    the one 1413 is derived from. Their log-transformed slope 0.5151 is close to our log-log 0.637;
+    both far below 1, i.e. no constant conversion factor exists.
+  - ⚠️ **A CORRIGENDUM exists** (*J. Microbiol. Methods* 244:107453, May 2026) and has NOT been
+    read. Do not treat the figures above as final until someone checks what it revises. No alternative threshold is fittable from our data: the "pairs" are a median **2.27 h**
   apart (5 of 1,175 share a timestamp), only **6.3%** of ddPCR beach-days have a same-day culture,
   the three highest-volume ddPCR stations contribute 0/1/0 pairs, and three defensible estimators
   span 21× (OLS 14,433 / RMA 42,702 / inverse-regression 300,030).
