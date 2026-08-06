@@ -40,7 +40,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-sys.path.insert(0, "/home/user/surf-health/backend")
+_REPO = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(_REPO / "backend"))
 
 from sklearn.isotonic import IsotonicRegression  # noqa: E402
 from sklearn.metrics import average_precision_score, brier_score_loss, roc_auc_score  # noqa: E402
@@ -67,10 +68,11 @@ from app.ml.training import (  # noqa: E402
 )
 from app.ml.two_tier import within_beach_auroc  # noqa: E402
 
-CURATED = Path("/home/user/surf-health/data/curated")
+CURATED = _REPO / "data" / "curated"
+EXPERIMENTS = _REPO / "data" / "experiments"
 WINDOW_DAYS = 1095
 MODEL = "xgb_undersample_ensemble"
-OUT = Path(__file__).with_name("override_ab_results.json")
+OUT = EXPERIMENTS / "persistence_override_ab_results.json"
 
 
 def banner(msg: str) -> None:
@@ -254,7 +256,8 @@ def main() -> None:
         "p_arm_A_override": arms["A_override_production"],
         "p_arm_B_no_override": arms["B_no_override"],
     })
-    pred_path = OUT.with_name("override_ab_predictions.parquet")
+    EXPERIMENTS.mkdir(parents=True, exist_ok=True)
+    pred_path = EXPERIMENTS / "persistence_override_ab_predictions.parquet"
     preds.to_parquet(pred_path, index=False)
 
     OUT.write_text(json.dumps(results, indent=2, default=str))

@@ -186,31 +186,75 @@ def test_fit_excludes_pin_era_rows_so_the_map_is_not_capped(tmp_path):
     _pin_era_fixture(tmp_path)
     mapping = fit_serving_calibration(tmp_path, min_pairs=100, min_positives=25)
     assert mapping is not None
+    assert mapping["n_pin_era_excluded"] == 200
+    # Thresholds are set from the WITHOUT-fix value, not from 0.5: leaving the
+    # pins in pools them with the genuine high bucket and yields ~0.61, which a
+    # `> 0.5` assertion would happily accept. That is exactly how the round-1
+    # test failed to differentiate. Measured: 0.611 without the fix, ~0.82 with.
     top = float(apply_serving_calibration(np.array([1.0]), mapping)[0])
-    assert top > 0.5, f"pin-era rows still capping the map at {top:.3f}"
-    # The genuine high bucket (served 0.75, realized ~0.80) must survive intact.
-    assert apply_serving_calibration(np.array([0.75]), mapping)[0] > 0.5
+    assert top > 0.75, f"pin-era rows still dragging the map's top down to {top:.3f}"
+    # The genuine high bucket (served 0.75) realized ~0.80 and must come back at
+    # roughly its own rate rather than being averaged down by the pins.
+    genuine = float(apply_serving_calibration(np.array([0.75]), mapping)[0])
+    assert genuine == pytest.approx(0.80, abs=0.08), genuine
 
 
 def test_fit_keeps_post_change_rows_even_at_probability_one(tmp_path):
-    # The exclusion is keyed on "legacy row AND precal == 1.0", so it is
-    # self-limiting: a post-change row carries persistence_floor_applied and is
-    # never dropped, even if a model legitimately outputs 1.0. Without this the
-    # exclusion would quietly keep censoring real data forever.
+    # NOTE: this is a GUARD, not a regression test -- it passes against the
+    # pre-exclusion code too, because back then nothing was dropped at all. It
+    # exists to fail if _drop_pin_era_rows is ever widened (e.g. keyed on p_fit
+    # alone, or on a date cutoff), which would silently censor real data forever
+    # instead of self-limiting. Kept deliberately, labelled deliberately.
+    #
+    # The exclusion is keyed on "legacy row AND precal == 1.0", so a post-change
+    # row carries persistence_floor_applied and survives even at a genuine 1.0.
     _pin_era_fixture(tmp_path, n_pinned=0)
-    rows = pd.read_parquet(tmp_path / HISTORY_FILE)
-    assert len(rows) == 600
-    extra = [
-        _forecast_row(f"new{i}", "2026-06-15", p=1.0, issued="2026-06-15T18:00:00+00:00",
-                      persistence_floor_applied=False)
-        for i in range(40)
-    ]
+    observations = [(f"g{i}", (pd.Timestamp("2026-06-01") + pd.Timedelta(days=i % 30))
+                     .date().isoformat(), bool(i % 5 == 0)) for i in range(600)]
+    # 40 POST-change rows at precal 1.0 that genuinely realize — they must survive
+    # the exclusion and reach the top of the fitted map.
+    extra, day = [], "2026-06-15"
+    for i in range(40):
+        extra.append(_forecast_row(f"new{i}", day, p=1.0, issued=f"{day}T18:00:00+00:00",
+                                   persistence_floor_applied=False))
+        observations.append((f"new{i}", day, True))
     _write_forecasts(tmp_path, extra)
     append_forecast_history(tmp_path)
-    history = pd.read_parquet(tmp_path / HISTORY_FILE)
-    assert len(history) == 640
-    kept = history["persistence_floor_applied"].notna().sum()
-    assert kept == 40, "post-change rows must be distinguishable from legacy ones"
+    _write_observations(tmp_path, observations)
+
+    mapping = fit_serving_calibration(tmp_path, min_pairs=100, min_positives=25)
+    assert mapping is not None
+    assert mapping["n_pin_era_excluded"] == 0, "post-change rows must not be dropped"
+    # They all exceeded, and there are enough of them to clear the top-step
+    # support floor, so the map must carry them to the top of the scale.
+    assert float(apply_serving_calibration(np.array([1.0]), mapping)[0]) > 0.9
+
+
+def test_fit_caps_a_top_step_too_few_rows_support(tmp_path):
+    # PAVA emits y=1.0 off a handful of rows, and this map publishes a public risk
+    # number. On the real history the post-exclusion top step was y=1.0 supported
+    # by TWO rows -- both Mission Bay stations on one afternoon, i.e. a single
+    # spatially-correlated event. Trailing under-supported steps collapse into the
+    # highest adequately-supported level instead.
+    _pin_era_fixture(tmp_path, n_pinned=0)
+    observations = [(f"g{i}", (pd.Timestamp("2026-06-01") + pd.Timedelta(days=i % 30))
+                     .date().isoformat(), bool(i % 5 == 0)) for i in range(600)]
+    extra, day = [], "2026-06-20"
+    for i in range(3):  # below _MIN_TOP_STEP_SUPPORT
+        extra.append(_forecast_row(f"thin{i}", day, p=0.99, issued=f"{day}T18:00:00+00:00",
+                                   persistence_floor_applied=False))
+        observations.append((f"thin{i}", day, True))
+    _write_forecasts(tmp_path, extra)
+    append_forecast_history(tmp_path)
+    _write_observations(tmp_path, observations)
+
+    mapping = fit_serving_calibration(tmp_path, min_pairs=100, min_positives=25)
+    assert mapping is not None
+    assert mapping["top_step_capped_from"] is not None, "thin top step was not capped"
+    assert mapping["y_max"] < 1.0
+    assert float(apply_serving_calibration(np.array([1.0]), mapping)[0]) == pytest.approx(
+        mapping["y_max"]
+    )
 
 
 def test_apply_passes_nan_and_degenerate_mapping_through():

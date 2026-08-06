@@ -75,6 +75,14 @@ _FIT_WINDOW_DAYS = 120
 # Below these the fitted map is noise — serve the uncalibrated probability.
 _MIN_FIT_PAIRS = 500
 _MIN_FIT_POSITIVES = 25
+# Minimum observations behind the isotonic's TOP step. PAVA will happily emit
+# y=1.0 off a handful of rows, and this map publishes a public risk number: after
+# the pin-era exclusion the top step was y=1.0 supported by exactly TWO rows —
+# both Mission Bay stations on the same afternoon, i.e. one spatially-correlated
+# event, not two observations. Any served probability above that x would have
+# been published as a certainty on that basis. Trailing under-supported steps are
+# collapsed into the highest adequately-supported level instead.
+_MIN_TOP_STEP_SUPPORT = 10
 
 # Fixed reliability-bin edges aligned with the public risk bands.
 _BIN_EDGES = (0.0, 0.05, 0.10, 0.20, 0.30, 0.70, 1.0001)
@@ -341,6 +349,22 @@ def _drop_pin_era_rows(pairs: pd.DataFrame) -> pd.DataFrame:
     self-limiting: it excludes only legacy rows and stops firing entirely once the
     trailing window rolls past the change. A post-change row is never dropped,
     even if a model legitimately outputs 1.0.
+
+    ⚠️ The self-limiting property has ONE exception. If
+    ``hist_gbm_positive_persistence_guard`` ever won promotion it would serve
+    precal 1.0 by definition (``training.py``, its own branch) *with* a non-null
+    ``persistence_floor_applied``, so those rows would never be dropped and pin
+    contamination would re-enter permanently. That is the same accepted
+    consequence recorded on the guard function itself — but this is the module
+    that claims the problem self-heals, so it has to carry the caveat too.
+
+    ⚠️ Note what this exclusion does NOT do. Every pre-change persistence-positive
+    row carried precal 1.0, so removing them leaves the legacy fit population
+    entirely persistence-NEGATIVE, and the resulting map is then applied to a
+    mixed one. Measured on the A/B holdout, it under-predicts the affected rows
+    (mean 0.4444 against a 0.6324 realized rate) where a clean per-arm refit does
+    not (0.6378). It cannot be fixed from history — the pin destroyed those
+    x-values — and it decays only as the window rolls past the change.
     """
     if "persistence_floor_applied" not in pairs.columns:
         legacy = pd.Series(True, index=pairs.index)
@@ -355,6 +379,38 @@ def _drop_pin_era_rows(pairs: pd.DataFrame) -> pd.DataFrame:
         file=sys.stderr, flush=True,
     )
     return pairs.loc[~pinned]
+
+
+def _cap_undersupported_top_step(
+    knots_x: np.ndarray,
+    knots_y: np.ndarray,
+    fit_probabilities: np.ndarray,
+) -> tuple[np.ndarray, float, float | None]:
+    """Collapse trailing isotonic steps that too few observations support.
+
+    Returns ``(knots_y, y_cap, capped_from)`` — ``capped_from`` is the original
+    ceiling when a cap was applied, else None. See ``_MIN_TOP_STEP_SUPPORT``.
+    """
+    if len(knots_x) < 2:
+        return knots_y, float(knots_y.max(initial=0.0)), None
+    predicted = np.interp(fit_probabilities, knots_x, knots_y)
+    levels = np.unique(np.round(knots_y, 9))
+    supported = [
+        lvl for lvl in levels
+        if int(np.isclose(predicted, lvl, atol=1e-9).sum()) >= _MIN_TOP_STEP_SUPPORT
+    ]
+    if not supported:
+        return knots_y, float(knots_y.max()), None
+    cap = float(max(supported))
+    original = float(knots_y.max())
+    if cap >= original:
+        return knots_y, original, None
+    print(
+        f"[serving calibration] top step y={original:.4f} had "
+        f"<{_MIN_TOP_STEP_SUPPORT} supporting rows; capped to y={cap:.4f}.",
+        file=sys.stderr, flush=True,
+    )
+    return np.minimum(knots_y, cap), cap, original
 
 
 def fit_serving_calibration(
@@ -385,7 +441,9 @@ def fit_serving_calibration(
         return None
     latest = pairs["date"].max()
     pairs = pairs[pairs["date"] > latest - pd.Timedelta(days=window_days)]
+    n_before_exclusion = len(pairs)
     pairs = _drop_pin_era_rows(pairs)
+    n_pin_era_excluded = n_before_exclusion - len(pairs)
     if pairs.empty:
         return None
     labels = pairs["outcome_matched"].astype(int).to_numpy()
@@ -395,15 +453,29 @@ def fit_serving_calibration(
         return None
     model = IsotonicRegression(y_min=0.0, y_max=1.0, out_of_bounds="clip")
     model.fit(probabilities, labels)
-    calibrated = model.predict(probabilities)
+    knots_y, y_cap, capped_from = _cap_undersupported_top_step(
+        np.asarray(model.X_thresholds_, dtype=float),
+        np.asarray(model.y_thresholds_, dtype=float),
+        probabilities,
+    )
+    calibrated = np.interp(probabilities, model.X_thresholds_, knots_y)
     base_rate = float(labels.mean())
     return {
         "x": [round(float(v), 6) for v in model.X_thresholds_],
-        "y": [round(float(v), 6) for v in model.y_thresholds_],
+        "y": [round(float(v), 6) for v in knots_y],
         "fitted_at": datetime.now(UTC).isoformat(),
         "window_days": int(window_days),
         "n_pairs": int(len(pairs)),
         "n_positive": n_positive,
+        "n_pin_era_excluded": n_pin_era_excluded,
+        # The map's ceiling and whether a thin top step was collapsed into it.
+        # Without these the payload cannot distinguish "the model never scored
+        # that high" from "the top of the scale was capped".
+        "y_max": round(float(y_cap), 6),
+        "top_step_capped_from": (
+            None if capped_from is None else round(float(capped_from), 6)
+        ),
+        "min_top_step_support": int(_MIN_TOP_STEP_SUPPORT),
         "brier_before": round(float(brier_score_loss(labels, probabilities)), 4),
         "brier_after": round(float(brier_score_loss(labels, calibrated)), 4),
         "brier_flat_base_rate": round(float(np.mean((base_rate - labels) ** 2)), 4),

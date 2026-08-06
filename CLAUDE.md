@@ -300,9 +300,11 @@ the positive-persistence floor). Fixes shipped in `app/ml/served_metrics.py` + `
 
 ### Positive-persistence: override → FLOOR (2026-08-06)
 
-**Symptom:** on the shipped 2026-08-05 forecast, 17 beaches in 6 counties served an *identical*
-`p_exceed = 0.45` — lab readings from 107 to 6628, sample ages 2 to 35 days, same number. All 519
-served rows carried only **28 distinct probabilities** (from 501 distinct pre-calibration values).
+**Symptom:** on the shipped 2026-08-05 forecast, 18 rows served an *identical* `p_exceed = 0.45`
+(17 of them the pinned beaches, plus one genuine row at precal 0.689 that the same top step also
+mapped there), across 6 counties — lab readings from 107 to 6628, sample ages 2 to 35 days, same number. All 519
+served rows carried only **28 distinct probabilities** (from 502 distinct pre-calibration values,
+501 of them non-pin).
 
 **Cause — two hand-written corrections cancelling into a constant:**
 1. `_export_forecasts` OVERRODE the model wherever the last official sample exceeded, via
@@ -342,10 +344,22 @@ merely uninformative, a *miscalibrated* constant. Control rows (persistence-nega
 - ⚠️ **The A/B refits the serving isotonic PER ARM; production cannot.** Production reuses one
   calibrator fitted on a trailing 120d of `forecast_history.parquet`, so the table above is the
   **ceiling this change reaches once the calibration history is clean**, not the first-run result.
-  The gap was material and is fixed by `_drop_pin_era_rows` (next bullet); without that fix,
-  pushing the same arm-B probabilities through the *live* calibrator gave Moderate 999 / High 1120
-  / **Very High 0**, mean 0.344, against a 0.632 realized rate — i.e. it would have **downgraded
-  47% of the highest-risk beaches from High to Moderate**.
+  Pushing the same arm-B probabilities through the *live* calibrator gives Moderate 999 / High
+  1120 / **Very High 0**, mean 0.344, against a 0.632 realized rate.
+- ⚠️ **`_drop_pin_era_rows` restores the TOP of the scale; it does NOT undo the High→Moderate
+  reclassification.** Measured, the Moderate count is **999 either way** — the exclusion only
+  changes the map above x≈0.617 (High 1120 → 825, Very High 0 → 295). ~47% of the previously-pinned
+  rows do move from High to Moderate, and that is a *consequence of removing the override*, which
+  stands. It is defensible on its own evidence, not because the exclusion cancels it: under the new
+  map the realized rates by served band are **Moderate 0.293 / High 0.912 / Very High 1.000** (and
+  within-affected-row model AUROC is 0.913), i.e. the rows sent to Moderate really do sit at the top
+  of the Moderate band. An earlier draft of this section claimed the exclusion fixed the downgrade.
+  It does not.
+- ⚠️ **First-run level is still short.** Every pre-change persistence-positive row carried precal
+  1.0, so excluding them leaves the legacy fit population entirely persistence-NEGATIVE, and that
+  map is then applied to a mixed one. On the A/B holdout it under-predicts the affected rows —
+  **mean 0.4444 against 0.6324 realized** — where a clean per-arm refit does not (0.6378). Not
+  fixable from history (the pin destroyed those x-values); it decays as the window rolls.
 - **Pin-era rows are excluded from the serving-calibration fit**
   (`served_metrics.py::_drop_pin_era_rows`). Until 2026-08-06 the pin was applied BEFORE
   `p_exceed_precal` was snapshotted, so on those rows the recorded "pre-calibration probability" is
@@ -360,7 +374,12 @@ merely uninformative, a *miscalibrated* constant. Control rows (persistence-nega
   section claimed the pin was *the* reason the band never fired. It was not: the live isotonic's
   ceiling capped output at 0.45 outright, so 0.70 could not be reached by any row regardless. The
   pin was one contributor to that ceiling. Fixed by the exclusion above; expect Very High to return
-  in small numbers (295/2119 on the offline replay, 0.16% of the full served window).
+  in small numbers — **295 of the 2,119 affected rows (13.9%)** on the offline replay. ⚠️ Every one
+  of the 43 fit rows in the `y ≥ 0.70` region is **San Diego** (14 beaches), so "Very High returns"
+  means "San Diego ddPCR beaches get Very High", calibrated on San Diego ddPCR labels — the regime
+  the label-regime section below flags as a different labelling universe. The top step is also
+  support-capped (`_MIN_TOP_STEP_SUPPORT`): un-capped it was **y = 1.0 off two rows**, both Mission
+  Bay stations on one afternoon.
 - **Caveats.** Scored on *sample-days*, not the between-sample regime where ~95% of served rows
   live; the pinned constant is 0.61 here vs 0.45 in production because the test population's base
   rate is 0.165 vs ~0.061 served (structure transfers, level does not); and the affected rows are
