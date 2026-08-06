@@ -1511,13 +1511,21 @@ def test_export_chain_keeps_persistence_positive_beaches_apart_through_the_isoto
         {"beach_id": "b_top", "model_prob": 0.95},
     ])
     served = rows["p_exceed"].astype(float)
+    precal = rows["p_exceed_precal"].astype(float)
     assert len(set(np.round(served, 6))) == 4, f"collapsed onto {sorted(set(served))}"
     assert served["b_low"] < served["b_mid"] < served["b_high"] < served["b_top"]
     # The floor still holds for every one of them -- none may display Low.
     assert (served >= _LOW_THRESHOLD).all()
     assert not (rows["risk_band"] == "Low").any()
-    # And a calibrator really was fitted, or this test proves nothing.
+    # The isotonic must be LOAD-BEARING here, not merely present. b_mid sits above
+    # the floor, so the only thing that can move it off its pre-calibration value
+    # is the serving map -- run with seed_calibration=False and served == precal
+    # for this row, which is how an earlier version of this test passed without a
+    # calibrator at all while claiming to exercise one.
     assert (tmp_path / "curated" / "serving_calibration.json").exists()
+    assert served["b_mid"] != pytest.approx(float(precal["b_mid"])), (
+        "serving isotonic did not transform this row -- the chain claim is hollow"
+    )
 
 
 def test_export_chain_advisory_floor_and_persistence_floor_compose(monkeypatch, tmp_path):
