@@ -1526,6 +1526,15 @@ def test_export_chain_keeps_persistence_positive_beaches_apart_through_the_isoto
     assert served["b_mid"] != pytest.approx(float(precal["b_mid"])), (
         "serving isotonic did not transform this row -- the chain claim is hollow"
     )
+    # p_exceed_precal must be aligned PER BEACH, not merely present. It is the
+    # column this change restored to being the model's own probability, and it is
+    # the fit input for the next day's serving isotonic -- a row-order slip there
+    # would be permanent and silent. This is the only n>1 test that pins it.
+    for beach, expected in (("b_low", 0.10), ("b_mid", 0.40),
+                            ("b_high", 0.70), ("b_top", 0.95)):
+        assert float(precal[beach]) == pytest.approx(expected), (
+            f"p_exceed_precal misaligned: {beach} carries {precal[beach]}"
+        )
 
 
 def test_export_chain_advisory_floor_and_persistence_floor_compose(monkeypatch, tmp_path):

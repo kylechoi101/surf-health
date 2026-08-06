@@ -14,7 +14,7 @@ why; they are no longer outstanding except where marked.** Written 2026-08-06.
 | Branch | `claude/high-card-probabilities-fzs6l6` |
 | PR | [#28](https://github.com/kylechoi101/surf-health/pull/28) — the serving change |
 | PR | [#29](https://github.com/kylechoi101/surf-health/pull/29) — PR template, independent, mergeable |
-| Tests | 553 pass, `ruff check` clean |
+| Tests | 555 pass, `ruff check` clean |
 | Deployed? | **No.** The daily pipeline still runs the old override. |
 
 **What shipped in `ed78fa3`:** the serve-time positive-persistence *override*
@@ -134,15 +134,18 @@ reader who saw the earlier text knows it was wrong rather than trusting it:
   `pin × isotonic → plateau`; the isotonic half is untested end to end. Also
   uncovered: advisory floor + persistence floor on the same row, and the two-tier
   router (never runs in tests — the gate needs `winner == "xgb_undersample_ensemble"`).
-  **CLOSED (round 3).** `_run_export_beaches` + `_seed_serving_calibration_history`
-  export several beaches in ONE `_export_forecasts` call with a REAL fitted
-  isotonic. `test_export_chain_keeps_persistence_positive_beaches_apart_through_the_isotonic`
-  and `test_export_chain_advisory_floor_and_persistence_floor_compose` cover the
-  full model → calibration → persistence floor → advisory floor → band chain, and
-  both fail behaviourally against `ed78fa3^` (1.0 vs 0.2; the old code also trips
-  the degenerate-Very-High sanity guard at 66.7%). Still uncovered: the two-tier
-  router, which needs `winner == "xgb_undersample_ensemble"` and a non-None
-  offset model.
+  **PARTLY closed (rounds 3–4).** `_run_export_beaches` +
+  `_seed_serving_calibration_history` export several beaches in ONE
+  `_export_forecasts` call with a real fitted isotonic, and both chain tests fail
+  behaviourally against `ed78fa3^` (1.0 vs 0.2; the old code also trips the
+  degenerate-Very-High sanity guard at 66.7%).
+  ⚠️ **Be precise about what they cover: the PIN, not `pin × isotonic → plateau`.**
+  As first written every assertion held with `serving_calibration = None`; a
+  `b_mid` precal-vs-served assertion now makes the calibrator load-bearing, but
+  the seeded history is a perfectly-calibrated generator so the fitted map is
+  within ~0.05 of identity. Reproducing the *composition* would need a fixture
+  whose map has a genuine plateau. Still uncovered entirely: the two-tier router
+  (needs `winner == "xgb_undersample_ensemble"` and a non-None offset model).
 - **M4 — FIXED.** `test_export_persistence_floor_applies_without_serving_calibration`
   passed on the old code too (the pin satisfied both assertions), so it was not a
   regression test. Replaced with the M1 NaN-branch test above.
@@ -152,6 +155,14 @@ reader who saw the earlier text knows it was wrong rather than trusting it:
 - **L5** — `persistence_floor_applied` does not actually "mirror
   `advisory_floor_applied`": the latter is plumbed through the API schema and web
   bake; the new column stops at the parquet.
+- **F3 (round 3) — OPEN, the most likely future surprise.** The served ceiling is
+  whatever the top *supported* isotonic step is. Today `y_max = 0.8421`, resting on
+  ~19 rows from a two-week span in early May, **all San Diego**. The fit window is
+  a trailing 120 days, so when those roll out `y_max` drops to ~0.6957 — *below*
+  the 0.70 Very High cut — and later to ~0.4865, at which point no beach can be
+  served Very High whatever the model says. `_warn_if_ceiling_suppresses_a_band`
+  now emits `serving_calibration.ceiling_warning` when that happens, but nothing
+  *gates* on it. Consider a monitor.
 
 ## 6. Verified correct — do not re-litigate
 
@@ -170,7 +181,7 @@ no gate trips (mean `p_exceed` ~0.094 → ~0.08, well inside the 0.25×–4× ba
 cd backend
 python3.12 -m venv .venv312          # project requires >=3.12,<3.13
 .venv312/bin/pip install -e ".[training]" -c constraints.txt
-.venv312/bin/python -m pytest -q     # expect 548 passed
+.venv312/bin/python -m pytest -q     # expect 555 passed
 .venv312/bin/python scripts/compare_persistence_override_ab.py   # ~25 min
 ```
 

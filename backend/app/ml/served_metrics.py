@@ -30,6 +30,7 @@ from sklearn.isotonic import IsotonicRegression
 from sklearn.metrics import average_precision_score, brier_score_loss, roc_auc_score
 
 from app.core.json_safe import write_json
+from app.ml.calibration import _VERY_HIGH_THRESHOLD
 from app.ml.evaluation import sensitivity_at_specificity
 
 HISTORY_FILE = "forecast_history.parquet"
@@ -413,6 +414,28 @@ def _cap_undersupported_top_step(
     return np.minimum(knots_y, cap), cap, original
 
 
+def _warn_if_ceiling_suppresses_a_band(y_cap: float) -> str | None:
+    """Warn when the map's ceiling has fallen below a published band cutpoint.
+
+    The ceiling is whatever the top-supported step happens to be, and it moves as
+    the trailing window rolls. Today it rests on ~19 rows from a two-week span in
+    early May — when those age out, `y_max` drops to ~0.70 and then ~0.49, and at
+    that point NO beach can be served Very High no matter what the model says.
+    That is exactly the failure this whole change was about (a ceiling silently
+    deciding a band is unreachable), and nothing else catches it: the anomaly
+    gate's band check only fires when non-Low collapses to zero.
+    """
+    if y_cap >= _VERY_HIGH_THRESHOLD:
+        return None
+    message = (
+        f"serving-calibration ceiling y_max={y_cap:.4f} is below the Very High "
+        f"cutpoint ({_VERY_HIGH_THRESHOLD:.2f}) — that band is currently "
+        "UNREACHABLE for every beach regardless of model output."
+    )
+    print(f"[serving calibration] WARNING: {message}", file=sys.stderr, flush=True)
+    return message
+
+
 def fit_serving_calibration(
     curated_dir: Path,
     *,
@@ -476,6 +499,10 @@ def fit_serving_calibration(
             None if capped_from is None else round(float(capped_from), 6)
         ),
         "min_top_step_support": int(_MIN_TOP_STEP_SUPPORT),
+        # Non-null when the ceiling has fallen below a published band cutpoint,
+        # i.e. that band is unreachable this run. Surfaces in system_health so the
+        # condition is inspectable rather than only a stderr line in a CI log.
+        "ceiling_warning": _warn_if_ceiling_suppresses_a_band(float(y_cap)),
         "brier_before": round(float(brier_score_loss(labels, probabilities)), 4),
         "brier_after": round(float(brier_score_loss(labels, calibrated)), 4),
         "brier_flat_base_rate": round(float(np.mean((base_rate - labels) ** 2)), 4),

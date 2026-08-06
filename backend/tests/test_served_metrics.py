@@ -250,6 +250,13 @@ def test_fit_caps_a_top_step_too_few_rows_support(tmp_path):
 
     mapping = fit_serving_calibration(tmp_path, min_pairs=100, min_positives=25)
     assert mapping is not None
+    # Key-INDEPENDENT first: without the cap this fixture yields apply(1.0) == 1.0,
+    # so this fails on behaviour rather than on a missing dict key. The payload
+    # assertions below would otherwise all differentiate only by KeyError, which
+    # is not a regression test -- the exact defect found in the previous round.
+    assert float(apply_serving_calibration(np.array([1.0]), mapping)[0]) < 1.0, (
+        "under-supported top step was not capped"
+    )
     assert mapping["top_step_capped_from"] is not None, "thin top step was not capped"
     assert mapping["y_max"] < 1.0
     assert float(apply_serving_calibration(np.array([1.0]), mapping)[0]) == pytest.approx(
@@ -264,3 +271,50 @@ def test_apply_passes_nan_and_degenerate_mapping_through():
     assert out[1] == pytest.approx(0.25)
     untouched = apply_serving_calibration(np.array([0.3]), {"x": [0.1], "y": [0.1]})
     assert untouched[0] == pytest.approx(0.3)
+
+
+def test_fit_warns_when_the_ceiling_suppresses_the_very_high_band(tmp_path):
+    # The ceiling is whatever the top-supported step happens to be, and it moves
+    # as the trailing window rolls. On the shipped history it rests on ~19 rows
+    # from a two-week span in early May; when those age out y_max drops toward
+    # ~0.49 and Very High becomes unreachable for every beach. Nothing else
+    # catches that -- the anomaly gate's band check only fires when non-Low
+    # collapses to zero -- so the fit itself has to say so.
+    rng = np.random.default_rng(5)
+    rows, obs = [], []
+    day = pd.Timestamp("2026-06-01")
+    for i in range(600):
+        beach = f"c{i}"
+        d = (day + pd.Timedelta(days=i % 30)).date().isoformat()
+        p = float(np.clip(rng.random() * 0.4, 0.01, 0.4))  # nothing scores high
+        rows.append(_forecast_row(beach, d, p=p, issued=f"{d}T18:00:00+00:00",
+                                  persistence_floor_applied=False))
+        obs.append((beach, d, bool(rng.random() < 0.1)))
+    _write_forecasts(tmp_path, rows)
+    append_forecast_history(tmp_path)
+    _write_observations(tmp_path, obs)
+
+    mapping = fit_serving_calibration(tmp_path, min_pairs=100, min_positives=25)
+    assert mapping is not None
+    assert mapping["y_max"] < 0.70
+    assert mapping["ceiling_warning"] is not None
+    assert "UNREACHABLE" in mapping["ceiling_warning"]
+
+
+def test_fit_does_not_warn_when_the_ceiling_clears_every_band(tmp_path):
+    _pin_era_fixture(tmp_path, n_pinned=0)
+    observations = [(f"g{i}", (pd.Timestamp("2026-06-01") + pd.Timedelta(days=i % 30))
+                     .date().isoformat(), bool(i % 5 == 0)) for i in range(600)]
+    extra, day = [], "2026-06-15"
+    for i in range(40):
+        extra.append(_forecast_row(f"hi{i}", day, p=0.98, issued=f"{day}T18:00:00+00:00",
+                                   persistence_floor_applied=False))
+        observations.append((f"hi{i}", day, True))
+    _write_forecasts(tmp_path, extra)
+    append_forecast_history(tmp_path)
+    _write_observations(tmp_path, observations)
+
+    mapping = fit_serving_calibration(tmp_path, min_pairs=100, min_positives=25)
+    assert mapping is not None
+    assert mapping["y_max"] >= 0.70
+    assert mapping["ceiling_warning"] is None
