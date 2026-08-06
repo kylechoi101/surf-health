@@ -298,6 +298,100 @@ the positive-persistence floor). Fixes shipped in `app/ml/served_metrics.py` + `
   staleness-augmented training (censor risk-history features to the serving age distribution +
   days-since-sample feature), validated offline via `scripts/diagnose_spatial_brier.py` first.
 
+### Positive-persistence: override → FLOOR (2026-08-06)
+
+**Symptom:** on the shipped 2026-08-05 forecast, 17 beaches in 6 counties served an *identical*
+`p_exceed = 0.45` — lab readings from 107 to 6628, sample ages 2 to 35 days, same number. All 519
+served rows carried only **28 distinct probabilities** (from 501 distinct pre-calibration values).
+
+**Cause — two hand-written corrections cancelling into a constant:**
+1. `_export_forecasts` OVERRODE the model wherever the last official sample exceeded, via
+   `_positive_persistence_guarded_blend_probabilities(..., alpha=1.0)` = `where(persistence >= 0.5,
+   1.0, p)`. The model's own answer was discarded.
+2. The daily serving isotonic, seeing 1.0 was wildly overconfident, mapped its whole top step
+   (x ∈ [0.617, 1.0]) back down to **y = 0.45**. Every overridden beach landed on that one plateau.
+
+`exceeds_stv_last_obs` was **already a model feature** (`features.py:412`; it is not in
+`_model_feature_columns`'s exclusion set), so the model had learned what a prior exceedance is
+worth *in context*. The override replaced that learned estimate with a constant, and the isotonic
+then erased what little spread remained.
+
+**Fix:** the override is gone. The safety property it existed for — a beach whose last sample
+exceeded is never displayed Low — is now a **post-calibration floor at `_LOW_THRESHOLD`**. It also
+moved OUT of the `serving_calibration is not None` branch: a run with too little served history to
+fit an isotonic previously got no floor at all, a hole the pin was masking.
+
+**Measured A/B** (1095d window, temporal test split, 11,973 held-out sample-days, ONE shared model,
+serving isotonic refit per arm so neither inherits the other's calibration):
+
+| | override (old) | floor (new) |
+|---|---|---|
+| Brier | 0.0846 | **0.0640** |
+| AUCPR | 0.573 | **0.791** |
+| within-beach AUROC | 0.616 | **0.651** |
+| **on the 2,119 affected rows** | | |
+| distinct served values | **1** | **43** |
+| Brier | 0.2330 | **0.1171** |
+| AUROC | **0.500** | **0.910** |
+
+Brier gap on affected rows **0.1159**, cluster-bootstrap 95% CI over 285 beaches **[0.0989,
+0.1323]**. The override arm scored **worse than the flat base rate** (0.2330 vs 0.2325) — not
+merely uninformative, a *miscalibrated* constant. Control rows (persistence-negative) moved
+0.05269 → 0.05260, confirming the change is confined to where it should be.
+
+- **This is also why "Very High" never fired.** The old arm put **0** rows in Very High; the new one
+  puts 1,114. The band's disappearance was previously attributed to honest recalibration ("expect
+  Very High to mostly vanish until real skill supports ≥0.70") — the real mechanism was the pin
+  collapsing everything onto a plateau below 0.70.
+- **Caveats.** Scored on *sample-days*, not the between-sample regime where ~95% of served rows
+  live; the pinned constant is 0.61 here vs 0.45 in production because the test population's base
+  rate is 0.165 vs ~0.061 served (structure transfers, level does not); and the affected rows are
+  overwhelmingly San Diego ddPCR beaches, so the label-regime caveat below applies.
+- **The guard MODEL keeps the old semantics.** `hist_gbm_positive_persistence_guard` is a scored
+  backtest candidate whose *definition* is the pin; changing it would silently rescore a different
+  estimator against its own history. If it ever won promotion it would reintroduce the flattening —
+  known and accepted, not an oversight.
+- **New audit columns:** `forecasts.parquet` gains `persistence_floor_applied` (mirrors
+  `advisory_floor_applied`), also added to `forecast_history.parquet`'s `_HISTORY_COLUMNS`. And
+  `p_exceed_precal` is now genuinely the model's own pre-calibration probability — it used to be
+  captured *after* the pin, so on exactly the rows that mattered the model's answer was absent from
+  every shipped artifact and the change could not be measured retrospectively.
+- ⚠️ **Serve-time features are reindexed onto the TRAINING feature columns**
+  (`_export_forecasts`, `reindex(columns=features.columns)`). If `exceeds_stv_last_obs` ever leaves
+  the training feature set, persistence silently reverts to the method-blind `value > 104` fallback.
+  Both branches are now pinned by tests.
+
+### ⚠️ `exceeds_stv` is not one label (2026-08-06 investigation, UNRESOLVED)
+
+Culture rows are judged against 104 MPN/CFU; San Diego ddPCR rows against **1413 copies**. On
+**1,175 paired same-beach same-day samples** the two rules agree only **50.6%** of the time —
+culture flags 0.122, PCR flags 0.603, PCR-flags-alone 48.8%, culture-flags-alone 0.6%.
+
+- **1413 is correct — do not change it.** It is not a misapplied EPA figure (EPA's qPCR BAV is 1000
+  CCE/100 mL for Method 1611). It is a CDPH-developed value fitted directly against **raw ddPCR
+  copies** (Crain et al. 2021, "Intrinsic Copy Number Equation", 1,993 paired results), approved by
+  EPA Region 9 (2020-10-06) and authorized under H&SC §115880(d). San Diego DEH uses it to issue the
+  Bacterial Exceedance Advisories this product predicts. ⚠️ Sourced via search snippets only —
+  epa.gov / sandiegocounty.gov / sccwrp.org are 403 from the CI network policy; verify the PDFs from
+  an unrestricted network before citing in the model card.
+- **The divergence is a published property of the method,** not a bug here: a 2026 follow-up at
+  Coronado (*J. Microbiol. Methods* 240:107346) reports index of agreement 0.25 and a **56.3%
+  ddPCR false-positive rate** against the Enterolert action value — which our 48.8% independently
+  reproduces. No alternative threshold is fittable from our data: the "pairs" are a median **2.27 h**
+  apart (5 of 1,175 share a timestamp), only **6.3%** of ddPCR beach-days have a same-day culture,
+  the three highest-volume ddPCR stations contribute 0/1/0 pairs, and three defensible estimators
+  span 21× (OLS 14,433 / RMA 42,702 / inverse-regression 300,030).
+- **Consequence for the model:** ddPCR is **15.3%** of enterococcus rows in the 1095d window but
+  supplies **51.9% of all positive labels**; San Diego is 24.9% of `beach_day` rows and **57.0% of
+  positives** (base rate 0.406 vs 0.102 elsewhere). Leave-one-county-out with San Diego held out is
+  holding out a different labelling universe.
+- **Next step is NOT a threshold change:** carry `is_pcr` / `label_method` into `beach_day` (it is
+  dropped there today — the root of the method-blind feature class: `enterococcus_value_lag_*`,
+  `enterococcus_value_last_obs`, `log_enterococcus`, and the 35/104-thresholded geomeans all mix
+  MPN and copies in one column), stratify `system_health` metrics by it, and re-run the persistence
+  A/B per regime. Open question for SD DEH: our ddPCR flag rate is ~60% vs a ~38% advisory-day rate,
+  which suggests a confirmatory-resample or duration rule on top of 1413.
+
 ### Two-tier serve-time router (2026-07-23, resolves the staleness gap above — **DEPLOYED, serving 100% of beaches**)
 
 The gap above is now addressed by a **level+deviation two-tier model served by a regime router**

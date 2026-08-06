@@ -2,8 +2,10 @@ from datetime import date
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from app.data.pipeline.features import build_sliding_windows
+from app.ml.calibration import _LOW_THRESHOLD
 from app.ml.training import (
     StageTwoTrainingPlan,
     _TrainedModels,
@@ -1255,8 +1257,16 @@ def _run_export_single_beach(
     sample_recency_band: str,
     advisory_floor: int,
     raw_proba_override=None,
+    exceeds_stv_last_obs: float | None = None,
 ):
-    """Drive _export_forecasts for one synthetic beach and return its forecast row."""
+    """Drive _export_forecasts for one synthetic beach and return its forecast row.
+
+    ``exceeds_stv_last_obs`` exercises the METHOD-AWARE persistence path
+    (``_persistence_probabilities`` prefers it over re-thresholding the raw
+    value). Left None, the harness supplies only ``enterococcus_value_last_obs``
+    and the legacy value-vs-STV fallback decides — which is the branch that
+    cannot tell 300 ddPCR copies (clean) from 300 MPN (an exceedance).
+    """
     from app.ml.training import _export_forecasts, _TrainedModels, StageTwoTrainingPlan
 
     class FixedClassifier:
@@ -1273,7 +1283,7 @@ def _run_export_single_beach(
             return np.full(len(frame), 1.7, dtype=float)
 
     curated_dir = tmp_path / "curated"
-    curated_dir.mkdir()
+    curated_dir.mkdir(parents=True, exist_ok=True)
     (curated_dir / "system_health.json").write_text("{}")
 
     candidates = pd.DataFrame([
@@ -1291,6 +1301,8 @@ def _run_export_single_beach(
     forecast_features = pd.DataFrame(
         {"enterococcus_value_last_obs": [last_obs], "advisory_active_recent_for_floor": [advisory_floor]}
     )
+    if exceeds_stv_last_obs is not None:
+        forecast_features["exceeds_stv_last_obs"] = [exceeds_stv_last_obs]
     forecast_metadata = pd.DataFrame(
         {"beach_id": ["beach"], "sample_date": [pd.Timestamp("2026-04-20")]}
     )
@@ -1310,7 +1322,19 @@ def _run_export_single_beach(
         forecast_date=date(2026, 4, 20),
         frame=pd.DataFrame(),
         full_frame=pd.DataFrame(),
-        features=pd.DataFrame({"enterococcus_value_last_obs": [last_obs]}),
+        # NOTE: _export_forecasts reindexes the serve-time feature frame onto
+        # THESE columns (training.py, `reindex(columns=features.columns)`), so a
+        # column absent here is silently dropped at serve time. That is exactly
+        # how the method-aware persistence signal would revert to the raw-value
+        # fallback if `exceeds_stv_last_obs` ever left the training feature set.
+        features=(
+            pd.DataFrame({"enterococcus_value_last_obs": [last_obs]})
+            if exceeds_stv_last_obs is None
+            else pd.DataFrame({
+                "enterococcus_value_last_obs": [last_obs],
+                "exceeds_stv_last_obs": [exceeds_stv_last_obs],
+            })
+        ),
         densities=np.array([1.0]),
         valid_idx=np.array([0]),
         test_idx=np.array([0]),
@@ -1351,14 +1375,108 @@ def test_export_positive_persistence_floor_applies_to_non_guard_winner(monkeypat
     # Deployed-ensemble shape: a non-guard winner whose model says Low (0.05),
     # but the prior official observation exceeded the STV (180 > 104). The
     # serve-time positive-persistence floor must keep it from collapsing to Low.
+    #
+    # It is a FLOOR, not an override (changed 2026-08-06): the row is raised to
+    # exactly _LOW_THRESHOLD, NOT pinned to 1.0. The old pin discarded the
+    # model's answer entirely, and the downstream serving isotonic then squashed
+    # every pinned beach onto one plateau — 17 beaches serving an identical
+    # 0.45 on 2026-08-05 with lab readings spanning 107..6628.
     row = _run_export_single_beach(
         tmp_path, monkeypatch,
         winner="baseline", model_prob=0.05, last_obs=180.0,
         sample_recency_band="recent", advisory_floor=0,
     )
-    assert row["p_exceed"] == 1.0
-    assert row["p_exceed_raw"] == 1.0  # guard runs before p_raw is read
-    assert row["risk_band"] == "Very High"
+    assert row["p_exceed"] == pytest.approx(_LOW_THRESHOLD)
+    assert row["p_exceed_raw"] == pytest.approx(_LOW_THRESHOLD)
+    assert row["risk_band"] == "Moderate"
+    assert bool(row["persistence_floor_applied"]) is True
+
+
+def test_export_persistence_floor_does_not_override_a_confident_model(monkeypatch, tmp_path):
+    # The regression this whole change is about: a persistence-positive beach
+    # whose model is ALREADY above the floor keeps its own probability. Under
+    # the old pin this served 1.0 regardless of what the model said.
+    row = _run_export_single_beach(
+        tmp_path, monkeypatch,
+        winner="baseline", model_prob=0.62, last_obs=180.0,
+        sample_recency_band="recent", advisory_floor=0,
+    )
+    assert row["p_exceed"] == pytest.approx(0.62)
+    assert row["p_exceed"] != 1.0
+    assert bool(row["persistence_floor_applied"]) is False
+
+
+def test_export_persistence_positive_beaches_stay_distinguishable(monkeypatch, tmp_path):
+    # Two beaches, both persistence-positive, different model probabilities:
+    # they must serve DIFFERENT numbers. This is the property the pin destroyed
+    # and the single assertion that would have caught the shipped bug -- every
+    # other test passed while 17 beaches served an identical 0.45.
+    low = _run_export_single_beach(
+        tmp_path / "a", monkeypatch,
+        winner="baseline", model_prob=0.35, last_obs=180.0,
+        sample_recency_band="recent", advisory_floor=0,
+    )
+    high = _run_export_single_beach(
+        tmp_path / "b", monkeypatch,
+        winner="baseline", model_prob=0.80, last_obs=5000.0,
+        sample_recency_band="recent", advisory_floor=0,
+    )
+    assert low["p_exceed"] != high["p_exceed"]
+    assert float(low["p_exceed"]) < float(high["p_exceed"])
+    # ...and both are above the floor, i.e. neither collapsed to Low.
+    assert float(low["p_exceed"]) >= _LOW_THRESHOLD
+    assert float(high["p_exceed"]) >= _LOW_THRESHOLD
+
+
+def test_export_persistence_floor_uses_method_aware_exceedance_when_available(
+    monkeypatch, tmp_path
+):
+    # The floor keys on exceeds_stv_last_obs (already method-aware) when the
+    # feature frame carries it -- NOT on a re-thresholded raw value. A San Diego
+    # ddPCR reading of 300 copies is CLEAN (threshold 1413) even though 300 > 104,
+    # so no floor may be applied. Re-deriving from the raw value put 34 of 74
+    # served "High" bands on clean beaches on 2026-07-30.
+    row = _run_export_single_beach(
+        tmp_path, monkeypatch,
+        winner="baseline", model_prob=0.05, last_obs=300.0,
+        sample_recency_band="recent", advisory_floor=0,
+        exceeds_stv_last_obs=0.0,
+    )
+    assert row["p_exceed"] == pytest.approx(0.05)
+    assert row["risk_band"] == "Low"
+    assert bool(row["persistence_floor_applied"]) is False
+
+
+def test_export_persistence_falls_back_to_raw_value_without_the_method_aware_column(
+    monkeypatch, tmp_path
+):
+    # The trap the test above guards: WITHOUT exceeds_stv_last_obs in the
+    # training feature set, _export_forecasts' reindex drops it from the serve
+    # frame and _persistence_probabilities falls back to `value > 104`. The same
+    #300 that is clean by ddPCR then floors the beach. Pinning the fallback here
+    # so a future feature-set change surfaces as a diff, not a silent regression.
+    row = _run_export_single_beach(
+        tmp_path, monkeypatch,
+        winner="baseline", model_prob=0.05, last_obs=300.0,
+        sample_recency_band="recent", advisory_floor=0,
+    )
+    assert row["p_exceed"] == pytest.approx(_LOW_THRESHOLD)
+    assert bool(row["persistence_floor_applied"]) is True
+
+
+def test_export_persistence_floor_applies_without_serving_calibration(monkeypatch, tmp_path):
+    # The floor used to live INSIDE the `serving_calibration is not None` branch,
+    # so a run with too little served history to fit an isotonic got no floor at
+    # all. That hole was masked by the pre-calibration pin; with the pin gone it
+    # would be live. This harness has no forecast_history, so no calibrator is
+    # fitted -- the floor must still bind.
+    row = _run_export_single_beach(
+        tmp_path, monkeypatch,
+        winner="baseline", model_prob=0.01, last_obs=180.0,
+        sample_recency_band="recent", advisory_floor=0,
+    )
+    assert row["p_exceed"] >= _LOW_THRESHOLD
+    assert row["risk_band"] != "Low"
 
 
 def test_export_does_not_floor_non_guard_winner_when_prior_below_stv(monkeypatch, tmp_path):

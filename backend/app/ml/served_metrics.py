@@ -48,6 +48,13 @@ _HISTORY_COLUMNS = [
     "risk_band",
     "sample_age_days",
     "model_version",
+    # Did the positive-persistence floor bind on this row? Before 2026-08-06 the
+    # serve path OVERRODE persistence positives to 1.0 rather than flooring them,
+    # and captured p_exceed_precal after that override — so on exactly the rows
+    # where the question mattered, the model's own probability was absent from
+    # every artifact and the change could not be measured retrospectively. Null
+    # on rows logged before this column existed.
+    "persistence_floor_applied",
     # Two-tier provenance: 0 = ensemble served this row, 1 = offset model did,
     # in between = age-ramp blend; null when no router ran. model_version alone
     # cannot distinguish them — it records the registry winner (the ensemble)
