@@ -20,6 +20,7 @@ realized). This module closes that loop:
 from __future__ import annotations
 
 import os
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -29,6 +30,7 @@ from sklearn.isotonic import IsotonicRegression
 from sklearn.metrics import average_precision_score, brier_score_loss, roc_auc_score
 
 from app.core.json_safe import write_json
+from app.ml.calibration import _VERY_HIGH_THRESHOLD
 from app.ml.evaluation import sensitivity_at_specificity
 
 HISTORY_FILE = "forecast_history.parquet"
@@ -48,6 +50,13 @@ _HISTORY_COLUMNS = [
     "risk_band",
     "sample_age_days",
     "model_version",
+    # Did the positive-persistence floor bind on this row? Before 2026-08-06 the
+    # serve path OVERRODE persistence positives to 1.0 rather than flooring them,
+    # and captured p_exceed_precal after that override — so on exactly the rows
+    # where the question mattered, the model's own probability was absent from
+    # every artifact and the change could not be measured retrospectively. Null
+    # on rows logged before this column existed.
+    "persistence_floor_applied",
     # Two-tier provenance: 0 = ensemble served this row, 1 = offset model did,
     # in between = age-ramp blend; null when no router ran. model_version alone
     # cannot distinguish them — it records the registry winner (the ensemble)
@@ -67,6 +76,14 @@ _FIT_WINDOW_DAYS = 120
 # Below these the fitted map is noise — serve the uncalibrated probability.
 _MIN_FIT_PAIRS = 500
 _MIN_FIT_POSITIVES = 25
+# Minimum observations behind the isotonic's TOP step. PAVA will happily emit
+# y=1.0 off a handful of rows, and this map publishes a public risk number: after
+# the pin-era exclusion the top step was y=1.0 supported by exactly TWO rows —
+# both Mission Bay stations on the same afternoon, i.e. one spatially-correlated
+# event, not two observations. Any served probability above that x would have
+# been published as a certainty on that basis. Trailing under-supported steps are
+# collapsed into the highest adequately-supported level instead.
+_MIN_TOP_STEP_SUPPORT = 10
 
 # Fixed reliability-bin edges aligned with the public risk bands.
 _BIN_EDGES = (0.0, 0.05, 0.10, 0.20, 0.30, 0.70, 1.0001)
@@ -316,6 +333,109 @@ def served_performance(
     return payload
 
 
+def _drop_pin_era_rows(pairs: pd.DataFrame) -> pd.DataFrame:
+    """Drop served rows whose ``p_fit`` is the old positive-persistence PIN, not a
+    model output.
+
+    Until 2026-08-06 the serve path did ``where(persistence >= 0.5, 1.0, p)``
+    BEFORE snapshotting ``p_exceed_precal``, so on those rows the recorded
+    "pre-calibration probability" is the constant 1.0. Measured on the 2026-08-05
+    history: 482 of 13,813 rows in the 120d window, realizing 0.4149 — enough to
+    pin the isotonic's top step at y=0.45 and cap EVERY served probability there,
+    which made the Very High band unreachable and sent 47% of persistence-positive
+    beaches to Moderate against a 0.632 realized rate.
+
+    Identified as ``p_fit == 1.0`` AND no ``persistence_floor_applied`` value —
+    that column only exists on rows written by the post-change code, so this is
+    self-limiting: it excludes only legacy rows and stops firing entirely once the
+    trailing window rolls past the change. A post-change row is never dropped,
+    even if a model legitimately outputs 1.0.
+
+    ⚠️ The self-limiting property has ONE exception. If
+    ``hist_gbm_positive_persistence_guard`` ever won promotion it would serve
+    precal 1.0 by definition (``training.py``, its own branch) *with* a non-null
+    ``persistence_floor_applied``, so those rows would never be dropped and pin
+    contamination would re-enter permanently. That is the same accepted
+    consequence recorded on the guard function itself — but this is the module
+    that claims the problem self-heals, so it has to carry the caveat too.
+
+    ⚠️ Note what this exclusion does NOT do. Every pre-change persistence-positive
+    row carried precal 1.0, so removing them leaves the legacy fit population
+    entirely persistence-NEGATIVE, and the resulting map is then applied to a
+    mixed one. Measured on the A/B holdout, it under-predicts the affected rows
+    (mean 0.4444 against a 0.6324 realized rate) where a clean per-arm refit does
+    not (0.6378). It cannot be fixed from history — the pin destroyed those
+    x-values — and it decays only as the window rolls past the change.
+    """
+    if "persistence_floor_applied" not in pairs.columns:
+        legacy = pd.Series(True, index=pairs.index)
+    else:
+        legacy = pairs["persistence_floor_applied"].isna()
+    pinned = legacy & (pd.to_numeric(pairs["p_fit"], errors="coerce") >= 1.0)
+    if not pinned.any():
+        return pairs
+    print(
+        f"[serving calibration] excluded {int(pinned.sum())} pin-era rows "
+        "(p_exceed_precal == 1.0 from the pre-2026-08-06 override).",
+        file=sys.stderr, flush=True,
+    )
+    return pairs.loc[~pinned]
+
+
+def _cap_undersupported_top_step(
+    knots_x: np.ndarray,
+    knots_y: np.ndarray,
+    fit_probabilities: np.ndarray,
+) -> tuple[np.ndarray, float, float | None]:
+    """Collapse trailing isotonic steps that too few observations support.
+
+    Returns ``(knots_y, y_cap, capped_from)`` — ``capped_from`` is the original
+    ceiling when a cap was applied, else None. See ``_MIN_TOP_STEP_SUPPORT``.
+    """
+    if len(knots_x) < 2:
+        return knots_y, float(knots_y.max(initial=0.0)), None
+    predicted = np.interp(fit_probabilities, knots_x, knots_y)
+    levels = np.unique(np.round(knots_y, 9))
+    supported = [
+        lvl for lvl in levels
+        if int(np.isclose(predicted, lvl, atol=1e-9).sum()) >= _MIN_TOP_STEP_SUPPORT
+    ]
+    if not supported:
+        return knots_y, float(knots_y.max()), None
+    cap = float(max(supported))
+    original = float(knots_y.max())
+    if cap >= original:
+        return knots_y, original, None
+    print(
+        f"[serving calibration] top step y={original:.4f} had "
+        f"<{_MIN_TOP_STEP_SUPPORT} supporting rows; capped to y={cap:.4f}.",
+        file=sys.stderr, flush=True,
+    )
+    return np.minimum(knots_y, cap), cap, original
+
+
+def _warn_if_ceiling_suppresses_a_band(y_cap: float) -> str | None:
+    """Warn when the map's ceiling has fallen below a published band cutpoint.
+
+    The ceiling is whatever the top-supported step happens to be, and it moves as
+    the trailing window rolls. Today it rests on ~19 rows from a two-week span in
+    early May — when those age out, `y_max` drops to ~0.70 and then ~0.49, and at
+    that point NO beach can be served Very High no matter what the model says.
+    That is exactly the failure this whole change was about (a ceiling silently
+    deciding a band is unreachable), and nothing else catches it: the anomaly
+    gate's band check only fires when non-Low collapses to zero.
+    """
+    if y_cap >= _VERY_HIGH_THRESHOLD:
+        return None
+    message = (
+        f"serving-calibration ceiling y_max={y_cap:.4f} is below the Very High "
+        f"cutpoint ({_VERY_HIGH_THRESHOLD:.2f}) — that band is currently "
+        "UNREACHABLE for every beach regardless of model output."
+    )
+    print(f"[serving calibration] WARNING: {message}", file=sys.stderr, flush=True)
+    return message
+
+
 def fit_serving_calibration(
     curated_dir: Path,
     *,
@@ -328,6 +448,12 @@ def fit_serving_calibration(
     Fit on the trailing ``window_days`` of matched served-forecast/lab pairs.
     Returns None when history is too thin to beat noise — callers then serve
     the uncalibrated probability (exactly the pre-audit behavior).
+
+    Pin-era rows are excluded (see ``_drop_pin_era_rows``): before 2026-08-06 the
+    serve path OVERRODE persistence positives to 1.0 *before* ``p_exceed_precal``
+    was captured, so their x-value is a constant, not a model output. Fitting on
+    them caps this map's top step at the realized rate of that constant and
+    mis-calibrates every post-change probability pushed through it.
     """
     loaded = _matched_from_disk(curated_dir)
     if loaded is None:
@@ -338,6 +464,11 @@ def fit_serving_calibration(
         return None
     latest = pairs["date"].max()
     pairs = pairs[pairs["date"] > latest - pd.Timedelta(days=window_days)]
+    n_before_exclusion = len(pairs)
+    pairs = _drop_pin_era_rows(pairs)
+    n_pin_era_excluded = n_before_exclusion - len(pairs)
+    if pairs.empty:
+        return None
     labels = pairs["outcome_matched"].astype(int).to_numpy()
     probabilities = pairs["p_fit"].astype(float).to_numpy()
     n_positive = int(labels.sum())
@@ -345,15 +476,33 @@ def fit_serving_calibration(
         return None
     model = IsotonicRegression(y_min=0.0, y_max=1.0, out_of_bounds="clip")
     model.fit(probabilities, labels)
-    calibrated = model.predict(probabilities)
+    knots_y, y_cap, capped_from = _cap_undersupported_top_step(
+        np.asarray(model.X_thresholds_, dtype=float),
+        np.asarray(model.y_thresholds_, dtype=float),
+        probabilities,
+    )
+    calibrated = np.interp(probabilities, model.X_thresholds_, knots_y)
     base_rate = float(labels.mean())
     return {
         "x": [round(float(v), 6) for v in model.X_thresholds_],
-        "y": [round(float(v), 6) for v in model.y_thresholds_],
+        "y": [round(float(v), 6) for v in knots_y],
         "fitted_at": datetime.now(UTC).isoformat(),
         "window_days": int(window_days),
         "n_pairs": int(len(pairs)),
         "n_positive": n_positive,
+        "n_pin_era_excluded": n_pin_era_excluded,
+        # The map's ceiling and whether a thin top step was collapsed into it.
+        # Without these the payload cannot distinguish "the model never scored
+        # that high" from "the top of the scale was capped".
+        "y_max": round(float(y_cap), 6),
+        "top_step_capped_from": (
+            None if capped_from is None else round(float(capped_from), 6)
+        ),
+        "min_top_step_support": int(_MIN_TOP_STEP_SUPPORT),
+        # Non-null when the ceiling has fallen below a published band cutpoint,
+        # i.e. that band is unreachable this run. Surfaces in system_health so the
+        # condition is inspectable rather than only a stderr line in a CI log.
+        "ceiling_warning": _warn_if_ceiling_suppresses_a_band(float(y_cap)),
         "brier_before": round(float(brier_score_loss(labels, probabilities)), 4),
         "brier_after": round(float(brier_score_loss(labels, calibrated)), 4),
         "brier_flat_base_rate": round(float(np.mean((base_rate - labels) ** 2)), 4),

@@ -497,11 +497,25 @@ def _persistence_probabilities(features: pd.DataFrame, stv_threshold: float) -> 
     It replaces the old ``enterococcus_value_last_obs > stv_threshold`` rule, which
     was method-blind: San Diego ddPCR rows report copies/100mL and must be judged
     against 1413 (see pipeline.exceedance), but this compared them against the 104
-    culture STV and flagged clean water as an exceedance. Because the result is
-    hard-pinned to 1.0 by _positive_persistence_guarded_blend_probabilities, that
-    put 34 of the 74 "High" bands served on 2026-07-30 on beaches whose most recent
-    lab result was clean. ``exceeds_stv_last_obs`` carries the already-method-aware
-    decision instead of re-deriving it.
+    culture STV and flagged clean water as an exceedance. At the time the serve
+    path hard-pinned any persistence positive to 1.0, so that put 34 of the 74
+    "High" bands served on 2026-07-30 on beaches whose most recent lab result was
+    clean. ``exceeds_stv_last_obs`` carries the already-method-aware decision
+    instead of re-deriving it.
+
+    The serve path no longer pins (2026-08-06) — this now drives a post-
+    calibration FLOOR at ``_LOW_THRESHOLD`` instead, so a wrong persistence
+    positive costs a Moderate band rather than a certainty. The blast radius of
+    getting this function wrong is correspondingly smaller, but it is still the
+    input to that floor AND the persistence baseline every promotion gate scores
+    against, so it must stay method-aware.
+
+    ⚠️ ``exceeds_stv`` is not one label: culture rows are judged against 104
+    MPN/CFU and San Diego ddPCR rows against 1413 copies, and on 1,175 paired
+    same-day samples those two rules disagree on ~49% of pairs (PCR flags 0.603
+    vs culture 0.122). So "the last sample exceeded" means a materially different
+    event depending on which lab ran it. That is a labelling problem upstream of
+    this function, not something it can fix.
 
     ``stv_threshold`` is retained only for the legacy fallback below, which applies
     to frames built before ``exceeds_stv_last_obs`` existed.
@@ -538,6 +552,20 @@ def _positive_persistence_guarded_blend_probabilities(
     persistence_probabilities: np.ndarray,
     alpha: float,
 ) -> np.ndarray:
+    """Blend, then OVERRIDE persistence positives to 1.0.
+
+    This is the definition of the ``hist_gbm_positive_persistence_guard`` model
+    candidate — the pin is the model, not a serving policy — so it must keep
+    these exact semantics or the promotion gate silently rescores a different
+    estimator against its own history.
+
+    It is NOT the general serve-time behaviour any more. As of 2026-08-06 every
+    other winner gets a post-calibration floor at ``_LOW_THRESHOLD`` instead;
+    see the note in ``_export_forecasts``. (If this guard variant ever won
+    promotion it would still pin, and would reintroduce the flattening the floor
+    was adopted to fix — that is a known and accepted property of the candidate,
+    not an oversight.)
+    """
     blended = _blend_probabilities(model_probabilities, persistence_probabilities, alpha)
     persistence = np.asarray(persistence_probabilities, dtype=float)
     return np.where(persistence >= 0.5, 1.0, blended)
@@ -3611,41 +3639,55 @@ def _export_forecasts(
             )
 
     # --- Runtime serving guards (apply to EVERY winner) ----------------------
-    # The deployed xgb_undersample_ensemble (and most other branches) do NOT
-    # apply the positive-persistence floor that the dedicated guard variant
-    # does. At serve time we never want the model to underperform "yesterday
-    # exceeded → today still elevated": where the last official observation
-    # exceeded the STV, the served probability must not collapse to Low.
+    # At serve time we never want the model to underperform "yesterday exceeded →
+    # today still elevated": where the last official observation exceeded the STV,
+    # the served probability must not collapse to Low. Since 2026-08-06 that is a
+    # post-calibration FLOOR (further below), not an override — the dedicated
+    # guard MODEL still pins to 1.0 in its own branch, because the pin is that
+    # candidate's definition rather than a serving policy.
     probabilities = np.asarray(probabilities, dtype=float)
     persistence_probabilities = _persistence_probabilities(
         baseline_forecast_features,
         _STV_THRESHOLD,
     )
-    # NaN/inf guard: a non-finite served probability is meaningless. Fall back
-    # to the positive-persistence signal for that row when one exists, else a
-    # safe Moderate-band default (0.20 = Low/Moderate cut), and warn loudly.
+    # NaN/inf guard: a non-finite served probability is meaningless. Fall back to
+    # the Low/Moderate cut (0.20) and warn loudly.
+    #
+    # This used to fall back to 1.0 on persistence-positive rows, which is now
+    # wrong twice over. (1) It re-creates exactly the constant this module stopped
+    # emitting, so a FAILED prediction would serve the loudest forecast in the
+    # product — the isotonic's top step, or a literal 1.0 / Very High when no
+    # calibrator can be fitted. (2) `probabilities_precal` is snapshotted just
+    # below, so that 1.0 lands in forecast_history as `p_exceed_precal` and
+    # becomes fit input for tomorrow's serving isotonic — permanently re-seeding
+    # the pin contamination that `_drop_pin_era_rows` exists to remove.
+    # `_LOW_THRESHOLD` for both branches is the consistent choice: the
+    # persistence floor further below still lifts these rows off Low, so the
+    # safety property holds without inventing confidence we do not have.
     nonfinite_mask = ~np.isfinite(probabilities)
     if nonfinite_mask.any():
         n_bad = int(nonfinite_mask.sum())
-        fallback = np.where(persistence_probabilities >= 0.5, 1.0, _LOW_THRESHOLD)
-        probabilities = np.where(nonfinite_mask, fallback, probabilities)
+        probabilities = np.where(nonfinite_mask, _LOW_THRESHOLD, probabilities)
         print(
             f"[serving guard] WARNING: {n_bad} forecast probabilit"
-            f"{'y' if n_bad == 1 else 'ies'} were NaN/inf; fell back to "
-            "persistence/safe default.",
+            f"{'y' if n_bad == 1 else 'ies'} were NaN/inf; fell back to the "
+            f"safe {_LOW_THRESHOLD:.2f} default.",
             file=sys.stderr, flush=True,
         )
     probabilities = np.clip(probabilities, 0.0, 1.0)
-    # Positive-persistence floor. The guard variant already applied this in its
-    # own branch (don't double-apply); every other winner gets it here. alpha=1
-    # keeps the model probability for non-persistence rows untouched and only
-    # raises rows where the prior observation exceeded the STV — a pure floor.
-    if winner != "hist_gbm_positive_persistence_guard":
-        probabilities = _positive_persistence_guarded_blend_probabilities(
-            probabilities,
-            persistence_probabilities,
-            alpha=1.0,
-        )
+    # NOTE (2026-08-06): the serve path used to OVERRIDE the model here —
+    # `_positive_persistence_guarded_blend_probabilities(..., alpha=1.0)`, i.e.
+    # `where(persistence >= 0.5, 1.0, p)` — hard-pinning every beach whose last
+    # official sample exceeded to 1.0 and discarding the model's own answer.
+    # That is now a post-calibration FLOOR only (further below). The override was
+    # a safety belt from a weaker model, and it had stopped protecting anything:
+    # `exceeds_stv_last_obs` is ALREADY a model feature (features.py:412 — it is
+    # not in `_model_feature_columns`'s exclusion set), so the model had learned
+    # what a prior exceedance is worth *in context*, and the pin replaced that
+    # with a constant which the serving isotonic then squashed onto one plateau.
+    # Evidence, caveats, and the measured A/B live in CLAUDE.md ("Positive-
+    # persistence: override → FLOOR") — deliberately NOT restated here, because
+    # this repo's own convention is that pinned numbers drift.
 
     # --- Serving-regime recalibration (model_truth.md audit, 2026-07-23) -----
     # The calibrators above are fit on sample-days (fresh risk history); the
@@ -3671,16 +3713,6 @@ def _export_forecasts(
         # Same probability-scale map keeps the served interval bounds coherent.
         probability_lower = apply_serving_calibration(probability_lower, serving_calibration)
         probability_upper = apply_serving_calibration(probability_upper, serving_calibration)
-        # The positive-persistence invariant survives recalibration: a beach
-        # whose last official sample exceeded is never displayed Low. The
-        # realized rate on those rows is ~0.36 (well above the Low cut), so
-        # this floor only binds if a future refit degenerates.
-        persistence_floor_mask = persistence_probabilities >= 0.5
-        probabilities = np.where(
-            persistence_floor_mask,
-            np.maximum(probabilities, _LOW_THRESHOLD),
-            probabilities,
-        )
         save_serving_calibration(curated_dir, serving_calibration)
         print(
             "[serving calibration] active: "
@@ -3691,6 +3723,30 @@ def _export_forecasts(
             f"{serving_calibration['brier_after']:.4f}.",
             file=sys.stderr, flush=True,
         )
+
+    # Positive-persistence FLOOR — the safety property the old override was
+    # really there for: a beach whose last official sample exceeded the STV is
+    # never displayed Low. Applied AFTER recalibration (a floor set before the
+    # isotonic would just be squashed by it), and applied UNCONDITIONALLY —
+    # it used to live inside the `serving_calibration is not None` branch, so a
+    # run with too little served history to fit a calibrator got no floor at
+    # all. That was masked while the pre-calibration pin existed; with the pin
+    # gone it would be a live hole, so the floor moves out here.
+    # Unlike the pin, this only RAISES rows that fall below the cut: every
+    # persistence-positive beach keeps its own model-driven probability above
+    # `_LOW_THRESHOLD`, so they stay distinguishable from one another.
+    persistence_floor_mask = persistence_probabilities >= 0.5
+    # Recorded per row below. With the pin gone, `p_exceed_precal` is genuinely
+    # the model's own pre-calibration probability (it used to be captured AFTER
+    # the pin, so on pinned rows it was a constant 1.0 and the model's answer
+    # was unrecoverable from any shipped artifact). This flag plus that column
+    # makes the full chain model -> calibration -> floor -> advisory auditable.
+    persistence_floor_applied_flags = persistence_floor_mask & (probabilities < _LOW_THRESHOLD)
+    probabilities = np.where(
+        persistence_floor_mask,
+        np.maximum(probabilities, _LOW_THRESHOLD),
+        probabilities,
+    )
 
     density_predictions = regressor.predict(baseline_forecast_features)
     _VERY_HIGH_THRESHOLD = _CAL_VERY_HIGH
@@ -3795,6 +3851,10 @@ def _export_forecasts(
                 "sample_recency_band": row_recency_band,
                 "is_beta_forecast": True,
                 "advisory_floor_applied": advisory_floor_applied,
+                "persistence_floor_applied": bool(
+                    persistence_floor_applied_flags[i]
+                    if i < len(persistence_floor_applied_flags) else False
+                ),
                 "p_exceed": served_p_exceed,
                 "p_exceed_raw": p_raw,
                 "p_exceed_precal": float(probabilities_precal[i]),

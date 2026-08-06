@@ -1,0 +1,150 @@
+{
+  "config": {
+    "model": "xgb_undersample_ensemble",
+    "window_days": 1095,
+    "n_test": 11973,
+    "test_base_rate": 0.16512152342771236
+  },
+  "A_override_production": {
+    "overall": {
+      "n": 11973,
+      "base_rate": 0.16512152342771236,
+      "mean_p": 0.16982704737785476,
+      "brier": 0.08460285853216135,
+      "unique_values": 50,
+      "brier_flat_baserate": 0.13785640592862378,
+      "auroc": 0.892348897070209,
+      "aucpr": 0.5734582570315988,
+      "sens_at_spec_0.87": {
+        "sensitivity": 0.7981790591805766,
+        "specificity": 0.8730492196878752,
+        "threshold": 0.2747747747747748
+      },
+      "within_beach_auroc": 0.6161185916312472,
+      "within_beach_n_beaches": 150,
+      "bands": {
+        "Low": 9004,
+        "Moderate": 584,
+        "High": 2385,
+        "Very High": 0
+      }
+    },
+    "persistence_positive": {
+      "n": 2119,
+      "base_rate": 0.6323737612081171,
+      "mean_p": 0.6095551894563426,
+      "brier": 0.23299787456040727,
+      "unique_values": 1,
+      "brier_flat_baserate": 0.23247718734361644,
+      "auroc": 0.5,
+      "aucpr": 0.6323737612081171,
+      "sens_at_spec_0.87": {
+        "sensitivity": 0.0,
+        "specificity": 1.0,
+        "threshold": null
+      },
+      "within_beach_auroc": 0.5,
+      "within_beach_n_beaches": 15,
+      "bands": {
+        "Low": 0,
+        "Moderate": 0,
+        "High": 2119,
+        "Very High": 0
+      }
+    },
+    "persistence_negative": {
+      "n": 9854,
+      "base_rate": 0.06464379947229551,
+      "mean_p": 0.0752680933425071,
+      "brier": 0.052692056932419795,
+      "unique_values": 50,
+      "brier_flat_baserate": 0.06046497866208116,
+      "auroc": 0.8106151199348552,
+      "aucpr": 0.27692327885599954,
+      "sens_at_spec_0.87": {
+        "sensitivity": 0.48822605965463106,
+        "specificity": 0.8988824997287621,
+        "threshold": 0.14285714285714285
+      },
+      "within_beach_auroc": 0.6208530118365257,
+      "within_beach_n_beaches": 92,
+      "bands": {
+        "Low": 9004,
+        "Moderate": 584,
+        "High": 266,
+        "Very High": 0
+      }
+    }
+  },
+  "B_no_override": {
+    "overall": {
+      "n": 11973,
+      "base_rate": 0.16512152342771236,
+      "mean_p": 0.17455853415531725,
+      "brier": 0.06400802885203041,
+      "unique_values": 82,
+      "brier_flat_baserate": 0.13785640592862378,
+      "auroc": 0.9175725424211162,
+      "aucpr": 0.7911166279548605,
+      "sens_at_spec_0.87": {
+        "sensitivity": 0.7855336368234699,
+        "specificity": 0.89265706282513,
+        "threshold": 0.21428571428571427
+      },
+      "within_beach_auroc": 0.6512526761265032,
+      "within_beach_n_beaches": 150,
+      "bands": {
+        "Low": 9004,
+        "Moderate": 1240,
+        "High": 615,
+        "Very High": 1114
+      }
+    },
+    "persistence_positive": {
+      "n": 2119,
+      "base_rate": 0.6323737612081171,
+      "mean_p": 0.6377800557674376,
+      "brier": 0.11705697388488435,
+      "unique_values": 43,
+      "brier_flat_baserate": 0.23247718734361644,
+      "auroc": 0.9095371984748912,
+      "aucpr": 0.944004409839492,
+      "sens_at_spec_0.87": {
+        "sensitivity": 0.7753731343283582,
+        "specificity": 0.920410783055199,
+        "threshold": 0.6752383791724852
+      },
+      "within_beach_auroc": 0.7418187864663327,
+      "within_beach_n_beaches": 15,
+      "bands": {
+        "Low": 0,
+        "Moderate": 638,
+        "High": 382,
+        "Very High": 1099
+      }
+    },
+    "persistence_negative": {
+      "n": 9854,
+      "base_rate": 0.06464379947229551,
+      "mean_p": 0.07494757370310663,
+      "brier": 0.0526004061074985,
+      "unique_values": 50,
+      "brier_flat_baserate": 0.06046497866208116,
+      "auroc": 0.8115019870626745,
+      "aucpr": 0.27848247525585157,
+      "sens_at_spec_0.87": {
+        "sensitivity": 0.48822605965463106,
+        "specificity": 0.8988824997287621,
+        "threshold": 0.13333333333333333
+      },
+      "within_beach_auroc": 0.6217868160349289,
+      "within_beach_n_beaches": 92,
+      "bands": {
+        "Low": 9004,
+        "Moderate": 602,
+        "High": 233,
+        "Very High": 15
+      }
+    }
+  }
+}
