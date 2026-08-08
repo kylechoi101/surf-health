@@ -30,6 +30,7 @@ from app.data.pipeline.beachwatch import (
     write_curated_bundle,
 )
 from app.data.pipeline.ceden import (
+    _normalize_method_or_unit,
     fetch_ceden_datastore_subset,
     load_ceden_csv,
     merge_ceden_into_beachwatch_bundle,
@@ -282,6 +283,106 @@ def refresh_latest_official_sample_at(
     return stations.drop(columns=["latest_official_sample_at_new"])
 
 
+STATE_DATA_SOURCE = "BeachWatch"
+
+# Identity of one physical BeachWatch *state export* measurement. Method and
+# units are normalized (lowercased, non-alphanumerics stripped) so a re-export
+# that respells "CFU/100 mL" as "CFU/100ml" refreshes the row rather than
+# duplicating it. `value` is deliberately NOT in the key -- see
+# dedupe_incremental_beachwatch_observations.
+_STATE_OBSERVATION_KEY = ("beach_id", "sample_time", "analyte", "_method_norm", "_units_norm")
+
+
+def dedupe_incremental_beachwatch_observations(merged: pd.DataFrame) -> pd.DataFrame:
+    """Collapse a re-normalized state row onto its stale self, and nothing else.
+
+    **This replaces a dedupe key that destroyed 1,949 observations on every
+    ordinary daily run, 218 of them exceedances.** The incremental branch used
+    to run::
+
+        merged.drop_duplicates(subset=["beach_id", "sample_time"], keep="last")
+
+    over the *whole* frame. That key is strictly coarser than the one the
+    additive merges use to build the same frame
+    (``beach_id, sample_time, analyte, data_source, method, units, value`` --
+    see :func:`merge_live_into_observations`), which keeps method/units/value in
+    the key on purpose because two genuinely different assays on one sample are
+    two observations. So every daily run deleted rows the additive sources had
+    just been careful to preserve. Measured on the shipped
+    ``observations.parquet`` (503,766 rows): **1,949 rows destroyed, 218 of them
+    exceedances** -- and every single destroyed row belonged to an additive
+    source (1,908 ``BeachWatch.SafeToSwim``, 39 ``CEDEN.SafeToSwim``, 2
+    ``BeachWatch.Live``), never to the state export the branch exists to refresh.
+    Losing an exceedance is a false negative, which is the direction the
+    worst-sample label rule exists to prevent (the same bug class as the
+    ``.tail(1)`` day-collapse already fixed in :func:`build_beach_day_frame`).
+
+    Two decisions make up the fix, and they pull in opposite directions:
+
+    **1. Only state rows are deduped here.** The branch exists for exactly one
+    job: ``_new_obs`` is a freshly normalized slice of the state CSV
+    concatenated onto ``_existing_obs``, and each fresh row must replace its own
+    stale copy instead of doubling it. Rows from the additive sources
+    (``*.SafeToSwim``, ``*.Live``, ``CountyDirect``) are not in that slice and
+    have nothing to refresh; their deduplication -- including the cross-source
+    mirror collapse, which needs the source-priority order -- belongs to the
+    merge functions that own them and that run later in the same daily job.
+    Keeping mirror handling in one place is the point.
+
+    **2. ``value`` is not in the state key.** State rows are already unique
+    without it: **0 duplicates on the normalized key across all 476,223** of
+    them. So including it would buy no separation, and would cost correctness --
+    a revised result would fail to match its predecessor and land as a *second*
+    row, where the day-collapse's worst-sample rule would then pick the higher
+    of the two and a downward revision could never take effect. Same reasoning
+    the county-direct merge uses when it keys on the date and deliberately
+    leaves ``value`` out.
+
+    So: a same-timestamp same-assay duplicate still collapses; a same-timestamp
+    different-assay pair, and every additive-source row, survives.
+    """
+    if merged.empty or "beach_id" not in merged.columns:
+        return merged
+    sort_key = [c for c in ("beach_id", "sample_time") if c in merged.columns]
+
+    source = (
+        merged["data_source"]
+        if "data_source" in merged.columns
+        else pd.Series(STATE_DATA_SOURCE, index=merged.index)
+    )
+    # A missing data_source means the pre-additive vintage, i.e. state rows --
+    # the same convention merge_live_into_observations uses when it backfills
+    # the column.
+    is_state = source.isna() | (source == STATE_DATA_SOURCE)
+
+    state = merged.loc[is_state]
+    additive = merged.loc[~is_state]
+
+    if not state.empty:
+        state = state.copy()
+        state["_method_norm"] = (
+            state["method"].map(_normalize_method_or_unit) if "method" in state.columns else ""
+        )
+        state["_units_norm"] = (
+            state["units"].map(_normalize_method_or_unit) if "units" in state.columns else ""
+        )
+        key = [c for c in _STATE_OBSERVATION_KEY if c in state.columns]
+        before = len(state)
+        # keep="last": _new_obs is concatenated after _existing_obs, so the
+        # freshly normalized row is the one that survives.
+        state = state.drop_duplicates(subset=key, keep="last").drop(
+            columns=["_method_norm", "_units_norm"]
+        )
+        collapsed = before - len(state)
+        if collapsed:
+            print(f"[beachwatch] refreshed {collapsed} re-normalized state observation rows")
+
+    combined = pd.concat([state, additive], ignore_index=True, sort=False)
+    if sort_key:
+        combined = combined.sort_values(sort_key, kind="stable")
+    return combined.reset_index(drop=True)
+
+
 def normalize_beachwatch_bundle(
     stations_path: Path,
     results_path: Path | None,
@@ -508,8 +609,7 @@ def main() -> None:
             print(f"[beachwatch] {len(_new_results_raw)} new result rows to normalize")
             _new_obs = normalize_bacteria_results(_new_results_raw, settings.epa_marine_enterococcus_stv) if not _new_results_raw.empty else pd.DataFrame()
             _merged = pd.concat([_existing_obs, _new_obs], ignore_index=True) if not _new_obs.empty else _existing_obs
-            _key = [c for c in ("beach_id", "sample_time") if c in _merged.columns]
-            _all_obs = _merged.drop_duplicates(subset=_key, keep="last").sort_values(_key).reset_index(drop=True)
+            _all_obs = dedupe_incremental_beachwatch_observations(_merged)
             print(f"[beachwatch] merged observations: {len(_all_obs)} rows")
             _advisories_raw = load_beachwatch_csv(args.advisories_csv)
             _all_adv = normalize_advisories(_advisories_raw)
