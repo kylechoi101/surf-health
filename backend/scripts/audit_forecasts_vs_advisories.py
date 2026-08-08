@@ -45,13 +45,18 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from app.ml.calibration import _LOW_THRESHOLD
 
-# Use the LOW→Moderate band cut (0.20) as the "model is elevating its
-# prediction above baseline" threshold for the agreement metric. The
-# original 0.30 (Moderate→High) was too strict: a Posting is triggered
-# at single-sample exceedance ~104 CFU/100mL which calibrates to ~0.20+
-# p_exceed for the model. Insisting model say HIGH (0.30+) means we'd
-# only count true bacteria-emergency forecasts as "agreement" with what
-# is, in practice, a much more sensitive trigger on the county side.
+# Use the Low→Moderate band cut as the "model is elevating its prediction above
+# baseline" threshold for the agreement metric. Deliberately the *band cut* and
+# not a literal, because the semantic is "the product showed the user something
+# other than Low" — so it must track whatever `risk_band` currently does.
+#
+# ⚠️ 2026-08-07 (Step 10): that cut moved 0.20 → 0.10, so this gate got MORE
+# sensitive by construction — more forecasts now count as "alerting", which
+# raises measured agreement AND raises the false-alarm count. Agreement rates
+# from before that date are not comparable with rates after it. The threshold
+# below (_MIN_ADVISORY_AGREEMENT_FOR_PUBLIC_RELEASE) was calibrated under the
+# old cut and is left unchanged on purpose: it is a floor, and the change can
+# only move measured agreement upward, so it cannot start failing spuriously.
 _RISK_ALERT_THRESHOLD = _LOW_THRESHOLD  # synced with calibration.py risk_band()
 # Model's production AUCPR is ~0.37 with a 21% base rate; 50% acute
 # agreement was aspirational and broke when the acute pool composition

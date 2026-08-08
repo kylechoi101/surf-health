@@ -6,6 +6,8 @@ from pathlib import Path
 import duckdb
 import pandas as pd
 
+from app.data.pipeline.exceedance import compute_exceeds_stv
+
 
 def write_duckdb_snapshot(frame: pd.DataFrame, snapshot_path: Path, table_name: str) -> None:
     snapshot_path.parent.mkdir(parents=True, exist_ok=True)
@@ -28,7 +30,19 @@ def curate_beach_days(
     frame = bacteria_frame.copy()
     frame["sample_date"] = pd.to_datetime(frame["sample_time"]).dt.date
     frame["enterococcus_value"] = pd.to_numeric(frame["enterococcus_value"], errors="coerce")
-    frame["exceeds_stv"] = (frame["enterococcus_value"] > stv_threshold).astype("Int64")
+    # Method-aware, like every other exceedance in the pipeline. This is the
+    # fixture/dev path, but it WRITES beach_day.parquet -- a flat
+    # `value > stv_threshold` here would judge San Diego ddPCR copies against
+    # the 104 culture STV and overwrite the real label frame with one built on
+    # a definition nothing else in the repo uses. Frames without method/units
+    # (the sample fixture) fall through as culture, which is the right default.
+    blank = pd.Series("", index=frame.index, dtype="object")
+    frame["exceeds_stv"] = compute_exceeds_stv(
+        frame["enterococcus_value"],
+        frame["method"] if "method" in frame.columns else blank,
+        frame["units"] if "units" in frame.columns else blank,
+        stv_threshold,
+    ).astype("Int64")
 
     covariates = [item for item in covariate_frames if not item.empty]
     if covariates:

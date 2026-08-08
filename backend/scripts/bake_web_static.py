@@ -26,10 +26,30 @@ from pathlib import Path
 import pandas as pd
 
 # Vendored inline so this script can run in the web's CI without surf_health
-# backend deps. Keep in sync with backend/app/ml/calibration.py.
-_LOW_THRESHOLD = 0.20
-_HIGH_THRESHOLD = 0.30
+# backend deps. Keep in sync with backend/app/ml/calibration.py — enforced by
+# tests/test_risk_bands.py::test_web_bake_cutpoints_match_calibration, because
+# a silent divergence here renders one set of cutpoints to users while the API
+# applies another, and nothing else in the system would notice.
+_LOW_THRESHOLD = 0.10
+_HIGH_THRESHOLD = 0.20
 _VERY_HIGH_THRESHOLD = 0.70
+
+
+def _band_definitions() -> dict | None:
+    """The band contract to publish alongside the beach data, if importable.
+
+    Preferred path is the real module (single source of truth). When this script
+    runs standalone in the web's CI the import fails and we emit nothing rather
+    than a second, drift-prone copy of the evidence table — the web app then
+    falls back to whatever it shipped with, which is a visible staleness rather
+    than a silent contradiction.
+    """
+    try:
+        from app.ml.calibration import band_definitions
+
+        return band_definitions()
+    except Exception:  # noqa: BLE001 — the bake must never fail on a nicety
+        return None
 
 
 def risk_band(probability: float | None) -> str | None:
@@ -432,6 +452,20 @@ def bake(curated: Path, out: Path) -> None:
     with (out / "regional_summary.json").open("w") as f:
         json.dump(list(region_summary.values()), f, separators=(",", ":"), default=str)
     print(f"  regional_summary.json: {len(region_summary)} regions", file=sys.stderr)
+
+    # risk_bands.json — the band contract (cutpoints, LEFT-CLOSED convention,
+    # measured realized rate + CI per band, and the explicit "these are relative
+    # tiers, not absolute probabilities" statement). Emitted so the web app can
+    # render the framing from data instead of hardcoding adjectives that the
+    # backend has since re-derived.
+    bands = _band_definitions()
+    if bands is not None:
+        with (out / "risk_bands.json").open("w") as f:
+            json.dump(bands, f, separators=(",", ":"), default=str)
+        print(f"  risk_bands.json: cutpoints {bands['cutpoints']}", file=sys.stderr)
+    else:
+        print("  risk_bands.json: SKIPPED (app.ml.calibration not importable)",
+              file=sys.stderr)
 
 
 def main() -> int:

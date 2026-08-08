@@ -15,13 +15,20 @@ Three derived signals not present in upstream weather/hydrology data:
    directory). Captures decades of microbiology: pier-roosting gulls and
    estuary discharge are persistent enterococci sources independent of weather.
 
+2b. dist_to_chronic_source_km — distance to the nearest *chronic* (continuous,
+   non-weather-driven) discharge in ca_chronic_sources.csv. Distinct from the
+   estuary list: an estuary mouth discharges what its watershed drains, which is
+   episodic; a chronic source runs whether or not it has rained. Today the file
+   holds one row, the Tijuana River mouth, because that is the only source with
+   a measured gradient in this dataset — see the CSV's `evidence` column.
+
 3. solar_inactivation_index — combines shortwave radiation with cloud cover.
    Higher = stronger UV inactivation of enterococci (T90 = 1–2 h under full
    sun vs. 24–48 h under heavy cloud).
 
 Build flow:
    compute_beach_shore_azimuth(stations) → DataFrame[beach_id, shore_azimuth_deg]
-   compute_beach_coastal_features(stations) → DataFrame[beach_id, is_near_pier, is_near_estuary_mouth, dist_to_pier_km, dist_to_estuary_km]
+   compute_beach_coastal_features(stations) → DataFrame[beach_id, is_near_pier, is_near_estuary_mouth, dist_to_pier_km, dist_to_estuary_km, dist_to_chronic_source_km]
    build_marine_microbiology_daily(beach_solar_wind_daily, shore_az, coastal) → daily features keyed by (beach_id, sample_date)
 """
 from __future__ import annotations
@@ -36,6 +43,7 @@ from app.data.pipeline.external_covariates import haversine_km
 _DATA_DIR = Path(__file__).parent / "_static_data"
 _DEFAULT_PIERS_CSV = _DATA_DIR / "ca_piers.csv"
 _DEFAULT_ESTUARIES_CSV = _DATA_DIR / "ca_estuary_mouths.csv"
+_DEFAULT_CHRONIC_SOURCES_CSV = _DATA_DIR / "ca_chronic_sources.csv"
 
 _PIER_PROX_KM = 0.20  # 200 m — within gull-roost foraging plume
 _ESTUARY_PROX_KM = 1.50  # 1.5 km — within typical estuary mouth discharge fan
@@ -135,26 +143,58 @@ def _load_static_csv(path: Path) -> pd.DataFrame:
     return pd.read_csv(path)
 
 
+def _min_distance_km(lat: float, lon: float, sites: pd.DataFrame) -> float:
+    """Great-circle distance to the nearest site, or inf when the list is empty.
+
+    ``inf`` rather than ``nan`` so the caller can tell "no sites to measure
+    against" (feature genuinely unknown -> NaN) apart from "measured, and it is
+    far" — a distinction a NaN in the middle of the reduction would erase.
+    """
+    if sites.empty:
+        return np.inf
+    distances = [
+        haversine_km(lat, lon, float(s["latitude"]), float(s["longitude"]))
+        for _, s in sites.iterrows()
+        if pd.notna(s.get("latitude")) and pd.notna(s.get("longitude"))
+    ]
+    return float(min(distances)) if distances else np.inf
+
+
 def compute_beach_coastal_features(
     stations: pd.DataFrame,
     piers_csv: Path | None = None,
     estuaries_csv: Path | None = None,
+    chronic_sources_csv: Path | None = None,
 ) -> pd.DataFrame:
     """
     For each beach, compute:
       dist_to_pier_km, is_near_pier (bool: dist ≤ _PIER_PROX_KM)
       dist_to_estuary_km, is_near_estuary_mouth (bool: dist ≤ _ESTUARY_PROX_KM)
+      dist_to_chronic_source_km
 
     Static features — depend only on lat/lon, not on date.
+
+    ``dist_to_chronic_source_km`` is deliberately shipped RAW, in kilometres,
+    exactly like the two distances above: this frame is the analyst-facing
+    geometry, and a clipped or transformed distance in a column named ``_km``
+    would be a lie. Statewide it correlates with ``latitude`` at Spearman
+    0.9968 (850 beaches) and its per-county ranges are near-disjoint (San Diego
+    0.5–102.9 km, Orange 104.2–161.6 km), so **a raw distance to a single
+    southern point is latitude re-encoded**, which is the exact leak
+    ``features.py::_model_feature_columns`` excludes lat/lon for. Any decision
+    to feed this to a model is therefore a separate decision from computing it,
+    and belongs in the training feature list, not here.
     """
     if stations.empty:
         return pd.DataFrame(columns=[
             "beach_id", "dist_to_pier_km", "is_near_pier",
             "dist_to_estuary_km", "is_near_estuary_mouth",
+            "dist_to_chronic_source_km",
         ])
 
     piers = _load_static_csv(piers_csv or _DEFAULT_PIERS_CSV)
     estuaries = _load_static_csv(estuaries_csv or _DEFAULT_ESTUARIES_CSV)
+    chronic = _load_static_csv(chronic_sources_csv or _DEFAULT_CHRONIC_SOURCES_CSV)
 
     coords = stations[["beach_id", "latitude", "longitude"]].dropna().copy()
     coords["latitude"] = pd.to_numeric(coords["latitude"], errors="coerce")
@@ -163,28 +203,17 @@ def compute_beach_coastal_features(
 
     rows: list[dict] = []
     for _, b in coords.iterrows():
-        d_pier = np.inf
-        if not piers.empty:
-            d_pier = float(min(
-                haversine_km(float(b["latitude"]), float(b["longitude"]),
-                             float(p["latitude"]), float(p["longitude"]))
-                for _, p in piers.iterrows()
-                if pd.notna(p.get("latitude")) and pd.notna(p.get("longitude"))
-            ))
-        d_est = np.inf
-        if not estuaries.empty:
-            d_est = float(min(
-                haversine_km(float(b["latitude"]), float(b["longitude"]),
-                             float(e["latitude"]), float(e["longitude"]))
-                for _, e in estuaries.iterrows()
-                if pd.notna(e.get("latitude")) and pd.notna(e.get("longitude"))
-            ))
+        lat, lon = float(b["latitude"]), float(b["longitude"])
+        d_pier = _min_distance_km(lat, lon, piers)
+        d_est = _min_distance_km(lat, lon, estuaries)
+        d_chronic = _min_distance_km(lat, lon, chronic)
         rows.append({
             "beach_id": b["beach_id"],
             "dist_to_pier_km": d_pier if np.isfinite(d_pier) else np.nan,
             "is_near_pier": int(d_pier <= _PIER_PROX_KM) if np.isfinite(d_pier) else 0,
             "dist_to_estuary_km": d_est if np.isfinite(d_est) else np.nan,
             "is_near_estuary_mouth": int(d_est <= _ESTUARY_PROX_KM) if np.isfinite(d_est) else 0,
+            "dist_to_chronic_source_km": d_chronic if np.isfinite(d_chronic) else np.nan,
         })
     return pd.DataFrame(rows)
 

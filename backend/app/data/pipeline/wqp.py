@@ -19,6 +19,7 @@ import httpx
 import pandas as pd
 
 from app.data.pipeline.exceedance import compute_exceeds_stv
+from app.data.pipeline.units_corrections import correct_units_series
 from app.data.pipeline.station_quality import support_status_for
 
 WQP_RESULT_URL = "https://www.waterqualitydata.us/data/Result/search"
@@ -147,6 +148,10 @@ def normalize_wqp_results(frame: pd.DataFrame, stv_threshold: float) -> pd.DataF
 
     df["latitude"] = pd.to_numeric(_col(df, _LAT_COL), errors="coerce")
     df["longitude"] = pd.to_numeric(_col(df, _LON_COL), errors="coerce")
+    # Source correction before the predicate reads them: a culture method
+    # cannot report copies (see units_corrections), and is_pcr_measurement
+    # would otherwise judge such a row against 1413 instead of 104.
+    df["units"] = correct_units_series(df["method"], df["units"])
     df["exceeds_stv"] = compute_exceeds_stv(df["value"], df["method"], df["units"], stv_threshold)
     df["data_source"] = "WQP"
 

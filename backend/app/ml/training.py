@@ -6,6 +6,7 @@ import os
 import sys
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime
+from functools import partial
 from pathlib import Path
 
 # macOS only: torch and xgboost each bundle their own libomp. Loading both in one
@@ -37,6 +38,7 @@ from app.data.pipeline.beachwatch import (
     ADVISORY_OPEN_ENDED_MAX_DAYS,
     fill_open_ended_advisory_end,
 )
+from app.data.pipeline.exceedance import compute_exceeds_stv
 from app.data.pipeline.features import (
     MARINE_MICROBIOLOGY_NUMERIC_COLUMNS,
     STORMWATER_EXPERT_NUMERIC_COLUMNS,
@@ -50,9 +52,15 @@ from app.ml.calibration import (
     _LOW_THRESHOLD,
     _HIGH_THRESHOLD,
     _VERY_HIGH_THRESHOLD as _CAL_VERY_HIGH,
+    band_definitions,
     confidence_capped_risk_band,
 )
 from app.ml.datasets import SequenceDataset
+from app.ml.assay_strata import (
+    attach_stratified_metrics,
+    stratified_metrics,
+    stratified_scalar,
+)
 from app.ml.evaluation import (
     classification_metrics,
     cluster_bootstrap_aucpr_ci,
@@ -73,11 +81,21 @@ from app.ml.models import (
     make_baselines
 )
 from app.ml.served_metrics import (
+    AUCPR_CAVEAT,
+    HEADLINE_METRIC,
+    annotate_live_regime,
     append_forecast_history,
     apply_serving_calibration,
     fit_serving_calibration,
     save_serving_calibration,
     served_performance,
+    serving_calibration_policy,
+)
+from app.ml.serving_config import (
+    ROUTER_TWO_TIER,
+    build_serving_config,
+    config_fingerprint,
+    record_serving_config,
 )
 from app.ml.stale_evaluation import (
     RECENCY_COLUMN as _STALE_RECENCY_COL,
@@ -129,6 +147,45 @@ _WINNER_SWAP_LARGE_GAP_MARGIN = 0.07
 # Deterministic seed for every spatial cluster bootstrap so the daily gate is
 # reproducible run-to-run (the winner must not flip on RNG state alone).
 _SPATIAL_BOOTSTRAP_SEED = 20260611
+# --- Winner tenure: the serving regime must outlive its own calibrator --------
+# The statistical tests above are per-run: they ask "is the challenger better
+# TODAY". They cannot bound how OFTEN the answer changes, and measured over the
+# 105 forecast dates to 2026-08-07 the served winner changed 11 times (~every 10
+# days) while a clean single-regime serving calibrator needs ~7 days to
+# accumulate (500 pairs / 25 positives / +3d outcome lag). A regime that lasts
+# ~10 days can therefore never be calibrated on its own history, which is why
+# the live fit window measured 0.0% live-regime rows (Step 8).
+#
+# The floor is the only mechanism that *bounds* tenure. A bigger margin and a
+# longer confirmation streak both make a swap less likely, but neither caps the
+# rate: two candidates separated by a systematic fold-selection artifact clear
+# any fixed margin every run. 60d is not a tuning parameter — it is the E1
+# requirement (">= 60 days of history on ONE serving configuration") expressed
+# as a constraint on the selector.
+_WINNER_MIN_TENURE_DAYS = 60
+# ... and the floor alone would convert daily churn into a 60-day lottery: on
+# the first eligible day the winner would become whatever leads that single
+# noisy 6-county backtest. The challenger must instead lead the statistical
+# tests on this many CONSECUTIVE qualifying runs. The streak accrues DURING the
+# tenure lockout, so a genuinely better model swaps the day the floor expires
+# and pays no extra latency for it.
+_WINNER_SWAP_CONFIRMATION_RUNS = 7
+# The emergency bypass (incumbent no longer clears its own spatial gates) needs a
+# confirmation of its OWN, because the pass/fail verdict is itself noisy: measured
+# over the recovered run stream, `hist_gbm`'s `public_release_eligible` verdict
+# flipped 22 times in 186 backtested runs, and 2 of the 4 emergency trips in the
+# replay fired after a SINGLE failing run with the model passing again either side
+# of it. Without this the bypass just becomes a second churn channel.
+#
+# Waiting is safe because the product is already protected by a different
+# mechanism: `_publish_forecasts_unless_blocked` refuses to overwrite
+# forecasts.parquet while the winner is not `public_release_eligible`, so a
+# failing incumbent freezes publication rather than serving bad numbers. The
+# bypass exists to restore a PUBLISHABLE winner, not to prevent an unsafe
+# publication. 3 runs ~ 3 days, which is inside the 48h-stale UI treatment's
+# tolerance and well under `hist_gbm`'s measured 6-run genuine failure streak.
+_WINNER_EMERGENCY_CONFIRMATION_RUNS = 3
+_WINNER_TENURE_KEY = "winner_tenure"
 PERSISTENCE_BLEND_ALPHAS = tuple(float(alpha) for alpha in np.linspace(0.0, 1.0, 11))
 PERSISTENCE_BLEND_MAX_MODEL_ALPHA = 0.6
 COASTAL_CELL_FEATURE_COLUMNS = [
@@ -364,9 +421,37 @@ def _load_curated_training_frame(curated_dir: Path) -> pd.DataFrame:
     frame["sample_date"] = pd.to_datetime(frame["sample_date"], errors="coerce")
     frame["enterococcus_value"] = pd.to_numeric(frame["enterococcus_value"], errors="coerce")
     frame["exceeds_stv"] = frame["exceeds_stv"].astype(int)
+    # Assay identity (step 3 schema, step 7 modelling). `exceeds_stv` pools two
+    # action values -- 104 for culture, 1413 copies for San Diego ddPCR -- and
+    # until this column was carried the model could not tell which universe a row
+    # came from, while every value-derived feature (`enterococcus_value_lag_*`,
+    # `log_enterococcus`, the 35/104 geomeans) silently mixed MPN with copies.
+    #
+    # Cast to float, not bool: `select_dtypes(include=["number"])` -- how every
+    # model here takes its feature matrix -- EXCLUDES bool, so a bool column is
+    # carried all the way to the fit and then silently dropped.
+    #
+    # Forecast-safety: this is a monitoring-PROGRAM property, not a measurement.
+    # A candidate row clones it from the beach's most recent sample
+    # (`_forecast_candidate_frame`), which is what the next sample will be run
+    # by. It is not the outcome of the sample being predicted.
+    if "is_pcr" in frame.columns:
+        frame["is_pcr"] = (
+            frame["is_pcr"].fillna(False).astype(bool).astype(float)
+        )
+    else:
+        frame["is_pcr"] = 0.0
     for column in (
         "county",
         "region",
+        # Carried for metric stratification and the method-aware persistence
+        # fallback, NOT as model features -- `_model_feature_columns` excludes
+        # them (they are free-text) and `assay_disagreement` is target leakage:
+        # it is derived from the same-day exceedance of BOTH assays, one of
+        # which is the label.
+        "label_method",
+        "label_units",
+        "assay_disagreement",
         "latitude",
         "longitude",
         "historical_advisory_count",
@@ -409,6 +494,10 @@ def _load_curated_training_frame(curated_dir: Path) -> pd.DataFrame:
             "beach_id",
             "county",
             "region",
+            "label_method",
+            "label_units",
+            "assay_disagreement",
+            "is_pcr",
             "sample_date",
             "sample_time",
             "enterococcus_value",
@@ -528,10 +617,19 @@ def _persistence_probabilities(features: pd.DataFrame, stv_threshold: float) -> 
     last_obs = features.get("enterococcus_value_last_obs")
     if last_obs is None:
         return np.zeros(len(features), dtype=float)
+    # Even the legacy fallback goes through the shared predicate. A bare
+    # `.gt(stv_threshold)` here would judge San Diego ddPCR copies against 104
+    # -- the exact bug this function's docstring records -- on any frame old
+    # enough to lack `exceeds_stv_last_obs`. `label_method` / `label_units` are
+    # on beach_day since step 3; a frame without them falls through as culture.
+    blank = pd.Series("", index=features.index, dtype="object")
     return (
-        pd.to_numeric(last_obs, errors="coerce")
-        .fillna(0.0)
-        .gt(stv_threshold)
+        compute_exceeds_stv(
+            pd.to_numeric(last_obs, errors="coerce").fillna(0.0),
+            features.get("label_method", blank),
+            features.get("label_units", blank),
+            stv_threshold,
+        )
         .astype(float)
         .to_numpy()
     )
@@ -596,6 +694,42 @@ def _select_persistence_blend_alpha(
     return min(candidate_alphas, key=score)
 
 
+def _assay_indicator(metadata: pd.DataFrame | None) -> np.ndarray | None:
+    """Per-row ``is_pcr`` from a metadata frame, or ``None`` if absent.
+
+    The single accessor every metric-stratification site goes through, so a
+    renamed column fails everywhere at once instead of silently reverting one
+    published figure to a pooled number that still *looks* stratified.
+    """
+    if metadata is None or "is_pcr" not in metadata.columns:
+        return None
+    return metadata["is_pcr"].to_numpy()
+
+
+def _assay_slice(metadata: pd.DataFrame | None, idx: np.ndarray) -> np.ndarray | None:
+    """``is_pcr`` for one index slice, aligned to ``labels[idx]``."""
+    indicator = _assay_indicator(metadata)
+    return None if indicator is None else indicator[idx]
+
+
+def _scored(
+    labels: np.ndarray,
+    probabilities: np.ndarray,
+    is_pcr: np.ndarray | None = None,
+) -> dict[str, float]:
+    """``classification_metrics`` plus its mandatory ``by_assay`` pair (E3).
+
+    Every metric published out of this module goes through here rather than
+    calling ``classification_metrics`` directly, because a pooled AUCPR over the
+    culture+ddPCR mixture is a metric of no population -- the two strata sit at
+    base rates ~0.10 and ~0.59, and AUCPR moves with the base rate at constant
+    skill. See :mod:`app.ml.assay_strata`.
+    """
+    metrics = classification_metrics(labels, probabilities)
+    attach_stratified_metrics(metrics, labels, probabilities, is_pcr)
+    return metrics
+
+
 def _metadata_with_groups(
     metadata: pd.DataFrame,
     frame: pd.DataFrame,
@@ -631,6 +765,15 @@ def _metadata_with_groups(
             .drop_duplicates(subset=["beach_id"])
         )
         enriched = enriched.merge(station_lookup, on="beach_id", how="left")
+    # Assay regime, per ROW not per beach: 84 beaches report both ways, so a
+    # per-beach lookup would mislabel every row on the minority assay. Every
+    # metric this module publishes is stratified on this column (step 7 / E3),
+    # so getting the join key wrong silently mixes the universes back together.
+    if "is_pcr" in frame.columns and "sample_date" in frame.columns and "sample_date" in enriched.columns:
+        assay_lookup = frame[["beach_id", "sample_date", "is_pcr"]].copy()
+        assay_lookup["sample_date"] = pd.to_datetime(assay_lookup["sample_date"], errors="coerce")
+        assay_lookup = assay_lookup.drop_duplicates(subset=["beach_id", "sample_date"], keep="last")
+        enriched = enriched.merge(assay_lookup, on=["beach_id", "sample_date"], how="left")
     if "wave_direction_deg" in frame.columns and "sample_date" in frame.columns and "sample_date" in enriched.columns:
         wave_lookup = frame[["beach_id", "sample_date", "wave_direction_deg"]].copy()
         wave_lookup["sample_date"] = pd.to_datetime(wave_lookup["sample_date"], errors="coerce")
@@ -1350,7 +1493,15 @@ def _spatial_holdout_metrics(
     used_groups = 0
     heldout_groups: list[np.ndarray] = []
     heldout_probabilities_stale: list[np.ndarray] = []
+    heldout_is_pcr: list[np.ndarray] = []
     all_folds_have_stale = True
+    # Per-row assay regime, re-derived from the SAME deterministic fold mask the
+    # fold result was computed from (`metadata[group_column].eq(group_value)`), so
+    # it lines up row-for-row with the returned labels without threading an extra
+    # return value through every model branch. Any drift in that selection rule
+    # would misattribute rows to the wrong regime, so it is asserted by length
+    # below rather than assumed.
+    assay_column = metadata["is_pcr"] if "is_pcr" in metadata.columns else None
     for group_value, result in zip(group_values, fold_results):
         if result is None:
             continue
@@ -1358,6 +1509,15 @@ def _spatial_holdout_metrics(
         heldout_labels.append(fold_labels)
         heldout_probabilities.append(fold_probabilities)
         heldout_groups.append(np.full(len(fold_labels), group_value))
+        if assay_column is not None:
+            fold_assay = assay_column.to_numpy()[
+                np.flatnonzero(metadata[group_column].eq(group_value).to_numpy())
+            ]
+            heldout_is_pcr.append(
+                fold_assay
+                if len(fold_assay) == len(fold_labels)
+                else np.full(len(fold_labels), np.nan)
+            )
         # 3rd element (present on the generic-classifier path) is the same rows
         # re-scored with the anchor censored to serving age — the served regime.
         fold_stale = result[2] if len(result) > 2 else None
@@ -1380,18 +1540,29 @@ def _spatial_holdout_metrics(
     # Stash the pooled per-row holdout predictions so the caller can persist them
     # (a single retrain re-derives them, but nothing on disk does today). Keyed by
     # model+group_column so the production winner's pairs can be selected later.
+    all_is_pcr = (
+        np.concatenate(heldout_is_pcr)
+        if heldout_is_pcr and sum(len(a) for a in heldout_is_pcr) == len(all_labels)
+        else None
+    )
     if predictions_sink is not None:
         sink_entry = {
             "labels": all_labels,
             "probabilities": all_probabilities,
             "groups": all_groups,
         }
+        if all_is_pcr is not None:
+            sink_entry["is_pcr"] = all_is_pcr
         if heldout_probabilities_stale and all_folds_have_stale:
             stale_pooled = np.concatenate(heldout_probabilities_stale)
             if len(stale_pooled) == len(all_labels):
                 sink_entry["probabilities_stale"] = stale_pooled
         predictions_sink[(model_name, group_column)] = sink_entry
     metrics = classification_metrics(all_labels, all_probabilities)
+    # E3: the pooled AUCPR/Brier above averages two labelling universes whose base
+    # rates differ ~6x. It is kept (consumers and the promotion gate read it) but
+    # never travels alone.
+    attach_stratified_metrics(metrics, all_labels, all_probabilities, all_is_pcr)
     metrics["folds"] = float(used_groups)
     metrics["eligible_groups"] = float(len(eligible_groups))
     metrics["heldout_rows"] = float(len(all_labels))
@@ -1727,13 +1898,24 @@ def _classification_metrics_on_subset(
     metadata_full: pd.DataFrame,
     keep_beach_ids: set[str],
 ) -> dict[str, float] | None:
-    """Compute classification metrics on the rows whose beach_id is in keep_beach_ids."""
+    """Compute classification metrics on the rows whose beach_id is in keep_beach_ids.
+
+    Published as ``*_test_active_only`` — the "how good is it for the beaches
+    users actually see" figure — so it carries its assay pair like every other
+    published metric (E3). The active-station filter does not neutralise the
+    mixture: San Diego's ddPCR programme is very much active.
+    """
     if not keep_beach_ids or len(metadata_full) == 0:
         return None
     mask = metadata_full["beach_id"].astype(str).isin(keep_beach_ids).to_numpy()
     if not mask.any() or labels_full[mask].size == 0:
         return None
-    return classification_metrics(labels_full[mask], probs_full[mask])
+    indicator = _assay_indicator(metadata_full)
+    return _scored(
+        labels_full[mask],
+        probs_full[mask],
+        None if indicator is None else indicator[mask],
+    )
 
 
 def _calibration_split(
@@ -2039,6 +2221,189 @@ def _spatially_qualified_production_winner(
     return best
 
 
+@dataclass(frozen=True)
+class WinnerTenure:
+    """How long the production winner has held, and who is queued behind it.
+
+    Persisted in ``production_model.json`` under ``winner_tenure`` so the state
+    survives between daily runs — the selector is otherwise memoryless and
+    re-litigates the same comparison from the same starting point every day.
+    """
+
+    winner: str | None = None
+    promoted_at: datetime | None = None
+    challenger: str | None = None
+    challenger_streak: int = 0
+    challenger_first_seen_at: datetime | None = None
+    incumbent_fail_streak: int = 0
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "winner": self.winner,
+            "promoted_at": _iso_or_none(self.promoted_at),
+            "challenger": self.challenger,
+            "challenger_streak": int(self.challenger_streak),
+            "challenger_first_seen_at": _iso_or_none(self.challenger_first_seen_at),
+            "incumbent_fail_streak": int(self.incumbent_fail_streak),
+        }
+
+    @classmethod
+    def from_json(cls, payload: object) -> "WinnerTenure":
+        if not isinstance(payload, dict):
+            return cls()
+        return cls(
+            winner=payload.get("winner") or None,
+            promoted_at=_parse_iso_or_none(payload.get("promoted_at")),
+            challenger=payload.get("challenger") or None,
+            challenger_streak=int(payload.get("challenger_streak") or 0),
+            challenger_first_seen_at=_parse_iso_or_none(payload.get("challenger_first_seen_at")),
+            incumbent_fail_streak=int(payload.get("incumbent_fail_streak") or 0),
+        )
+
+
+def _iso_or_none(value: datetime | None) -> str | None:
+    return value.isoformat() if isinstance(value, datetime) else None
+
+
+def _parse_iso_or_none(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _tenure_days_held(promoted_at: datetime | None, now: datetime) -> float:
+    """Whole days between promotion and ``now``, tolerating mixed tz-awareness."""
+    if promoted_at is None:
+        return 0.0
+    left, right = promoted_at, now
+    if (left.tzinfo is None) != (right.tzinfo is None):
+        left = left.replace(tzinfo=UTC) if left.tzinfo is None else left.astimezone(UTC)
+        right = right.replace(tzinfo=UTC) if right.tzinfo is None else right.astimezone(UTC)
+    return max(0.0, (right - left).total_seconds() / 86400.0)
+
+
+def _apply_winner_tenure(
+    *,
+    incumbent: str,
+    statistical_choice: str,
+    tenure: WinnerTenure | None,
+    now: datetime,
+    incumbent_passing: bool,
+    min_tenure_days: int = _WINNER_MIN_TENURE_DAYS,
+    confirmation_runs: int = _WINNER_SWAP_CONFIRMATION_RUNS,
+    emergency_confirmation_runs: int = _WINNER_EMERGENCY_CONFIRMATION_RUNS,
+) -> tuple[str, WinnerTenure, dict[str, object]]:
+    """Gate a statistically-justified swap on winner tenure + a confirmation streak.
+
+    ``statistical_choice`` is whatever :func:`_spatially_qualified_production_winner`
+    decided on this run's metrics alone. This function decides whether that
+    decision is allowed to take effect *yet*, and returns the winner to serve,
+    the state to persist, and an audit record.
+
+    Two mechanisms, because each covers the other's failure mode:
+
+    * **Minimum-tenure floor.** The only rule that *bounds* the swap rate. A
+      margin or a streak makes each individual swap less likely but caps nothing:
+      a systematic (non-random) gap clears any fixed threshold every single run.
+    * **Confirmation streak.** Without it the floor merely reschedules the churn:
+      on the first eligible day the winner becomes whatever happens to lead that
+      day's noisy 6-fold backtest. The streak accrues *during* the lockout, so a
+      consistently-better challenger swaps the day the floor expires.
+
+    **Emergency bypass — decided deliberately.** The floor is skipped when, and
+    only when, ``incumbent_passing`` has been False for
+    ``emergency_confirmation_runs`` consecutive runs: the incumbent no longer
+    clears its own held-out county/beach persistence + calibration gates, i.e. it
+    is not publicly releasable at all. That is an *absolute* judgement, not a
+    comparative one, so it cannot be manufactured by a challenger getting lucky —
+    and pinning an unreleasable model would freeze publication entirely
+    (``--enforce-release-gate`` blocks the write), which is strictly worse than
+    swapping. The consecutive-run requirement is there because the verdict is
+    nonetheless *noisy* (see ``_WINNER_EMERGENCY_CONFIRMATION_RUNS``); a
+    single-run bypass turned the safety valve into a second churn channel.
+
+    There is deliberately **no** large-gap bypass. Every historical oscillation
+    this rule exists to stop was driven by county-AUCPR gaps of +0.08..+0.11 on
+    6-fold backtests whose cluster-bootstrap 95% half-width is ~0.136 — exactly
+    the range a "decisively better" threshold would have waved through. A
+    genuinely better architecture is promoted through the manual
+    ``workflow_dispatch full_comparison=true`` path with a written promotion
+    basis (which is how the 2026-06-02 ensemble was in fact promoted). The
+    bypass exists; it is operated by a human, not by a noisy daily fold draw.
+    """
+    record: dict[str, object] = {
+        "min_tenure_days": int(min_tenure_days),
+        "confirmation_runs": int(confirmation_runs),
+        "emergency_confirmation_runs": int(emergency_confirmation_runs),
+    }
+    state = tenure or WinnerTenure()
+    # Registry drift / first run: we have no promotion date we can trust for this
+    # incumbent, so seed one NOW. Fail-safe toward stability — a fresh seed means
+    # the floor applies for the next `min_tenure_days`, it never waives it.
+    if state.winner != incumbent or state.promoted_at is None:
+        state = WinnerTenure(winner=incumbent, promoted_at=now)
+        record["tenure_seeded"] = True
+
+    days_held = _tenure_days_held(state.promoted_at, now)
+    fail_streak = 0 if incumbent_passing else state.incumbent_fail_streak + 1
+    record["winner"] = incumbent
+    record["promoted_at"] = _iso_or_none(state.promoted_at)
+    record["days_held"] = round(days_held, 3)
+    record["incumbent_passing"] = bool(incumbent_passing)
+    record["incumbent_fail_streak"] = fail_streak
+
+    def _hold(challenger: str | None, streak: int, first_seen: datetime | None) -> WinnerTenure:
+        return WinnerTenure(
+            winner=incumbent,
+            promoted_at=state.promoted_at,
+            challenger=challenger,
+            challenger_streak=streak,
+            challenger_first_seen_at=first_seen,
+            incumbent_fail_streak=fail_streak,
+        )
+
+    if statistical_choice == incumbent:
+        # No challenger led this run -> the streak is broken, not merely paused.
+        # The incumbent's own failure streak still carries: when it is failing and
+        # nothing else passes, there is simply nothing to swap TO.
+        return incumbent, _hold(None, 0, None), record
+
+    if state.challenger == statistical_choice:
+        streak = state.challenger_streak + 1
+        first_seen = state.challenger_first_seen_at or now
+    else:
+        streak = 1
+        first_seen = now
+    record["challenger"] = statistical_choice
+    record["challenger_streak"] = streak
+
+    if fail_streak >= int(emergency_confirmation_runs):
+        record["swap_reason"] = "emergency_incumbent_failed_spatial_gates"
+        return statistical_choice, WinnerTenure(
+            winner=statistical_choice, promoted_at=now,
+        ), record
+
+    tenure_ok = days_held >= float(min_tenure_days)
+    streak_ok = streak >= int(confirmation_runs)
+    if tenure_ok and streak_ok:
+        record["swap_reason"] = "tenure_elapsed_and_confirmed"
+        return statistical_choice, WinnerTenure(
+            winner=statistical_choice, promoted_at=now,
+        ), record
+
+    record["suppressed_swap"] = True
+    record["suppressed_because"] = [
+        *([] if tenure_ok else [f"tenure {days_held:.1f}d < {min_tenure_days}d"]),
+        *([] if streak_ok else [f"confirmation streak {streak} < {confirmation_runs}"]),
+        *([] if incumbent_passing else
+          [f"incumbent failing {fail_streak}/{emergency_confirmation_runs} runs"]),
+    ]
+    return incumbent, _hold(statistical_choice, streak, first_seen), record
+
+
 def _promotion_assessment(
     metrics: dict[str, dict[str, float]],
     winner: str,
@@ -2192,6 +2557,7 @@ def _persist_holdout_artifacts(
     temporal_dates: np.ndarray | None = None,
     temporal_beach_ids: np.ndarray | None = None,
     temporal_lags: np.ndarray | None = None,
+    temporal_is_pcr: np.ndarray | None = None,
     predictions_sink: dict | None = None,
 ) -> None:
     """Persist held-out (label, probability) pairs and record sensitivity@spec.
@@ -2224,6 +2590,7 @@ def _persist_holdout_artifacts(
             date=temporal_dates,
             beach_id=temporal_beach_ids,
             lag=temporal_lags,
+            is_pcr=temporal_is_pcr,
         )
         if written is None:
             print(
@@ -2235,6 +2602,17 @@ def _persist_holdout_artifacts(
             temporal_labels, temporal_probs, _SEARCY_TARGET_SPECIFICITY
         )
         metrics.setdefault(base_key, {})[_SENSITIVITY_AT_SPEC_KEY] = record
+        # E3: the Searcy operating point (sensitivity @ specificity 0.87) is
+        # itself base-rate sensitive and is the number cited publicly, so it
+        # never ships pooled-only either.
+        metrics[base_key][f"{_SENSITIVITY_AT_SPEC_KEY}_by_assay"] = stratified_metrics(
+            temporal_labels,
+            temporal_probs,
+            temporal_is_pcr,
+            metric_fn=lambda y, p: sensitivity_at_specificity_record(
+                y, p, _SEARCY_TARGET_SPECIFICITY
+            ),
+        ) or {"unavailable": "no_assay_indicator"}
 
     # --- Spatial pooled pairs (leave-one-county-out / leave-one-beach-out) ---
     if predictions_sink:
@@ -2257,6 +2635,17 @@ def _persist_holdout_artifacts(
                         pooled["labels"], pooled["probabilities"], _SEARCY_TARGET_SPECIFICITY
                     )
                 )
+                metrics[spatial_key][f"{_SENSITIVITY_AT_SPEC_KEY}_by_assay"] = (
+                    stratified_metrics(
+                        pooled["labels"],
+                        pooled["probabilities"],
+                        pooled.get("is_pcr"),
+                        metric_fn=lambda y, p: sensitivity_at_specificity_record(
+                            y, p, _SEARCY_TARGET_SPECIFICITY
+                        ),
+                    )
+                    or {"unavailable": "no_assay_indicator"}
+                )
 
         # Persist per-row holdout pairs for EVERY backtested candidate (tagged by
         # `model`), not just the winner, so model gaps can be paired-tested offline
@@ -2278,6 +2667,7 @@ def _persist_holdout_artifacts(
                     model=model_name,
                     holdout_kind=group_column,
                     group=groups_arr if groups_arr is not None and len(groups_arr) else None,
+                    is_pcr=pooled.get("is_pcr"),
                 )
             )
         if spatial_frames:
@@ -2295,6 +2685,40 @@ def _persist_holdout_artifacts(
                 )
 
 
+def _stratified_within_beach(
+    auroc_fn,
+    labels: np.ndarray,
+    probabilities: np.ndarray,
+    beach_ids: np.ndarray | None,
+    is_pcr: np.ndarray | None,
+) -> dict:
+    """``within_beach_auroc`` per assay regime, in system_health-friendly shape.
+
+    ``within_beach_auroc`` returns a ``(auroc, n_beaches, n_rows)`` tuple rather
+    than a metrics dict, so it needs the generic ``stratified_scalar`` path plus
+    a shape adapter.
+    """
+    if beach_ids is None:
+        return {"unavailable": "no_beach_ids"}
+
+    def _one(y: np.ndarray, p: np.ndarray, groups: np.ndarray) -> dict:
+        auroc, n_beaches, n_rows = auroc_fn(y, p, groups)
+        return {
+            "within_beach_auroc": auroc,
+            "n_beaches": float(n_beaches),
+            "n_rows": float(n_rows),
+        }
+
+    result = stratified_scalar(
+        np.asarray(labels),
+        _one,
+        np.asarray(probabilities, dtype=float),
+        is_pcr,
+        extra={"groups": np.asarray(beach_ids)},
+    )
+    return result if result is not None else {"unavailable": "no_assay_indicator"}
+
+
 def _record_within_beach_diagnostics(
     metrics: dict,
     *,
@@ -2303,6 +2727,7 @@ def _record_within_beach_diagnostics(
     temporal_probs: np.ndarray | None = None,
     temporal_beach_ids: np.ndarray | None = None,
     temporal_lags: np.ndarray | None = None,
+    temporal_is_pcr: np.ndarray | None = None,
     predictions_sink: dict | None = None,
 ) -> None:
     """Record within-beach AUROC — the daily-skill metric global AUCPR is blind to.
@@ -2342,6 +2767,18 @@ def _record_within_beach_diagnostics(
                 block["by_lag"] = within_beach_auroc_by_lag(
                     temporal_labels, temporal_probs, temporal_beach_ids, temporal_lags
                 )
+            # E3/E4 together: the HEADLINE metric, per assay regime. Pooled
+            # within-beach AUROC is the average of two regimes whose within-beach
+            # questions are not even the same question — a ddPCR beach is asked
+            # "which day exceeds 1413 copies", a culture beach "which day exceeds
+            # 104 MPN", at 6x different base rates.
+            block["by_assay"] = _stratified_within_beach(
+                within_beach_auroc,
+                temporal_labels,
+                temporal_probs,
+                temporal_beach_ids,
+                temporal_is_pcr,
+            )
             diagnostics["temporal"] = block
         except Exception:  # pragma: no cover
             pass
@@ -2375,6 +2812,13 @@ def _record_within_beach_diagnostics(
                     "within_beach_auroc": auroc,
                     "n_beaches": float(n_beaches),
                     "n_rows": float(n_rows),
+                    "by_assay": _stratified_within_beach(
+                        within_beach_auroc,
+                        pooled["labels"],
+                        pooled["probabilities"],
+                        pooled["groups"],
+                        pooled.get("is_pcr"),
+                    ),
                 }
             except Exception:  # pragma: no cover
                 pass
@@ -2391,6 +2835,13 @@ def _record_within_beach_diagnostics(
                         "within_beach_auroc": s_auroc,
                         "n_beaches": float(s_beaches),
                         "n_rows": float(s_rows),
+                        "by_assay": _stratified_within_beach(
+                            within_beach_auroc,
+                            pooled["labels"],
+                            stale,
+                            pooled["groups"],
+                            pooled.get("is_pcr"),
+                        ),
                     }
                 except Exception:  # pragma: no cover
                     pass
@@ -2491,6 +2942,12 @@ def _persist_and_diagnose_holdouts(
     temporal_dates = None
     temporal_beach_ids = None
     temporal_lags = None
+    # E3. Persisted onto the holdout artifact as well as used for the live
+    # stratification, so any future per-regime cut is a recompute off disk rather
+    # than a retrain -- the same reason beach_id and lag are threaded here.
+    temporal_is_pcr = (
+        _assay_indicator(eval_metadata) if temporal_probs is not None else None
+    )
     if temporal_probs is not None:
         if "sample_date" in eval_metadata.columns:
             temporal_dates = (
@@ -2516,6 +2973,7 @@ def _persist_and_diagnose_holdouts(
         temporal_dates=temporal_dates,
         temporal_beach_ids=temporal_beach_ids,
         temporal_lags=temporal_lags,
+        temporal_is_pcr=temporal_is_pcr,
         predictions_sink=predictions_sink,
     )
     _record_within_beach_diagnostics(
@@ -2525,6 +2983,7 @@ def _persist_and_diagnose_holdouts(
         temporal_probs=temporal_probs,
         temporal_beach_ids=temporal_beach_ids,
         temporal_lags=temporal_lags,
+        temporal_is_pcr=temporal_is_pcr,
         predictions_sink=predictions_sink,
     )
 
@@ -2552,6 +3011,82 @@ def _apply_stale_censoring(features: pd.DataFrame) -> pd.DataFrame:
     return features
 
 
+_GLOBAL_AUCPR_CAVEAT = AUCPR_CAVEAT + (
+    " Measured directly on this repo's own data: diluting a FIXED set of "
+    "predictions from the 0.174 sample-day base rate to the 0.061 served rate "
+    "drops AUCPR 0.532 -> 0.322 with the model and its ranking held constant, "
+    "while AUROC stays flat at ~0.772 — i.e. ~71% of the apparent "
+    "'0.54 backtest -> 0.24 served collapse' is arithmetic, not skill loss. "
+    "Step 7 showed the same effect across assays: pooled 0.8168 concealed "
+    "culture 0.3875 and ddPCR 0.9707, and because AUCPR scales with the base "
+    "rate the LIFT inverts the ranking (culture 5.58x its base rate, ddPCR "
+    "1.50x)."
+)
+
+
+def _build_headline_metrics(metrics: dict, winner: str) -> dict:
+    """Promote ``within_beach_auroc`` to the headline; demote global AUCPR (E4).
+
+    The published "how good is the model" number has been a pooled global AUCPR,
+    which is dominated by BETWEEN-beach variance: a model scores well by knowing
+    Tijuana Slough is dirtier than Carmel while having no ability to tell Tuesday
+    from Thursday at either. ``within_beach_auroc`` is the one published number
+    that can see that failure — it sat ~0.50 on served forecasts while the global
+    AUCPR read ~0.65.
+
+    The served (anchor-censored) figure is the primary one because ~95% of served
+    rows are between-sample days; the fresh figure is kept beside it, labelled,
+    because it is the regime the backtests actually score.
+    """
+    diagnostics = (metrics or {}).get("two_tier_diagnostics") or {}
+    production = (metrics or {}).get(_metrics_base_key(winner)) or {}
+
+    def _pick(*keys: str) -> dict | None:
+        for key in keys:
+            block = diagnostics.get(key)
+            if isinstance(block, dict) and "within_beach_auroc" in block:
+                return block
+        return None
+
+    served = _pick("spatial_beach_stale")
+    fresh = _pick("spatial_beach")
+    temporal = _pick("temporal")
+    primary = served or temporal or fresh
+    return {
+        "primary_metric": HEADLINE_METRIC,
+        "primary_definition": (
+            "Row-weighted mean of per-beach AUROC: at a FIXED beach, can the "
+            "model rank its exceedance days above its clean days? 0.50 means no "
+            "daily skill — the model is a per-beach lookup table however strong "
+            "its global number looks."
+        ),
+        "primary_regime": (
+            "served" if served is not None
+            else ("temporal" if primary is temporal else "fresh")
+        ),
+        "primary_value": (primary or {}).get("within_beach_auroc"),
+        "primary_by_assay": (primary or {}).get("by_assay"),
+        "within_beach_auroc": {
+            "served_stale_holdout_beach": served,
+            "fresh_holdout_beach": fresh,
+            "temporal_test": temporal,
+        },
+        "secondary_global_aucpr": {
+            "value": production.get("aucpr"),
+            "by_assay": production.get("aucpr_by_assay") or production.get("by_assay"),
+            "status": "demoted",
+            "caveat": _GLOBAL_AUCPR_CAVEAT,
+        },
+        "deployment_truth_location": "served_metrics",
+        "note": (
+            "Backtest metrics score sample-days (fresh lagged risk history); the "
+            "product serves between-sample days. Cite served_metrics for 'how "
+            "good is the product', and read it per regime (by_regime) and per "
+            "assay (by_assay) — never the pooled figure alone."
+        ),
+    }
+
+
 def _write_model_card(curated_dir: Path, health_payload: dict) -> None:
     """Write a model card that cannot drift from system_health.json."""
     model_registry = health_payload.get("model_registry") or {}
@@ -2577,6 +3112,54 @@ def _write_model_card(curated_dir: Path, health_payload: dict) -> None:
         except (TypeError, ValueError):
             return "—"
 
+    # E4/E5: the card leads with the serving configuration that produced the
+    # numbers and with the within-beach headline, not with a pooled AUCPR.
+    headline = health_payload.get("headline_metrics") or {}
+    _headline_assay = headline.get("primary_by_assay") or {}
+    if not isinstance(_headline_assay, dict):
+        _headline_assay = {}
+    serving_config = health_payload.get("serving_config") or {}
+    _source = serving_config.get("probability_source") or {}
+    _router = _source.get("router")
+    _source_line = (
+        f"{_router} over {', '.join(_source.get('models') or []) or '—'}"
+        if _router
+        else ", ".join(_source.get("models") or []) or "—"
+    )
+    _composition = (
+        (health_payload.get("serving_calibration") or {}).get("fit_window_composition") or {}
+    )
+    _live_fraction = _composition.get("live_fingerprint_fraction")
+    if _composition:
+        _fit_window_line = (
+            f"{_composition.get('live_fingerprint_pairs', '—')} of "
+            f"{_composition.get('n_pairs', '—')} pairs on the live configuration"
+        )
+        if _live_fraction is not None:
+            _fit_window_line += f" ({float(_live_fraction):.1%})"
+        if _composition.get("under_represented_warning"):
+            _fit_window_line += " — **UNDER-REPRESENTED**"
+    else:
+        _fit_window_line = "—"
+
+    # E2/E7: bands, read off the code rather than the payload, so a card
+    # regenerated from an older `system_health.json` still describes the
+    # cutpoints that are actually in force.
+    _bands = band_definitions()
+    _cuts = _bands["cutpoints"]
+    _band_rows = [
+        "| band | p_exceed | realized | 95% CI (beach cluster) | vs base rate | n |",
+        "|---|---|---|---|---|---|",
+    ]
+    for _b in _bands["bands"]:
+        _lo, _hi = _b["p_range"]
+        _range = f"[{_lo:.2f}, {_hi:.2f})" if _b["label"] != "Very High" else f"[{_lo:.2f}, 1.00]"
+        _flag = " *(provisional)*" if _b["provisional"] else ""
+        _band_rows.append(
+            f"| **{_b['label']}**{_flag} | {_range} | {_b['realized']:.3f} | "
+            f"[{_b['ci'][0]:.3f}, {_b['ci'][1]:.3f}] | {_b['lift']:.2f}x | {_b['n']:,} |"
+        )
+
     audit = health_payload.get("forecast_audit") or {}
     agreement = audit.get("agreement_rate")
     acute_agreement = audit.get("acute_agreement_rate")
@@ -2594,10 +3177,34 @@ def _write_model_card(curated_dir: Path, health_payload: dict) -> None:
             f"- **Public release eligible**: {str(public_release_eligible).lower()}",
             f"- **Promotion blocker (latest)**: {blocker_line}",
             "",
-            "## Headline Metrics (from `system_health.json`)",
+            "## Serving configuration",
+            f"- **Fingerprint**: `{serving_config.get('fingerprint', 'unknown')}`",
+            f"- **Serve-path version**: {serving_config.get('serving_path_version', '—')}",
+            f"- **Probability source**: {_source_line}",
+            f"- **Serving calibration fit window**: {_fit_window_line}",
+            "",
+            "## Headline metric — within-beach AUROC (daily skill)",
+            "",
+            "At a *fixed* beach, can the model rank its exceedance days above its "
+            "clean days? 0.50 means no daily skill: the model is a per-beach "
+            "lookup table however strong its global number looks. This is the "
+            "metric to cite.",
+            "",
+            f"- **Served regime** (anchor censored to serving age): {_fmt(headline.get('primary_value'))}"
+            f" ({headline.get('primary_regime', 'unknown')})",
+            f"- **Culture**: {_fmt(_headline_assay.get('culture', {}).get('within_beach_auroc'))}"
+            f" / **ddPCR**: {_fmt(_headline_assay.get('pcr', {}).get('within_beach_auroc'))}",
+            "",
+            "## Secondary — global AUCPR (demoted; base-rate dependent)",
+            "",
+            "Global AUCPR is dominated by *between*-beach variance and moves with "
+            "the population mix at constant skill, so it is not comparable across "
+            "strata, windows, or populations. Rank with AUROC; decide with the "
+            "within-beach number above.",
             "",
             "### Temporal (held-out time slice)",
-            f"- **AUCPR**: {_fmt(prod.get('aucpr'))}",
+            f"- **AUCPR**: {_fmt(prod.get('aucpr'))} — pooled across assays; see "
+            "`by_assay` in system_health.json",
             f"- **Brier**: {_fmt(prod.get('brier'))}",
             f"- **Log loss**: {_fmt(prod.get('log_loss'))}",
             f"- **Calibration slope**: {_fmt(prod.get('calibration_slope'))}",
@@ -2627,9 +3234,101 @@ def _write_model_card(curated_dir: Path, health_payload: dict) -> None:
             "",
             f"- **Active-advisory agreement rate** (legacy overall metric, dominated by stale pool): {_fmt(agreement)}",
             "",
+            "## Risk bands are RELATIVE tiers, not absolute probabilities",
+            "",
+            str(_bands["semantics_note"]),
+            "",
+            f"Cutpoints **{_cuts['low_moderate']:.2f} / {_cuts['moderate_high']:.2f} / "
+            f"{_cuts['high_very_high']:.2f}**, **left-closed** (`p < cut`). Derived "
+            f"{_bands['evidence']['measured_at']} on "
+            f"{int(_bands['evidence']['n_pairs']):,} served-forecast/lab pairs across "
+            f"{int(_bands['evidence']['n_beaches'])} beaches "
+            f"({_bands['evidence']['window_start']} → {_bands['evidence']['window_end']}); "
+            f"intervals are a {_bands['evidence']['ci_method']}.",
+            "",
+            *_band_rows,
+            "",
+            "The **Very High cutpoint is provisional**: 96.6% of the evidence above it "
+            "predates both the two-tier router and the 2026-08-06 persistence-pin "
+            "removal, so it is *held* at its inherited value rather than derived. It "
+            f"becomes derivable from {_bands['bands'][3]['provisional_until']}, once a "
+            "single serving regime has held for ~60 days.",
+            "",
+            *[f"- {c}" for c in _bands["evidence"]["caveats"]],
+            "",
+            "## Irreducible limits",
+            "",
+            "These are not open work items. No amount of modelling removes them, and "
+            "any claim in this card is bounded by them.",
+            "",
+            "**1. Labs sample weekly; the product forecasts daily.** A forecast is "
+            "published for every beach every day; lab samples arrive a median of 7 days "
+            "apart. **~6 of every 7 predictions are unverifiable in principle** — not "
+            "unmeasured, unmeasurable. Every metric in this card is computed on the one "
+            "day in seven that carries a result, which is also the *easiest* day (a "
+            "fresh anchor). The daily question — is Thursday worse than Tuesday at this "
+            "beach — is graded only on the ~37 beaches that sample at a ≤2-day cadence.",
+            "",
+            "**2. The label is only 86.6% self-consistent with itself.** On 4,155 "
+            "same-station same-day split replicates of culture assays, the two halves "
+            "disagree on exceedance 13.4% of the time. The measured exceedance rate "
+            "swings **0.049 → 0.183 on replicate choice alone**, and the same-day "
+            "collapse deliberately takes the WORST replicate (a safety choice, not a "
+            "statistical one). **No model can score above that noise floor**, and a "
+            "reported gain smaller than it is not evidence of anything.",
+            "",
+            "**3. `1413` vs `104` is a regulatory fact, not a modelling choice.** "
+            "Culture rows are judged against 104 MPN/CFU per 100 mL; San Diego ddPCR "
+            "rows against 1413 copies per 100 mL (CDPH Intrinsic Copy Number Equation, "
+            "EPA Region 9 approval 2020-10-06, H&SC §115880(d)). It is the rule San "
+            "Diego actually posts advisories on. The two rules agree on only **50.6%** "
+            "of 1,175 paired same-beach same-day samples. This product predicts the "
+            "posted rule; it does not arbitrate between assays and must not be changed "
+            "to make the label look cleaner.",
+            "",
+            "## What the 2026-08 rebuild programme measured",
+            "",
+            "Ten steps of label, feature-coverage and measurement work. Several "
+            "long-published claims did not survive it. Stated at full strength "
+            "because softening them is how they survived this long.",
+            "",
+            "- **The pooled AUCPR conceals a 2.5x gap.** Pooled 0.8168 = culture "
+            "**0.3875** (n=10,536, base 0.0695) and ddPCR **0.9707** (n=1,919, base "
+            "0.6493). The regime covering ~85% of California beaches scores 0.3875. On "
+            "*lift over base rate* the ranking inverts — culture **5.58x**, ddPCR "
+            "**1.50x** — so the pooled figure communicates neither. Report stratified, "
+            "always (`by_assay` in `system_health.json`).",
+            "- **The marine features are worth +0.0015, 95% CI [−0.0042, +0.0053]** on "
+            "held-out counties — not the long-published **+0.029 \"spatially "
+            "confirmed\"**. Every interval includes zero, and on culture rows the "
+            "contribution is **negative** (−0.0053). The original figure was measured "
+            "on data that was ~74% absent and wrong where present.",
+            "- **Photo-inactivation is null.** Naive within-beach culture-vs-UV "
+            "r = −0.378, but within (beach, month) cells on dry days it is "
+            "**−0.030 [−0.070, +0.010]** (n=7,951, 275 cells). The apparent effect was "
+            "season and rain.",
+            "- **`dist_to_chronic_source_km` is latitude wearing a mechanism's name.** "
+            "Spearman **0.9968** with latitude; univariate AUROC **0.479 — below "
+            "chance** — on statewide culture rows. Shipped as analyst geometry; it has "
+            "NOT earned entry to the training feature set.",
+            "- **On both assay strata the served probabilities lose to a flat "
+            "constant on Brier** (culture 0.0662 vs 0.0559 flat; ddPCR 0.3324 vs "
+            "0.2225 flat) while the *pooled* comparison wins (0.0970 vs 0.1128). The "
+            "published \"beats a flat base rate\" claim is Simpson's paradox on the "
+            "assay mix: it compares against a weaker single-constant baseline. A "
+            "stratum-aware constant beats the model.",
+            "- **The positive-persistence floor does generalise**, and more strongly "
+            "OUTSIDE San Diego than in it: Brier gap vs the old override "
+            "**+0.1447 [+0.1181, +0.1760]** on culture rows in the rest of California, "
+            "against +0.1009 [+0.0636, +0.1237] on San Diego ddPCR rows. The "
+            "\"overwhelmingly San Diego ddPCR\" caveat understated it.",
+            "",
             "## Notes",
             "- Forecasts are decision support and are not official lab results.",
             "- Active official advisories override displayed risk in consumer surfaces.",
+            "- Numbers above that come from `system_health.json` are regenerated every "
+            "daily run; the irreducible limits and the programme findings are dated "
+            "measurements and do not move without a new measurement.",
             "",
         ]
     )
@@ -3305,10 +4004,13 @@ def _write_production_model_registry(
     winner: str,
     regressor: str,
     ensemble_weights: list | None = None,
+    tenure: WinnerTenure | None = None,
 ) -> None:
     data: dict[str, object] = {"winner": winner, "regressor": regressor}
     if ensemble_weights is not None:
         data["ensemble_weights"] = ensemble_weights
+    if tenure is not None:
+        data[_WINNER_TENURE_KEY] = tenure.to_json()
     write_json(curated_dir / _PRODUCTION_MODEL_REGISTRY, data)
 
 
@@ -3524,6 +4226,14 @@ def _export_forecasts(
     # every non-routed path so `served_offset_weight` is null rather than a
     # misleading 0.0 when no router ran.
     route_offset_weights: np.ndarray | None = None
+    # Which estimator(s) actually produced p_exceed on this run — the core of the
+    # serving fingerprint (E5). `model_version` cannot answer this: it records
+    # the registry WINNER, which stays the ensemble even on the rows the offset
+    # model served. Assembled as the serve path runs, so a constant belonging to
+    # a branch this run did not take is absent from the document rather than
+    # hashed into it (changing it could not have moved this run's numbers, so it
+    # must not move this run's fingerprint).
+    probability_source: dict = {"router": None, "models": [winner]}
     if winner == "stacked_ensemble":
         _ens_logistic = logistic.predict_proba(baseline_forecast_features)[:, 1]
         if logistic_calibrator is not None:
@@ -3554,6 +4264,18 @@ def _export_forecasts(
             @ ensemble_weights
         )
         scopes = _ens_hier_scopes
+        # Members are configuration; `ensemble_weights` are FITTED and therefore
+        # out of the fingerprint, like every other fitted parameter.
+        probability_source = {
+            "router": None,
+            "models": [
+                "logistic",
+                "logistic_coastal_cells",
+                "logistic_hierarchical",
+                "hist_gbm",
+            ],
+            "combiner": "stacked_ensemble",
+        }
     elif winner == "logistic_coastal_cells":
         raw_probabilities, assigned_cells, scopes = _predict_coastal_cell_logistic_raw(
             coastal_cell_logistic, baseline_forecast_features, forecast_group_metadata,
@@ -3598,6 +4320,14 @@ def _export_forecasts(
             persistence_probabilities,
             PERSISTENCE_BLEND_MAX_MODEL_ALPHA,
         )
+        # The pin IS this candidate's definition, so its alpha is a serving
+        # constant on this branch only — and it is the one that would reintroduce
+        # the flattening if this model ever won promotion.
+        probability_source = {
+            "router": None,
+            "models": [winner],
+            "persistence_blend_alpha": float(PERSISTENCE_BLEND_MAX_MODEL_ALPHA),
+        }
     else:
         raw_probabilities = classifier.predict_proba(baseline_forecast_features)[:, 1]
         probabilities = _apply_calibrator(calibrator, raw_probabilities, forecast_group_metadata)
@@ -3628,6 +4358,18 @@ def _export_forecasts(
                 )
             )
             metrics.setdefault("two_tier_diagnostics", {})["serving_router"] = _route_diag
+            # The 2026-07-22 boundary that had no marker at all: from here the
+            # fingerprint records that a router ran, which models it mixes, and
+            # the cutoffs that decide which one a row gets. The per-row route
+            # itself stays in `served_offset_weight` — it is a function of data
+            # lag, not of configuration, and hashing it would split one
+            # configuration into three fingerprints.
+            probability_source = {
+                "router": ROUTER_TWO_TIER,
+                "models": ["xgb_undersample_ensemble", "xgb_undersample_offset"],
+                "fresh_cutoff_days": int(_FRESH_ROUTE_CUTOFF_DAYS),
+                "blend_end_days": int(_ROUTE_BLEND_END_DAYS),
+            }
             print(
                 f"[two-tier router] {_route_diag['stale_beaches']} stale→offset, "
                 f"{_route_diag['blended_beaches']} blended, "
@@ -3708,6 +4450,33 @@ def _export_forecasts(
             "uncalibrated probabilities.",
             file=sys.stderr, flush=True,
         )
+    # --- Serving-configuration fingerprint (E5) ------------------------------
+    # Built here because everything that determines the served number is now
+    # decided: which branch produced the probability, whether the router ran and
+    # with which cutoffs, and whether a serving calibration will be applied at
+    # all. What is NOT in the hash — the fitted isotonic knots, the trained
+    # weights, the per-row route — and why, is documented in serving_config.py.
+    serving_config = build_serving_config(
+        winner=winner,
+        probability_source=probability_source,
+        calibration_policy={
+            **serving_calibration_policy(),
+            "applied": serving_calibration is not None,
+        },
+    )
+    serving_config_fingerprint = config_fingerprint(serving_config)
+    print(
+        f"[serving config] fingerprint {serving_config_fingerprint} "
+        f"(path v{serving_config['serving_path_version']}, winner {winner}, "
+        f"router {probability_source.get('router')}).",
+        file=sys.stderr, flush=True,
+    )
+    if serving_calibration is not None:
+        # Report the fit window's composition against the configuration the map
+        # is about to be applied to, and warn when the live regime is
+        # under-represented. NOT a filter — see annotate_live_regime.
+        annotate_live_regime(serving_calibration, serving_config_fingerprint)
+
     if serving_calibration is not None:
         probabilities = apply_serving_calibration(probabilities, serving_calibration)
         # Same probability-scale map keeps the served interval bounds coherent.
@@ -3880,6 +4649,11 @@ def _export_forecasts(
                     if route_offset_weights is not None and i < len(route_offset_weights)
                     else None
                 ),
+                # Which serving CONFIGURATION produced this row. Constant across
+                # a run by construction: the per-row variation (which tier, how
+                # stale) lives in the columns above. Decode it via
+                # data/curated/serving_config_registry.json.
+                "serving_config_fingerprint": serving_config_fingerprint,
                 "forecast_generated_at": forecast_generated_at,
                 "wave_height_m": _safe_float(latest_row.get("wave_height_m")) if latest_row is not None else None,
                 "dominant_period_s": _safe_float(latest_row.get("dominant_period_s")) if latest_row is not None else None,
@@ -4019,6 +4793,39 @@ def _export_forecasts(
         if serving_calibration is not None
         else {"active": False, "reason": "insufficient_served_history"}
     )
+    # E5: the decode table for the fingerprint stamped on every row this run
+    # served. Registered only when a fresh forecast was actually published — a
+    # gate-blocked run leaves the previous forecast serving, so claiming this
+    # configuration served would be false.
+    health_payload["serving_config"] = {
+        "fingerprint": serving_config_fingerprint,
+        "published_this_run": bool(forecasts) and not release_blocked,
+        **serving_config,
+    }
+    if forecasts and not release_blocked:
+        try:
+            record_serving_config(
+                curated_dir,
+                serving_config_fingerprint,
+                serving_config,
+                seen_at=datetime.now(UTC).isoformat(),
+            )
+        except Exception as exc:  # noqa: BLE001 — provenance must never kill a run
+            print(
+                f"[serving config] WARNING: registry update failed ({exc!r}).",
+                file=sys.stderr, flush=True,
+            )
+    # E4: the headline metric, stated once, at the top level, next to the
+    # demoted global figure and its caveat. Nested diagnostics stay where they
+    # are; this block exists so no consumer has to know that
+    # `model_registry.metrics.two_tier_diagnostics` is where the real number
+    # lives, and so the pooled AUCPR is never the first number on the page.
+    health_payload["headline_metrics"] = _build_headline_metrics(metrics, winner)
+    # E2/E7: the band contract, published next to the metrics rather than left
+    # implicit in three vendored copies of the cutpoints. Read off the code at
+    # write time (not a stored copy), so this block and the `risk_band` calls a
+    # few hundred lines above can never describe different cutpoints.
+    health_payload["risk_bands"] = band_definitions()
     # Record the release-gate verdict so the verify_release_gate.py CI step and
     # human auditors can see whether this run actually published a fresh forecast.
     health_payload["release_gate"] = {
@@ -4117,6 +4924,12 @@ def _run_winner_only(
     train_idx, valid_idx, test_idx = _blocked_indices(dataset.metadata)
     cal_idx, val_metric_idx = _calibration_split(valid_idx, metadata)
     eval_idx = test_idx if len(test_idx) else valid_idx
+    # E3: bind the assay indicator to each evaluation slice ONCE, so every
+    # metric below publishes its culture/ddPCR pair. `_scored_*` is
+    # `classification_metrics` + `by_assay`; nothing in this function calls
+    # `classification_metrics` directly any more.
+    _scored_eval = partial(_scored, is_pcr=_assay_slice(metadata, eval_idx))
+    _scored_valid = partial(_scored, is_pcr=_assay_slice(metadata, valid_idx))
     baselines = make_baselines(features)
     metrics: dict[str, dict[str, float]] = {}
 
@@ -4175,14 +4988,18 @@ def _run_winner_only(
         post-calibration Brier/log-loss honestly (the calibrator was fit on
         cal_idx, so val_metric_idx is genuinely out-of-sample for it).
         """
-        metrics[f"{model_key}_valid"] = classification_metrics(
+        # E3: `{winner}_valid_calibrated` is what the registry publishes as
+        # `validation_metrics` / `temporal_validation_metrics`, so it carries its
+        # assay pair like every other published figure.
+        _scored_val = partial(_scored, is_pcr=_assay_slice(metadata, val_metric_idx))
+        metrics[f"{model_key}_valid"] = _scored_val(
             labels[val_metric_idx], raw_probs_metric
         )
         if calibrator is not None and len(val_metric_idx) > 0:
             calibrated_probs = _apply_calibrator(
                 calibrator, raw_probs_metric, val_metric_metadata
             )
-            metrics[f"{model_key}_valid_calibrated"] = classification_metrics(
+            metrics[f"{model_key}_valid_calibrated"] = _scored_val(
                 labels[val_metric_idx], calibrated_probs
             )
 
@@ -4196,7 +5013,7 @@ def _run_winner_only(
     tree_eval = tree_classifier.predict_proba(features.iloc[eval_idx])[:, 1]
     if len(test_idx):
         tree_eval = _apply_calibrator(tree_calibrator, tree_eval, eval_metadata)
-    metrics["hist_gbm"] = classification_metrics(labels[eval_idx], tree_eval)
+    metrics["hist_gbm"] = _scored_eval(labels[eval_idx], tree_eval)
     if active_ids:
         active_subset = _classification_metrics_on_subset(
             labels[eval_idx], tree_eval, eval_metadata, active_ids,
@@ -4236,7 +5053,7 @@ def _run_winner_only(
     ens_eval = ensemble_classifier.predict_proba(features.iloc[eval_idx])[:, 1]
     if len(test_idx):
         ens_eval = _apply_calibrator(ensemble_calibrator, ens_eval, eval_metadata)
-    metrics["xgb_undersample_ensemble"] = classification_metrics(labels[eval_idx], ens_eval)
+    metrics["xgb_undersample_ensemble"] = _scored_eval(labels[eval_idx], ens_eval)
 
     logistic = logistic_calibrator = None
     coastal_cell_logistic = hierarchical_logistic = None
@@ -4255,7 +5072,7 @@ def _run_winner_only(
         logistic_eval = logistic.predict_proba(features.iloc[eval_idx])[:, 1]
         if len(test_idx):
             logistic_eval = _apply_calibrator(logistic_calibrator, logistic_eval, eval_metadata)
-        metrics["logistic"] = classification_metrics(labels[eval_idx], logistic_eval)
+        metrics["logistic"] = _scored_eval(labels[eval_idx], logistic_eval)
         classifier, calibrator = logistic, logistic_calibrator
 
     elif winner == "logistic_coastal_cells":
@@ -4417,6 +5234,25 @@ def _run_winner_only(
     # Swap winner if the registry's choice fails spatial gates and an
     # alternative passes. Same classifier + calibrator under the hood for
     # hist_gbm variants, so we don't need to retrain.
+    #
+    # The swap is then gated on TENURE (see `_apply_winner_tenure`). Two things
+    # made this path the dominant churn source:
+    #
+    # 1. The statistical tests above are per-run. They ask "is the challenger
+    #    better TODAY" and cannot bound how often the answer changes. Measured
+    #    over 166 recovered runs, the county-AUCPR gap for ONE fixed pair
+    #    (hist_gbm_persistence_blend - hist_gbm) ranges -0.004..+0.160, sd 0.043,
+    #    and lands above the 0.07 no-evidence margin on 59 of them. The same
+    #    comparison sits on both sides of any fixed threshold in that range
+    #    depending only on which counties the fold sampler drew.
+    # 2. This daily path never PERSISTED its decision. `production_model.json` is
+    #    written only by the full-comparison path, so a daily swap lasted exactly
+    #    one run and the next day re-litigated the identical comparison from the
+    #    identical starting point. Of the 11 served-winner changes in the 105 days
+    #    to 2026-08-07, only 4 correspond to a `production_model.json` commit; the
+    #    other 7 are this oscillation, and 6 of the 11 are between models that
+    #    share one trained HistGBM fit and differ only in post-processing.
+    tenure_record: dict[str, object] = {}
     if spatial_backtests:
         new_winner = _spatially_qualified_production_winner(
             metrics,
@@ -4424,12 +5260,40 @@ def _run_winner_only(
             candidates=tuple(backtest_models),
             predictions_sink=spatial_predictions_sink,
         )
-        if new_winner != winner:
+        tenure = WinnerTenure.from_json(registry.get(_WINNER_TENURE_KEY))
+        incumbent_passing = _promotion_assessment(metrics, winner)["public_release_eligible"]
+        gated_winner, tenure, tenure_record = _apply_winner_tenure(
+            incumbent=winner,
+            statistical_choice=new_winner,
+            tenure=tenure,
+            now=datetime.now(UTC),
+            incumbent_passing=bool(incumbent_passing),
+        )
+        if tenure_record.get("suppressed_swap"):
             print(
-                f"Spatial gates: swapping production winner {winner} → {new_winner}",
+                f"Winner tenure: SUPPRESSED swap {winner} → {new_winner} "
+                f"({'; '.join(str(r) for r in tenure_record.get('suppressed_because') or [])})",
                 file=sys.stderr, flush=True,
             )
-            winner = new_winner
+        if gated_winner != winner:
+            print(
+                f"Spatial gates: swapping production winner {winner} → {gated_winner} "
+                f"[{tenure_record.get('swap_reason')}]",
+                file=sys.stderr, flush=True,
+            )
+            winner = gated_winner
+        # Persist the tenure state (and the winner when a swap actually took
+        # effect) so the decision survives to the next run instead of being
+        # re-derived from scratch. Without this the confirmation streak can never
+        # accumulate and the tenure clock never starts.
+        _write_production_model_registry(
+            curated_dir,
+            winner=winner,
+            regressor=regressor_type,
+            ensemble_weights=registry.get("ensemble_weights"),
+            tenure=tenure,
+        )
+    metrics.setdefault("winner_tenure", {}).update(tenure_record)
 
     # Persist the FINAL winner's held-out (label, probability) pairs + record the
     # Searcy sensitivity@spec operating point. The temporal-test eval predictions
@@ -4575,6 +5439,12 @@ def train_curated_and_export(
     baselines = make_baselines(features)
     metrics: dict[str, dict[str, float]] = {}
     eval_idx = test_idx if len(test_idx) else valid_idx
+    # E3: bind the assay indicator to each evaluation slice ONCE, so every
+    # metric below publishes its culture/ddPCR pair. `_scored_*` is
+    # `classification_metrics` + `by_assay`; nothing in this function calls
+    # `classification_metrics` directly any more.
+    _scored_eval = partial(_scored, is_pcr=_assay_slice(metadata, eval_idx))
+    _scored_valid = partial(_scored, is_pcr=_assay_slice(metadata, valid_idx))
     valid_metadata = metadata.iloc[valid_idx].reset_index(drop=True)
     eval_metadata = metadata.iloc[eval_idx].reset_index(drop=True)
 
@@ -4600,20 +5470,20 @@ def train_curated_and_export(
     print("Evaluating persistence baseline...", file=sys.stderr, flush=True)
     persistence = _persistence_probabilities(features, settings.epa_marine_enterococcus_stv)
     if len(valid_idx):
-        metrics["persistence_valid"] = classification_metrics(labels[valid_idx], persistence[valid_idx])
-    metrics["persistence"] = classification_metrics(labels[eval_idx], persistence[eval_idx])
+        metrics["persistence_valid"] = _scored_valid(labels[valid_idx], persistence[valid_idx])
+    metrics["persistence"] = _scored_eval(labels[eval_idx], persistence[eval_idx])
 
     print("Training global logistic model...", file=sys.stderr, flush=True)
     logistic = baselines.logistic.fit(features.iloc[train_idx], labels[train_idx])
     logistic_valid_raw = logistic.predict_proba(features.iloc[valid_idx])[:, 1]
-    metrics["logistic_valid"] = classification_metrics(labels[valid_idx], logistic_valid_raw)
+    metrics["logistic_valid"] = _scored_valid(labels[valid_idx], logistic_valid_raw)
     _, logistic_calibrator = _identity_or_calibrated(
         logistic_valid_raw, labels[valid_idx], valid_metadata
     )
     logistic_eval = logistic.predict_proba(features.iloc[eval_idx])[:, 1]
     if len(test_idx):
         logistic_eval = _apply_calibrator(logistic_calibrator, logistic_eval, eval_metadata)
-    metrics["logistic"] = classification_metrics(labels[eval_idx], logistic_eval)
+    metrics["logistic"] = _scored_eval(labels[eval_idx], logistic_eval)
 
     print("Training coastal cells logistic model...", file=sys.stderr, flush=True)
     coastal_cell_logistic = _fit_coastal_cell_logistic_artifacts(features, labels, metadata, train_idx)
@@ -4622,7 +5492,7 @@ def train_curated_and_export(
         features.iloc[valid_idx],
         metadata.iloc[valid_idx].reset_index(drop=True),
     )
-    metrics["logistic_coastal_cells_valid"] = classification_metrics(labels[valid_idx], coastal_valid_raw)
+    metrics["logistic_coastal_cells_valid"] = _scored_valid(labels[valid_idx], coastal_valid_raw)
     _, coastal_calibrator = _identity_or_calibrated(
         coastal_valid_raw, labels[valid_idx], valid_metadata
     )
@@ -4635,7 +5505,7 @@ def train_curated_and_export(
     coastal_eval = coastal_eval_raw.copy()
     if len(test_idx):
         coastal_eval = _apply_calibrator(coastal_calibrator, coastal_eval, eval_metadata)
-    metrics["logistic_coastal_cells"] = classification_metrics(labels[eval_idx], coastal_eval)
+    metrics["logistic_coastal_cells"] = _scored_eval(labels[eval_idx], coastal_eval)
 
     print("Training hierarchical logistic model...", file=sys.stderr, flush=True)
     hierarchical_logistic = _fit_hierarchical_logistic_artifacts(features, labels, metadata, train_idx)
@@ -4644,7 +5514,7 @@ def train_curated_and_export(
         features.iloc[valid_idx],
         metadata.iloc[valid_idx].reset_index(drop=True),
     )
-    metrics["logistic_hierarchical_valid"] = classification_metrics(labels[valid_idx], hierarchical_valid_raw)
+    metrics["logistic_hierarchical_valid"] = _scored_valid(labels[valid_idx], hierarchical_valid_raw)
     _, hierarchical_calibrator = _identity_or_calibrated(
         hierarchical_valid_raw, labels[valid_idx], valid_metadata
     )
@@ -4657,17 +5527,17 @@ def train_curated_and_export(
     hierarchical_eval = hierarchical_eval_raw.copy()
     if len(test_idx):
         hierarchical_eval = _apply_calibrator(hierarchical_calibrator, hierarchical_eval, eval_metadata)
-    metrics["logistic_hierarchical"] = classification_metrics(labels[eval_idx], hierarchical_eval)
+    metrics["logistic_hierarchical"] = _scored_eval(labels[eval_idx], hierarchical_eval)
 
     print("Training hist GBM model...", file=sys.stderr, flush=True)
     tree_classifier = baselines.tree_classifier.fit(features.iloc[train_idx], labels[train_idx])
     tree_valid_raw = tree_classifier.predict_proba(features.iloc[valid_idx])[:, 1]
-    metrics["hist_gbm_valid"] = classification_metrics(labels[valid_idx], tree_valid_raw)
+    metrics["hist_gbm_valid"] = _scored_valid(labels[valid_idx], tree_valid_raw)
     _, tree_calibrator = _identity_or_calibrated(tree_valid_raw, labels[valid_idx], valid_metadata)
     tree_eval = tree_classifier.predict_proba(features.iloc[eval_idx])[:, 1]
     if len(test_idx):
         tree_eval = _apply_calibrator(tree_calibrator, tree_eval, eval_metadata)
-    metrics["hist_gbm"] = classification_metrics(labels[eval_idx], tree_eval)
+    metrics["hist_gbm"] = _scored_eval(labels[eval_idx], tree_eval)
 
     # xgb_undersample_ensemble — always trained so the spatial gate can promote
     # it as production winner without a retrain. Leave-one-CA-county-out spatial
@@ -4676,25 +5546,25 @@ def train_curated_and_export(
     print("Training XGB undersample ensemble model...", file=sys.stderr, flush=True)
     xgb_ens_classifier = XGBUndersampleEnsemble().fit(features.iloc[train_idx], labels[train_idx])
     xgb_ens_valid_raw = xgb_ens_classifier.predict_proba(features.iloc[valid_idx])[:, 1]
-    metrics["xgb_undersample_ensemble_valid"] = classification_metrics(labels[valid_idx], xgb_ens_valid_raw)
+    metrics["xgb_undersample_ensemble_valid"] = _scored_valid(labels[valid_idx], xgb_ens_valid_raw)
     _, xgb_ens_calibrator = _identity_or_calibrated(xgb_ens_valid_raw, labels[valid_idx], valid_metadata)
     xgb_ens_eval = xgb_ens_classifier.predict_proba(features.iloc[eval_idx])[:, 1]
     if len(test_idx):
         xgb_ens_eval = _apply_calibrator(xgb_ens_calibrator, xgb_ens_eval, eval_metadata)
-    metrics["xgb_undersample_ensemble"] = classification_metrics(labels[eval_idx], xgb_ens_eval)
+    metrics["xgb_undersample_ensemble"] = _scored_eval(labels[eval_idx], xgb_ens_eval)
 
     # Compute validation + eval metrics for the positive persistence guard so it
     # can participate in production winner selection via _two_stage_training_plan.
     guard_valid = _positive_persistence_guarded_blend_probabilities(
         tree_valid_raw, persistence[valid_idx], PERSISTENCE_BLEND_MAX_MODEL_ALPHA,
     )
-    metrics["hist_gbm_positive_persistence_guard_valid"] = classification_metrics(
+    metrics["hist_gbm_positive_persistence_guard_valid"] = _scored_valid(
         labels[valid_idx], guard_valid,
     )
     guard_eval = _positive_persistence_guarded_blend_probabilities(
         tree_eval, persistence[eval_idx], PERSISTENCE_BLEND_MAX_MODEL_ALPHA,
     )
-    metrics["hist_gbm_positive_persistence_guard"] = classification_metrics(
+    metrics["hist_gbm_positive_persistence_guard"] = _scored_eval(
         labels[eval_idx], guard_eval,
     )
 
@@ -4717,7 +5587,7 @@ def train_curated_and_export(
         np.stack([logistic_valid_raw, coastal_valid_raw, hierarchical_valid_raw, tree_valid_raw], axis=1)
         @ ensemble_weights
     )
-    metrics["stacked_ensemble_valid"] = classification_metrics(labels[valid_idx], ensemble_valid)
+    metrics["stacked_ensemble_valid"] = _scored_valid(labels[valid_idx], ensemble_valid)
     # calibrated eval preds — used for the test score and for production forecasts
     ensemble_eval = (
         np.stack([
@@ -4728,7 +5598,7 @@ def train_curated_and_export(
         ], axis=1)
         @ ensemble_weights
     )
-    metrics["stacked_ensemble"] = classification_metrics(labels[eval_idx], ensemble_eval)
+    metrics["stacked_ensemble"] = _scored_eval(labels[eval_idx], ensemble_eval)
 
     print("Training elastic net model...", file=sys.stderr, flush=True)
     baselines.linear.fit(features.iloc[train_idx], densities[train_idx])
@@ -4795,6 +5665,14 @@ def train_curated_and_export(
             )
         )
 
+    # NOT tenure-gated, deliberately. This is the FULL-comparison path, reached
+    # only from a manual `workflow_dispatch full_comparison=true` (the daily job
+    # always passes --winner-only) or when production_model.json is missing. It
+    # IS the human override referenced in `_apply_winner_tenure`'s docstring: an
+    # operator who has decided a new architecture is better promotes it here,
+    # with a written promotion basis, rather than the gate inferring it from a
+    # noisy daily fold draw. The run still (re)starts the tenure clock below, so
+    # the next 60 days of daily runs hold whatever it selects.
     winner = _spatially_qualified_production_winner(
         metrics,
         preferred=plan.production_winner,
@@ -4840,11 +5718,14 @@ def train_curated_and_export(
         regressor = baselines.tree_regressor
         regressor_valid_predictions = tree_reg_valid
 
+    # Starts (or restarts) the tenure clock at this promotion. Every subsequent
+    # daily run reads this timestamp and holds the winner for _WINNER_MIN_TENURE_DAYS.
     _write_production_model_registry(
         curated_dir,
         winner=winner,
         regressor="elastic_net" if regressor is baselines.linear else "hist_gbm_regressor",
         ensemble_weights=ensemble_weights.tolist() if winner == "stacked_ensemble" and ensemble_weights is not None else None,
+        tenure=WinnerTenure(winner=winner, promoted_at=datetime.now(UTC)),
     )
     # The serve-time router needs the offset model regardless of which entrypoint
     # produced the winner — see _train_offset_model. This path calibrates on

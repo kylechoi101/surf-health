@@ -11,6 +11,7 @@ from app.data.pipeline.serving_snapshot import (
 )
 from app.repositories.factory import build_repository
 from app.repositories.serving_repository import ServingSnapshotRepository, _safe_bool
+from app.ml.calibration import risk_band
 
 
 class TestSafeBool:
@@ -217,7 +218,11 @@ def test_serving_snapshot_limits_hot_path_rows_and_repository_serves_contract(tm
     assert forecast.risk_band == "High"
     assert forecast.advisory_floor_applied is True
     assert forecast.official_advisory_active is True
-    assert forecast.model_risk_band == "Low"
+    # Derived, not hardcoded: raw 0.18 was Low while the Low/Moderate cut sat at
+    # 0.20 and is Moderate since the 2026-08-08 reset moved it to 0.10. The
+    # invariant is that the MODEL's own (weak) band survives the advisory floor.
+    assert forecast.model_risk_band == risk_band(forecast.p_exceed_raw)
+    assert forecast.model_risk_band in ("Low", "Moderate")
     assert forecast.forecast_label_mode == "official_advisory_override"
     assert forecast.sample_age_days == 2
     assert forecast.sample_recency_band == "fresh"

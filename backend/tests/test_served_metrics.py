@@ -8,12 +8,17 @@ import pytest
 
 from app.ml.served_metrics import (
     HISTORY_FILE,
+    POOLED_REGIME_CAVEAT,
+    annotate_live_regime,
     append_forecast_history,
     apply_serving_calibration,
     daily_outcomes,
     fit_serving_calibration,
+    fit_window_composition,
     served_performance,
+    serving_calibration_policy,
 )
+from app.ml.serving_config import ERA_PRE_ROUTER, ERA_ROUTER_LOGGING_GAP_UNKNOWABLE
 
 
 def _write_forecasts(curated_dir, rows):
@@ -21,7 +26,8 @@ def _write_forecasts(curated_dir, rows):
 
 
 def _forecast_row(beach_id="b1", forecast_date="2026-07-01", p=0.1, band="Low",
-                  issued="2026-07-01T18:00:00+00:00", persistence_floor_applied=None):
+                  issued="2026-07-01T18:00:00+00:00", persistence_floor_applied=None,
+                  serving_config_fingerprint=None):
     row = {
         "beach_id": beach_id,
         "forecast_date": forecast_date,
@@ -37,13 +43,17 @@ def _forecast_row(beach_id="b1", forecast_date="2026-07-01", p=0.1, band="Low",
     # identified; post-change rows always carry a bool.
     if persistence_floor_applied is not None:
         row["persistence_floor_applied"] = persistence_floor_applied
+    if serving_config_fingerprint is not None:
+        row["serving_config_fingerprint"] = serving_config_fingerprint
     return row
 
 
-def _write_observations(curated_dir, rows):
-    pd.DataFrame(
-        rows, columns=["beach_id", "sample_date", "exceeds_stv"]
-    ).to_parquet(curated_dir / "observations.parquet", index=False)
+def _write_observations(curated_dir, rows, *, method=None, units=None):
+    frame = pd.DataFrame(rows, columns=["beach_id", "sample_date", "exceeds_stv"])
+    if method is not None:
+        frame["method"] = method
+        frame["units"] = units
+    frame.to_parquet(curated_dir / "observations.parquet", index=False)
 
 
 def test_daily_outcomes_worst_sample_wins():
@@ -318,3 +328,194 @@ def test_fit_does_not_warn_when_the_ceiling_clears_every_band(tmp_path):
     assert mapping is not None
     assert mapping["y_max"] >= 0.70
     assert mapping["ceiling_warning"] is None
+
+
+# ---------------------------------------------------------------------------
+# Serving-regime provenance (E5)
+# ---------------------------------------------------------------------------
+
+
+def test_history_gains_the_fingerprint_column_and_old_rows_stay_null(tmp_path):
+    """Adding a column to _HISTORY_COLUMNS populates it GOING FORWARD ONLY.
+
+    That is exactly how the 2026-07-22..07-28 hole was created: the router went
+    live ~07-22 and `served_offset_weight` only started being written on 07-29,
+    so a week of router-served rows is logged as pre-router forever. The right
+    behaviour for old rows is therefore a null — a back-filled fingerprint would
+    be a fabricated claim about a run nobody observed.
+    """
+    _write_forecasts(tmp_path, [_forecast_row("old")])
+    append_forecast_history(tmp_path)
+    _write_forecasts(
+        tmp_path,
+        [_forecast_row("new", serving_config_fingerprint="0ad71d5001d68746")],
+    )
+    append_forecast_history(tmp_path)
+
+    history = pd.read_parquet(tmp_path / HISTORY_FILE).set_index("beach_id")
+    assert "serving_config_fingerprint" in history.columns
+    assert pd.isna(history.loc["old", "serving_config_fingerprint"])
+    assert history.loc["new", "serving_config_fingerprint"] == "0ad71d5001d68746"
+
+
+def test_fit_window_composition_separates_recorded_from_reconstructed():
+    pairs = pd.DataFrame(
+        {
+            "date": pd.to_datetime(
+                ["2026-07-10", "2026-07-24", "2026-08-08", "2026-08-08"]
+            ),
+            "served_offset_weight": [None, None, 1.0, 1.0],
+            "persistence_floor_applied": [None, None, False, False],
+            "serving_config_fingerprint": [None, None, "abc123", "abc123"],
+            "model_version": ["a", "a", "b", "c"],
+        }
+    )
+    composition = fit_window_composition(pairs)
+    assert composition["n_pairs"] == 4
+    assert composition["by_regime"]["abc123"] == 2
+    assert composition["by_regime"][f"legacy:{ERA_PRE_ROUTER}"] == 1
+    # The unknowable span keeps its own bucket rather than being folded into
+    # either neighbour.
+    assert composition["by_regime"][f"legacy:{ERA_ROUTER_LOGGING_GAP_UNKNOWABLE}"] == 1
+    assert composition["fingerprinted_fraction"] == 0.5
+    # model_version is reported but is NOT the regime key: it records the
+    # registry winner, which is not what computed p_exceed.
+    assert composition["n_distinct_model_versions"] == 3
+
+
+def test_live_regime_warning_fires_when_the_fit_window_is_all_superseded():
+    """The measured 2026-08-07 state: the calibrator applied to today's
+    probabilities is fitted on 14,414 pairs, ZERO of them from the running
+    configuration."""
+    payload = {
+        "fit_window_composition": {
+            "n_pairs": 14414,
+            "by_regime": {f"legacy:{ERA_PRE_ROUTER}": 13425, "older": 989},
+        }
+    }
+    annotate_live_regime(payload, "0ad71d5001d68746")
+    composition = payload["fit_window_composition"]
+    assert composition["live_fingerprint_pairs"] == 0
+    assert composition["live_fingerprint_fraction"] == 0.0
+    warning = composition["under_represented_warning"]
+    assert warning is not None
+    assert "SUPERSEDED" in warning
+    # It must NOT be a filter: filtering today leaves 0 pairs and the product
+    # would serve uncalibrated probabilities, which run hot.
+    assert "Serving it anyway is deliberate" in warning
+
+
+def test_live_regime_warning_is_silent_when_the_window_is_the_live_regime():
+    payload = {
+        "fit_window_composition": {
+            "n_pairs": 1000,
+            "by_regime": {"livefp": 900, f"legacy:{ERA_PRE_ROUTER}": 100},
+        }
+    }
+    annotate_live_regime(payload, "livefp", min_pairs=500)
+    assert payload["fit_window_composition"]["under_represented_warning"] is None
+    assert payload["fit_window_composition"]["live_fingerprint_fraction"] == 0.9
+
+
+def test_fit_payload_carries_the_composition(tmp_path):
+    _pin_era_fixture(tmp_path, n_pinned=0)
+    mapping = fit_serving_calibration(tmp_path, min_pairs=100, min_positives=25)
+    assert mapping is not None
+    composition = mapping["fit_window_composition"]
+    assert composition["n_pairs"] == mapping["n_pairs"]
+    assert composition["fingerprinted_fraction"] == 0.0  # fixture rows are legacy
+    annotate_live_regime(mapping, "livefp")
+    assert mapping["fit_window_composition"]["under_represented_warning"] is not None
+
+
+def test_serving_calibration_policy_matches_the_module_constants():
+    """The fingerprint hashes this policy, so a constant that drifts out of it
+    would silently stop being part of the serving regime."""
+    from app.ml import served_metrics as module
+
+    policy = serving_calibration_policy()
+    assert policy["window_days"] == module._FIT_WINDOW_DAYS
+    assert policy["min_pairs"] == module._MIN_FIT_PAIRS
+    assert policy["min_positives"] == module._MIN_FIT_POSITIVES
+    assert policy["min_top_step_support"] == module._MIN_TOP_STEP_SUPPORT
+    assert policy["forward_match_days"] == module.FORWARD_MATCH_DAYS
+
+
+def _two_regime_history(tmp_path, *, n=120):
+    rng = np.random.default_rng(19)
+    rows, obs = [], []
+    day = pd.Timestamp("2026-06-01")
+    for i in range(n):
+        beach = f"old{i}"
+        d = (day + pd.Timedelta(days=i % 20)).date().isoformat()
+        p = float(np.clip(rng.random(), 0.02, 0.9))
+        rows.append(_forecast_row(beach, d, p=p, issued=f"{d}T18:00:00+00:00"))
+        obs.append((beach, d, bool(rng.random() < p)))
+    day2 = pd.Timestamp("2026-07-05")
+    for i in range(n):
+        beach = f"new{i}"
+        d = (day2 + pd.Timedelta(days=i % 20)).date().isoformat()
+        p = float(np.clip(rng.random(), 0.02, 0.9))
+        rows.append(
+            _forecast_row(
+                beach, d, p=p, issued=f"{d}T18:00:00+00:00",
+                persistence_floor_applied=False,
+                serving_config_fingerprint="livefp0000000000",
+            )
+        )
+        obs.append((beach, d, bool(rng.random() < p)))
+    _write_forecasts(tmp_path, rows)
+    append_forecast_history(tmp_path)
+    return obs
+
+
+def test_served_performance_stratifies_by_regime_and_labels_the_pooled_figure(tmp_path):
+    """The published 'how good is the product' number averaged eight models,
+    most of them not running. It is kept (consumers read it) but is now labelled
+    as pooled and shipped beside its per-regime split."""
+    obs = _two_regime_history(tmp_path)
+    _write_observations(tmp_path, obs)
+    payload = served_performance(tmp_path, windows=(90,))
+    window = payload["window_90d"]
+
+    assert window["same_day"]["pooled_across_regimes"] is True
+    assert window["same_day"]["pooled_caveat"] == POOLED_REGIME_CAVEAT
+    assert "aucpr_caveat" in window["same_day"]
+
+    regimes = window["by_regime"]
+    assert "livefp0000000000" in regimes
+    assert regimes["livefp0000000000"]["is_reconstructed"] is False
+    legacy = [key for key in regimes if key.startswith("legacy:")]
+    assert legacy, "pre-fingerprint rows must still be reported, as legacy"
+    assert regimes[legacy[0]]["is_reconstructed"] is True
+    # Regime and assay stratification compose rather than replace one another.
+    assert "by_assay" in regimes["livefp0000000000"]["same_day"]
+    assert payload["metric_guidance"]["headline_metric"] == "within_beach_auroc"
+
+
+def test_assay_stratification_reads_method_and_units_from_observations(tmp_path):
+    """Regression. `_matched_from_disk` used to select only
+    (beach_id, sample_date, exceeds_stv), so `daily_outcomes` took its
+    "no assay columns" branch on every real run and reported the ENTIRE served
+    population as culture: the shipped 2026-08-07 payload read
+    `pcr: {n_pairs: 0}` against 1,175 ddPCR observations in the same window.
+    A stratification that silently collapses to one stratum is worse than none —
+    it reads as evidence that the mix is clean.
+    """
+    rows, obs, methods, units = [], [], [], []
+    for i in range(80):
+        beach = f"p{i}"
+        d = "2026-07-01"
+        rows.append(_forecast_row(beach, d, p=0.5, issued=f"{d}T18:00:00+00:00"))
+        obs.append((beach, d, bool(i % 2)))
+        molecular = i < 40
+        methods.append("MCB-ddPCR" if molecular else "Enterolert")
+        units.append("Copies/100ml" if molecular else "MPN/100ml")
+    _write_forecasts(tmp_path, rows)
+    append_forecast_history(tmp_path)
+    _write_observations(tmp_path, obs, method=methods, units=units)
+
+    by_assay = served_performance(tmp_path, windows=(90,))["window_90d"]["same_day"]["by_assay"]
+    assert by_assay["pcr"]["n_pairs"] == 40, by_assay
+    assert by_assay["culture"]["n_pairs"] == 40
+    assert by_assay["composition"]["pcr_pair_fraction"] == 0.5

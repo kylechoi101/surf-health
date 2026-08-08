@@ -89,11 +89,14 @@ def test_confidence_cap_leaves_fresh_and_weak_bands_untouched():
     assert confidence_capped_risk_band(
         0.45, sample_recency_band="stale", advisory_active=False
     ) == "High"
+    # Probes track the cutpoints (Low <0.10, Moderate 0.10-0.20 as of the
+    # 2026-08-08 band reset), not fixed numbers -- the assertion is about the cap
+    # leaving weak bands alone, so each probe must sit inside its band.
     assert confidence_capped_risk_band(
-        0.10, sample_recency_band="very_stale", advisory_active=False
+        0.05, sample_recency_band="very_stale", advisory_active=False
     ) == "Low"
     assert confidence_capped_risk_band(
-        0.25, sample_recency_band="very_stale", advisory_active=False
+        0.15, sample_recency_band="very_stale", advisory_active=False
     ) == "Moderate"
 
 

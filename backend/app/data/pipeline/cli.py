@@ -29,11 +29,15 @@ from app.data.pipeline.beachwatch import (
     normalize_station_metadata,
     write_curated_bundle,
 )
+from app.data.pipeline.beachwatch_live import merge_live_into_observations
 from app.data.pipeline.ceden import (
+    _normalize_method_or_unit,
     fetch_ceden_datastore_subset,
     load_ceden_csv,
     merge_ceden_into_beachwatch_bundle,
 )
+from app.data.pipeline.exceedance import compute_exceeds_stv
+from app.data.pipeline.units_corrections import correct_units_series
 from app.data.pipeline.curation import curate_beach_days, write_duckdb_snapshot
 from app.data.pipeline.external_covariates import enrich_beach_day_with_external_covariates
 from app.data.pipeline.station_quality import support_status_for
@@ -282,21 +286,254 @@ def refresh_latest_official_sample_at(
     return stations.drop(columns=["latest_official_sample_at_new"])
 
 
+def normalize_beachwatch_results_full(
+    path: Path,
+    stv_threshold: float,
+    chunksize: int = 200_000,
+) -> pd.DataFrame:
+    """Normalize the ENTIRE results CSV, chunk by chunk, to bound peak memory.
+
+    The state export is ~2.4M rows x 93 string columns (1.7 GB on disk as of
+    2026-08-07). Reading it whole with ``dtype=str`` — which is what
+    ``load_beachwatch_csv`` does, and therefore what the pre-existing
+    ``--start-date`` escape hatch does — materializes ~220M Python strings and
+    is not survivable on a 16 GB runner. ``normalize_bacteria_results`` is
+    strictly row-wise (no groupby, no cross-row state), so normalizing per
+    chunk and concatenating is identical to normalizing the whole frame, and
+    the normalized output is ~500k x 21 — three orders of magnitude smaller.
+    The final sort reproduces the whole-frame ordering exactly.
+    """
+    frames: list[pd.DataFrame] = []
+    rows_read = 0
+    for chunk in pd.read_csv(
+        path,
+        dtype=str,
+        encoding="utf-8-sig",
+        low_memory=False,
+        chunksize=chunksize,
+        on_bad_lines="skip",
+    ):
+        rows_read += len(chunk)
+        normalized = normalize_bacteria_results(chunk, stv_threshold)
+        if not normalized.empty:
+            frames.append(normalized)
+    print(f"[beachwatch] full rebuild read {rows_read} raw result rows")
+    if not frames:
+        return pd.DataFrame()
+    return (
+        pd.concat(frames, ignore_index=True)
+        .sort_values(["beach_id", "sample_time"])
+        .reset_index(drop=True)
+    )
+
+
+STATE_DATA_SOURCE = "BeachWatch"
+
+# Identity of one physical BeachWatch *state export* measurement. Method and
+# units are normalized (lowercased, non-alphanumerics stripped) so a re-export
+# that respells "CFU/100 mL" as "CFU/100ml" refreshes the row rather than
+# duplicating it. `value` is deliberately NOT in the key -- see
+# dedupe_incremental_beachwatch_observations.
+_STATE_OBSERVATION_KEY = ("beach_id", "sample_time", "analyte", "_method_norm", "_units_norm")
+
+
+def dedupe_incremental_beachwatch_observations(merged: pd.DataFrame) -> pd.DataFrame:
+    """Collapse a re-normalized state row onto its stale self, and nothing else.
+
+    **This replaces a dedupe key that destroyed ~1,009 observations on every
+    ordinary daily run, 120 of them exceedances.** The incremental branch used
+    to run::
+
+        merged.drop_duplicates(subset=["beach_id", "sample_time"], keep="last")
+
+    over the *whole* frame. That key is strictly coarser than the one the
+    additive merges use to build the same frame
+    (``beach_id, sample_time, analyte, data_source, method, units, value`` --
+    see :func:`merge_live_into_observations`), which keeps method/units/value in
+    the key on purpose because two genuinely different assays on one sample are
+    two observations. So every daily run deleted rows the additive sources had
+    just been careful to preserve. Measured on the shipped frame with the source
+    CSVs held fixed: **1,009 rows destroyed, 120 exceedances, 51 beach-days
+    flipped 1->0, 543 values moved -- 542 down, 0 up.** Every flip in the
+    false-negative direction, which is the direction the worst-sample label rule
+    exists to prevent (the same bug class as the ``.tail(1)`` day-collapse
+    already fixed in :func:`build_beach_day_frame`).
+
+    Two decisions make up the fix, and they pull in opposite directions:
+
+    **1. Only state rows are deduped here.** The branch exists for exactly one
+    job: ``_new_obs`` is a freshly normalized slice of the state CSV
+    concatenated onto ``_existing_obs``, and each fresh row must replace its own
+    stale copy instead of doubling it. Rows from the additive sources
+    (``*.SafeToSwim``, ``*.Live``, ``CountyDirect``) are not in that slice and
+    have nothing to refresh; their deduplication -- including the cross-source
+    mirror collapse, which needs the source-priority order -- belongs to the
+    merge functions that own them and that run later in the same daily job.
+    Keeping mirror handling in one place is the point. Measured: **1,206
+    SafeToSwim groups** share ``(beach_id, sample_time, analyte, method,
+    units)`` with a *differing* value -- same-station same-time split
+    replicates, which the 86.6% culture self-consistency figure is computed
+    from. A value-blind key applied to them would delete one of each.
+
+    **2. ``value`` is not in the state key.** State rows are already unique
+    without it: **0 duplicates on the normalized key across all 476,223** of
+    them. So including it would buy no separation, and would cost correctness --
+    a revised result would fail to match its predecessor and land as a *second*
+    row, where the day-collapse's worst-sample rule would then pick the higher
+    of the two and a downward revision could never take effect. Same reasoning
+    the county-direct merge uses when it keys on the date and deliberately
+    leaves ``value`` out.
+
+    So: a same-timestamp same-assay duplicate still collapses; a same-timestamp
+    different-assay pair, and every additive-source row, survives.
+    """
+    if merged.empty or "beach_id" not in merged.columns:
+        return merged
+    sort_key = [c for c in ("beach_id", "sample_time") if c in merged.columns]
+
+    source = (
+        merged["data_source"]
+        if "data_source" in merged.columns
+        else pd.Series(STATE_DATA_SOURCE, index=merged.index)
+    )
+    # A missing data_source means the pre-additive vintage, i.e. state rows --
+    # the same convention merge_live_into_observations uses when it backfills
+    # the column.
+    is_state = source.isna() | (source == STATE_DATA_SOURCE)
+
+    state = merged.loc[is_state]
+    additive = merged.loc[~is_state]
+
+    if not state.empty:
+        state = state.copy()
+        state["_method_norm"] = (
+            state["method"].map(_normalize_method_or_unit) if "method" in state.columns else ""
+        )
+        state["_units_norm"] = (
+            state["units"].map(_normalize_method_or_unit) if "units" in state.columns else ""
+        )
+        key = [c for c in _STATE_OBSERVATION_KEY if c in state.columns]
+        before = len(state)
+        # keep="last": _new_obs is concatenated after _existing_obs, so the
+        # freshly normalized row is the one that survives.
+        state = state.drop_duplicates(subset=key, keep="last").drop(
+            columns=["_method_norm", "_units_norm"]
+        )
+        collapsed = before - len(state)
+        if collapsed:
+            print(f"[beachwatch] refreshed {collapsed} re-normalized state observation rows")
+
+    combined = pd.concat([state, additive], ignore_index=True, sort=False)
+    if sort_key:
+        combined = combined.sort_values(sort_key, kind="stable")
+    return combined.reset_index(drop=True)
+
+
+def repair_observation_units(observations: pd.DataFrame, stv_threshold: float) -> pd.DataFrame:
+    """Re-apply the units source-correction to rows already on disk.
+
+    A normalization-time fix alone would never reach these rows. The incremental
+    branch only re-normalizes samples newer than ``max(sample_time) - 7d``, so
+    the three mislabelled Mendocino ``Enterolert`` rows (2024-10-08, 2025-05-20,
+    2025-10-28 -- all months old) would keep their ``Copies/100ml`` units, and
+    keep being judged against 1413, forever. Same trap that froze the row set and
+    ``support_status``: a correction that only runs on ingest fixes the future
+    and nothing else.
+
+    ``exceeds_stv`` is recomputed only on rows whose units actually moved, so
+    this cannot quietly relabel anything else -- re-deriving the whole column
+    here would be a label change hiding inside a units fix.
+    """
+    if observations.empty or not {"method", "units"} <= set(observations.columns):
+        return observations
+    corrected = correct_units_series(observations["method"], observations["units"])
+    changed = corrected.ne(observations["units"]).fillna(False).to_numpy()
+    if not changed.any():
+        return observations
+    repaired = observations.copy()
+    repaired["units"] = corrected
+    recomputed = compute_exceeds_stv(
+        repaired.loc[changed, "value"],
+        repaired.loc[changed, "method"],
+        repaired.loc[changed, "units"],
+        stv_threshold,
+    )
+    flips = int((recomputed.to_numpy() != repaired.loc[changed, "exceeds_stv"].to_numpy()).sum())
+    repaired.loc[changed, "exceeds_stv"] = recomputed
+    print(
+        f"[units-correction] repaired {int(changed.sum())} stored rows whose "
+        f"culture method reported copies ({flips} exceedance flag(s) changed)"
+    )
+    return repaired
+
+
+def preserve_prior_additive_observations(
+    observations: pd.DataFrame,
+    prior_observations: pd.DataFrame,
+    stv_threshold: float,
+) -> pd.DataFrame:
+    """Fold accumulated non-BeachWatch rows back into a freshly rebuilt frame.
+
+    **Without this, --full-rebuild destroys the newest five months of data.**
+    The data.ca.gov results export is frozen at sample date 2026-03-05; every
+    sample since then reaches ``observations.parquet`` only through the additive
+    sources -- ``--with-beachwatch-live`` (a rolling 30-day *entered* window),
+    the CEDEN/SafeToSwim slice, and the county-direct scrape -- which the daily
+    job accumulates one day at a time. Re-deriving them from a single run's
+    fetch windows cannot reconstruct that history. Measured on 2026-08-07:
+    12,768 beach-days after 2026-03-05 on disk vs **3,114** from a rebuild that
+    did not preserve them, i.e. **9,654 lost**, April-June collapsing from
+    2,833 / 2,623 / 2,977 rows to 305 / 70 / 86.
+
+    Preserved rows have ``exceeds_stv`` recomputed under today's rule, so
+    preservation cannot smuggle a stale label definition past the rebuild --
+    which is the entire point of the rebuild. (Measured 2026-08-07: 0 of 503,766
+    stored rows disagreed with ``compute_exceeds_stv``, so this is currently a
+    no-op; it is here to keep it one.)
+
+    Merge semantics are the existing additive gap-fill: a rebuilt BeachWatch row
+    always outranks a preserved row for the same physical sample.
+    """
+    if prior_observations.empty or "data_source" not in prior_observations.columns:
+        return observations
+    additive = prior_observations.loc[prior_observations["data_source"] != "BeachWatch"].copy()
+    if additive.empty:
+        return observations
+    # Preserved rows were normalized by an older vintage of the code, so they get
+    # today's source corrections before today's predicate runs on them.
+    additive["units"] = correct_units_series(additive["method"], additive["units"])
+    additive["exceeds_stv"] = compute_exceeds_stv(
+        additive["value"], additive.get("method"), additive.get("units"), stv_threshold
+    )
+    print(
+        f"[full-rebuild] preserving {len(additive)} accumulated additive-source rows "
+        f"({', '.join(f'{k}={v}' for k, v in additive['data_source'].value_counts().items())})"
+    )
+    return merge_live_into_observations(observations, additive)
+
+
 def normalize_beachwatch_bundle(
     stations_path: Path,
     results_path: Path | None,
     advisories_path: Path,
     max_results_rows: int | None = None,
     results_raw: pd.DataFrame | None = None,
+    observations_normalized: pd.DataFrame | None = None,
 ) -> dict[str, pd.DataFrame]:
     settings = get_settings()
     stations_raw = load_beachwatch_csv(stations_path)
-    if results_raw is None:
+    if observations_normalized is None and results_raw is None:
         results_raw = load_beachwatch_csv(results_path, nrows=max_results_rows)
     advisories_raw = load_beachwatch_csv(advisories_path)
 
     stations = normalize_station_metadata(stations_raw)
-    observations = normalize_bacteria_results(results_raw, settings.epa_marine_enterococcus_stv)
+    if observations_normalized is not None:
+        # Already normalized upstream (the --full-rebuild chunked path). Skipping
+        # the re-normalization here is what keeps the 1.7 GB raw frame from ever
+        # having to exist in memory.
+        observations = observations_normalized
+    else:
+        observations = normalize_bacteria_results(results_raw, settings.epa_marine_enterococcus_stv)
     advisories = normalize_advisories(advisories_raw)
 
     if not observations.empty and "beach_id" in observations.columns:
@@ -380,7 +617,14 @@ def build_sample_curated_table() -> pd.DataFrame:
     )
 
 
-def main() -> None:
+def build_arg_parser() -> argparse.ArgumentParser:
+    """The CLI's argument parser.
+
+    Extracted from :func:`main` so a test can parse the *exact* argv the daily
+    workflow uses and assert which normalization branch it selects. The
+    incremental/full-rebuild choice is the single highest-consequence branch in
+    the pipeline and it used to be unreachable from a test.
+    """
     parser = argparse.ArgumentParser(description="Surf Health data pipeline")
     parser.add_argument("--ingest", action="store_true", help="Fetch source metadata from official APIs")
     parser.add_argument(
@@ -472,7 +716,46 @@ def main() -> None:
     parser.add_argument("--build-hydrologic-links", action="store_true")
     parser.add_argument("--start-date", type=str)
     parser.add_argument("--end-date", type=str)
-    args = parser.parse_args()
+    parser.add_argument(
+        "--full-rebuild",
+        action="store_true",
+        help="Re-normalize the ENTIRE BeachWatch results CSV instead of the last 7 "
+             "days. OPT-IN, one-off: the daily workflow must NOT pass it. Without "
+             "it, whenever observations.parquet exists and no --start-date is given, "
+             "only rows newer than (max sample_time - 7d) are re-normalized — so a "
+             "change to the label definition relabels one week and leaves the rest "
+             "of history on the previous definition, silently, passing every gate. "
+             "Reads the CSV in chunks (the whole-frame read the --start-date path "
+             "does needs >16 GB). Scope is the LABEL only: the precip / streamflow / "
+             "solar-wind caches keep their own incremental fetch (use "
+             "scripts/backfill_solar_wind.py for those).",
+    )
+    return parser
+
+
+def use_incremental_beachwatch_normalization(
+    args: argparse.Namespace,
+    observations_exists: bool,
+    stations_exists: bool,
+) -> bool:
+    """Whether to re-normalize only the trailing 7 days of BeachWatch results.
+
+    True is the *daily* behaviour and must stay that way: a full re-normalization
+    reads a 1.7 GB CSV and does not fit the workflow's 170-minute budget. False
+    means "normalize all history", which is what a change to the label definition
+    requires — reached by ``--full-rebuild`` (or, for a bounded window,
+    ``--start-date``).
+    """
+    return (
+        observations_exists
+        and stations_exists
+        and not args.start_date
+        and not args.full_rebuild
+    )
+
+
+def main() -> None:
+    args = build_arg_parser().parse_args()
 
     if args.ingest:
         frames = asyncio.run(ingest_sources())
@@ -498,7 +781,13 @@ def main() -> None:
         _obs_path = _curated / "observations.parquet"
         _stn_path = _curated / "beaches.parquet"
         _adv_path = _curated / "advisories.parquet"
-        _incremental_bw = _obs_path.exists() and _stn_path.exists() and not args.start_date
+        # --full-rebuild is the only way to re-normalize history that already sits
+        # in observations.parquet. Everything else about the branch is unchanged:
+        # the daily workflow passes neither --start-date nor --full-rebuild and
+        # therefore still takes the incremental path.
+        _incremental_bw = use_incremental_beachwatch_normalization(
+            args, _obs_path.exists(), _stn_path.exists()
+        )
         if _incremental_bw:
             # Incremental: keep existing stations + observations; only re-normalize new obs + advisories.
             _existing_obs = pd.read_parquet(_obs_path)
@@ -508,8 +797,10 @@ def main() -> None:
             print(f"[beachwatch] {len(_new_results_raw)} new result rows to normalize")
             _new_obs = normalize_bacteria_results(_new_results_raw, settings.epa_marine_enterococcus_stv) if not _new_results_raw.empty else pd.DataFrame()
             _merged = pd.concat([_existing_obs, _new_obs], ignore_index=True) if not _new_obs.empty else _existing_obs
-            _key = [c for c in ("beach_id", "sample_time") if c in _merged.columns]
-            _all_obs = _merged.drop_duplicates(subset=_key, keep="last").sort_values(_key).reset_index(drop=True)
+            _all_obs = dedupe_incremental_beachwatch_observations(_merged)
+            _all_obs = repair_observation_units(
+                _all_obs, settings.epa_marine_enterococcus_stv
+            )
             print(f"[beachwatch] merged observations: {len(_all_obs)} rows")
             _advisories_raw = load_beachwatch_csv(args.advisories_csv)
             _all_adv = normalize_advisories(_advisories_raw)
@@ -523,12 +814,38 @@ def main() -> None:
                 print(f"[beachwatch] dropped {len(_stale)} stale suffixed columns from stations")
             bundle = {"stations": _all_stn, "observations": _all_obs, "advisories": _all_adv}
         else:
+            _observations_full = None
+            if args.full_rebuild:
+                print(
+                    "[beachwatch] FULL REBUILD: re-normalizing all history from "
+                    f"{args.results_csv} (chunked)"
+                )
+                _observations_full = normalize_beachwatch_results_full(
+                    args.results_csv, settings.epa_marine_enterococcus_stv
+                )
+                print(f"[beachwatch] full rebuild normalized {len(_observations_full)} observation rows")
             bundle = normalize_beachwatch_bundle(
                 stations_path=args.stations_csv,
                 results_path=args.results_csv,
                 advisories_path=args.advisories_csv,
                 max_results_rows=args.max_results_rows,
+                observations_normalized=_observations_full,
             )
+            if args.full_rebuild and _obs_path.exists():
+                # The state export is frozen; the additive sources carry everything
+                # newer. Re-derive the state history, keep what only the additive
+                # sources ever had. See preserve_prior_additive_observations.
+                bundle["observations"] = preserve_prior_additive_observations(
+                    bundle["observations"],
+                    pd.read_parquet(_obs_path),
+                    settings.epa_marine_enterococcus_stv,
+                )
+                bundle["stations"] = refresh_latest_official_sample_at(
+                    bundle["stations"], bundle["observations"]
+                )
+                bundle["beach_day"] = build_beach_day_frame(
+                    bundle["observations"], bundle["stations"], bundle["advisories"]
+                )
         if args.merge_ceden:
             ceden_sites_path = _resolve_ceden_resource_path(
                 requested_path=args.ceden_sites_csv,
@@ -595,10 +912,7 @@ def main() -> None:
             # ADDITIVE third source. Runs last so BeachWatch + CEDEN rows always win
             # the dedupe; live only contributes samples nobody else has yet.
             from app.data.connectors.beachwatch_live import fetch_all as _fetch_live
-            from app.data.pipeline.beachwatch_live import (
-                merge_live_into_observations,
-                normalize_live_results,
-            )
+            from app.data.pipeline.beachwatch_live import normalize_live_results
 
             _years = args.beachwatch_live_backfill_years
             _slices = [{"year": y} for y in _years] if _years else [
@@ -884,8 +1198,15 @@ def main() -> None:
 
         if args.with_solar_wind:
             from datetime import date as _date
-            from app.data.connectors.hydrology_sources import OpenMeteoHistoricalSolarWindConnector
-            from app.data.pipeline.solar_wind import aggregate_solar_wind_windows
+            from app.data.connectors.hydrology_sources import (
+                OpenMeteoHistoricalSolarWindConnector,
+                OpenMeteoHistoricalUvConnector,
+            )
+            from app.data.pipeline.solar_wind import (
+                aggregate_solar_wind_windows,
+                explode_solar_wind_to_beaches,
+                merge_uv_hourly,
+            )
             from app.data.pipeline.marine_microbiology import (
                 compute_beach_shore_azimuth,
                 compute_beach_coastal_features,
@@ -927,6 +1248,21 @@ def main() -> None:
                     cache_dir=settings.precip_cache_dir / "openmeteo_solar_wind",
                 )
             )
+            # Real UV comes from the air-quality archive, NOT from the ERA5 archive
+            # above (which serves uv_index as an all-null column). Fetched over the
+            # same window and spliced in per (grid cell, hour) before aggregation so
+            # uv_index_24h_max is a measurement rather than the shortwave proxy.
+            # A failure here degrades to the proxy — it must never block the run.
+            raw_uv = asyncio.run(
+                OpenMeteoHistoricalUvConnector().fetch_historical_uv(
+                    station_locs,
+                    _sw_fetch_start,
+                    end_date,
+                    cache_dir=settings.precip_cache_dir / "openmeteo_uv",
+                )
+            )
+            print(f"[solar-wind] air-quality UV hours fetched: {len(raw_uv)}")
+            raw_sw = merge_uv_hourly(raw_sw, raw_uv)
             new_sw_daily = aggregate_solar_wind_windows(raw_sw)
             if _sw_path.exists() and not args.start_date:
                 _existing_sw = pd.read_parquet(_sw_path)
@@ -946,41 +1282,11 @@ def main() -> None:
                 sw_daily.to_parquet(_sw_path, index=False)
                 print(f"[solar-wind] solar_wind_daily: {len(sw_daily)} rows")
 
-                # Map each beach to its nearest open-meteo station_id, then join
-                from app.data.pipeline.external_covariates import haversine_km
-                sw_stations = (
-                    sw_daily[["station_id", "latitude", "longitude"]]
-                    .drop_duplicates("station_id")
-                    .dropna()
-                )
-                beach_to_station: dict[str, str] = {}
-                for _, b in stations_df.iterrows():
-                    if pd.isna(b.get("latitude")) or pd.isna(b.get("longitude")):
-                        continue
-                    nearest, min_d = None, float("inf")
-                    for _, s in sw_stations.iterrows():
-                        d = haversine_km(float(b["latitude"]), float(b["longitude"]),
-                                         float(s["latitude"]), float(s["longitude"]))
-                        if d < min_d:
-                            nearest, min_d = str(s["station_id"]), d
-                    if nearest:
-                        beach_to_station[str(b["beach_id"])] = nearest
-
+                # Map each beach to its nearest open-meteo station_id, then join.
+                # Shared with scripts/backfill_solar_wind.py so the one-off backfill
+                # and the daily run cannot produce different columns.
                 sw_daily["sample_date"] = pd.to_datetime(sw_daily["sample_date"])
-                station_to_beaches: dict[str, list[str]] = {}
-                for bid, sid in beach_to_station.items():
-                    station_to_beaches.setdefault(sid, []).append(bid)
-                # Explode station rows per beach
-                exploded: list[pd.DataFrame] = []
-                for sid, bids in station_to_beaches.items():
-                    sub = sw_daily.loc[sw_daily["station_id"] == sid].copy()
-                    if sub.empty:
-                        continue
-                    for bid in bids:
-                        s = sub.copy()
-                        s["beach_id"] = bid
-                        exploded.append(s)
-                beach_sw = pd.concat(exploded, ignore_index=True) if exploded else pd.DataFrame()
+                beach_sw = explode_solar_wind_to_beaches(sw_daily, stations_df)
 
                 if not beach_sw.empty:
                     mm_daily = build_marine_microbiology_daily(beach_sw, shore_az)

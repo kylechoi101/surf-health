@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 
+from app.ml.calibration import risk_band
 from app.ml.stale_evaluation import (
     build_stale_prior_router,
     build_serving_stale_sample_set,
@@ -148,7 +149,15 @@ def test_build_stale_prior_router_fails_closed_to_smoothed_beach_prior():
     assert bool(result["failed_closed"].iloc[0]) is True
     assert result["stale_probability"].iloc[0] > 0.0
     assert result["stale_probability"].iloc[0] < 0.2
-    assert result["stale_risk_band"].iloc[0] == "Low"
+    # The invariant is "fails closed to a WEAK band", not a fixed label: the
+    # smoothed prior lands just under 0.2, which was Low when the Low/Moderate
+    # cut sat at 0.20 and is Moderate since the 2026-08-08 reset moved it to
+    # 0.10. Derive the label so the next cutpoint change cannot silently
+    # invert this assertion's meaning.
+    assert result["stale_risk_band"].iloc[0] == risk_band(
+        float(result["stale_probability"].iloc[0])
+    )
+    assert result["stale_risk_band"].iloc[0] in ("Low", "Moderate")
     assert "historical" in result["stale_route_basis"].iloc[0]
 
 

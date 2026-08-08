@@ -11,6 +11,7 @@ import pandas as pd
 
 from app.data.pipeline.beachwatch import build_beach_day_frame
 from app.data.pipeline.exceedance import compute_exceeds_stv
+from app.data.pipeline.units_corrections import correct_units_series
 from app.data.pipeline.external_covariates import haversine_km
 
 
@@ -276,6 +277,10 @@ def normalize_ceden_results(frame: pd.DataFrame, stv_threshold: float) -> pd.Dat
     results["units"] = results["Unit"].fillna("unknown").astype(str).str.strip()
     # Method-aware: PCR (copies) judged against the molecular threshold, not the
     # culture STV. See app.data.pipeline.exceedance.
+    # Source correction before the predicate reads them: a culture method
+    # cannot report copies (see units_corrections), and is_pcr_measurement
+    # would otherwise judge such a row against 1413 instead of 104.
+    results["units"] = correct_units_series(results["method"], results["units"])
     results["exceeds_stv"] = compute_exceeds_stv(
         results["value"], results["method"], results["units"], stv_threshold
     )

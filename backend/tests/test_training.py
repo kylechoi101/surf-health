@@ -1136,12 +1136,95 @@ def test_model_card_reports_spatial_metrics_for_production_model(tmp_path):
     assert "**Spatial county AUCPR**: 0.655" in card
 
 
+def test_export_stamps_the_serving_config_fingerprint_end_to_end(monkeypatch, tmp_path):
+    """E5 exit criterion 1: every newly-served row carries a fingerprint, and it
+    is decodable.
+
+    `model_version` cannot do this job — it records the registry WINNER, which
+    stays the ensemble even on the rows the offset model served. The three
+    serving eras in the existing log had to be reconstructed from side effects,
+    and one week of them (2026-07-22..07-28, router live but
+    `served_offset_weight` not yet logged) cannot be reconstructed at all.
+    """
+    import json
+
+    from app.ml.serving_config import REGISTRY_FILE
+
+    row = _run_export_single_beach(
+        tmp_path,
+        monkeypatch,
+        winner="xgb_undersample_ensemble",
+        model_prob=0.4,
+        last_obs=10.0,
+        sample_recency_band="recent",
+        advisory_floor=0,
+    )
+    fingerprint = row["serving_config_fingerprint"]
+    assert isinstance(fingerprint, str) and len(fingerprint) == 16
+
+    curated_dir = tmp_path / "curated"
+    history = pd.read_parquet(curated_dir / "forecast_history.parquet")
+    assert set(history["serving_config_fingerprint"]) == {fingerprint}
+
+    health = json.loads((curated_dir / "system_health.json").read_text())
+    assert health["serving_config"]["fingerprint"] == fingerprint
+    # A bare hash is not provenance unless something can say what it means.
+    registry = json.loads((curated_dir / REGISTRY_FILE).read_text())
+    document = registry["fingerprints"][fingerprint]["document"]
+    assert document["winner_branch"] == "xgb_undersample_ensemble"
+    assert document["floors"]["persistence_floor"] == _LOW_THRESHOLD
+    # E4: the headline is the within-beach number, and the global AUCPR that
+    # used to lead the card is published as demoted, with its caveat attached.
+    headline = health["headline_metrics"]
+    assert headline["primary_metric"] == "within_beach_auroc"
+    assert headline["secondary_global_aucpr"]["status"] == "demoted"
+    assert "base-rate dependent" in headline["secondary_global_aucpr"]["caveat"]
+
+
+def test_a_floor_constant_change_moves_the_served_fingerprint(monkeypatch, tmp_path):
+    """Exit criterion 2, through the real serve path rather than the unit-level
+    document: move the persistence floor / Low cutpoint and the fingerprint
+    written into forecasts.parquet changes. Step 10 moves this exact constant."""
+    from app.ml import calibration as calibration_module
+
+    before = _run_export_single_beach(
+        tmp_path / "a",
+        monkeypatch,
+        winner="xgb_undersample_ensemble",
+        model_prob=0.4,
+        last_obs=10.0,
+        sample_recency_band="recent",
+        advisory_floor=0,
+    )["serving_config_fingerprint"]
+
+    # Perturb RELATIVE to the live value. Hardcoding a target silently becomes a
+    # no-op the moment the constant is retuned to it -- which is exactly what
+    # happened when Step 10 moved _LOW_THRESHOLD to the 0.10 this line used to
+    # patch in, leaving the test asserting a change it no longer caused.
+    monkeypatch.setattr(
+        calibration_module,
+        "_LOW_THRESHOLD",
+        calibration_module._LOW_THRESHOLD + 0.05,
+    )
+    after = _run_export_single_beach(
+        tmp_path / "b",
+        monkeypatch,
+        winner="xgb_undersample_ensemble",
+        model_prob=0.4,
+        last_obs=10.0,
+        sample_recency_band="recent",
+        advisory_floor=0,
+    )["serving_config_fingerprint"]
+
+    assert before != after, "a floor/band constant change must move the fingerprint"
+
+
 def test_export_forecasts_applies_advisory_safety_floor(monkeypatch, tmp_path):
     from app.ml.training import _export_forecasts, _TrainedModels, StageTwoTrainingPlan
     class FixedClassifier:
         def predict_proba(self, frame):
             return np.column_stack(
-                [np.full(len(frame), 0.8, dtype=float), np.full(len(frame), 0.2, dtype=float)]
+                [np.full(len(frame), 0.8, dtype=float), np.full(len(frame), 0.05, dtype=float)]
             )
 
     class FixedRegressor:
@@ -1234,16 +1317,16 @@ def test_export_forecasts_applies_advisory_safety_floor(monkeypatch, tmp_path):
 
     forecasts = pd.read_parquet(curated_dir / "forecasts.parquet")
 
-    assert forecasts.loc[forecasts["beach_id"] == "acute_active", "p_exceed"].iloc[0] == 0.3
-    assert forecasts.loc[forecasts["beach_id"] == "acute_active", "p_exceed_raw"].iloc[0] == 0.2
+    assert forecasts.loc[forecasts["beach_id"] == "acute_active", "p_exceed"].iloc[0] == _HIGH_THRESHOLD
+    assert forecasts.loc[forecasts["beach_id"] == "acute_active", "p_exceed_raw"].iloc[0] == 0.05
     assert bool(forecasts.loc[forecasts["beach_id"] == "acute_active", "advisory_floor_applied"].iloc[0]) is True
     
-    assert forecasts.loc[forecasts["beach_id"] == "chronic_active", "p_exceed"].iloc[0] == 0.3
-    assert forecasts.loc[forecasts["beach_id"] == "chronic_active", "p_exceed_raw"].iloc[0] == 0.2
+    assert forecasts.loc[forecasts["beach_id"] == "chronic_active", "p_exceed"].iloc[0] == _HIGH_THRESHOLD
+    assert forecasts.loc[forecasts["beach_id"] == "chronic_active", "p_exceed_raw"].iloc[0] == 0.05
     assert bool(forecasts.loc[forecasts["beach_id"] == "chronic_active", "advisory_floor_applied"].iloc[0]) is True
     
-    assert forecasts.loc[forecasts["beach_id"] == "stale_active", "p_exceed"].iloc[0] == 0.2
-    assert forecasts.loc[forecasts["beach_id"] == "stale_active", "p_exceed_raw"].iloc[0] == 0.2
+    assert forecasts.loc[forecasts["beach_id"] == "stale_active", "p_exceed"].iloc[0] == 0.05
+    assert forecasts.loc[forecasts["beach_id"] == "stale_active", "p_exceed_raw"].iloc[0] == 0.05
     assert bool(forecasts.loc[forecasts["beach_id"] == "stale_active", "advisory_floor_applied"].iloc[0]) is False
 
 
@@ -1700,7 +1783,7 @@ def test_export_nan_probability_falls_back_to_safe_default(monkeypatch, tmp_path
         raw_proba_override=[np.nan],
     )
     assert np.isfinite(row["p_exceed"])
-    assert row["p_exceed"] == 0.20
+    assert row["p_exceed"] == _LOW_THRESHOLD
 
 
 def test_export_confidence_cap_downgrades_strong_band_on_very_stale_no_advisory(

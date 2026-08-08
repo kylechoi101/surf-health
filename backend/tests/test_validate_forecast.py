@@ -60,11 +60,14 @@ def test_pass_path_with_previous(tmp_path, capsys):
 
 def test_all_safe_collapse_fails_without_previous(tmp_path, capsys):
     # Distinct, in-range, full-count, fresh — only the new check can catch it.
-    _write_forecast(tmp_path / "cur", np.linspace(0.01, 0.19, 60))
+    # Every row must sit below the CURRENT Low cut for the collapse check to
+    # fire. The 2026-08-08 band reset moved it 0.20 -> 0.10, so the old
+    # 0.01..0.19 sweep stopped being "all safe" and the check correctly passed.
+    _write_forecast(tmp_path / "cur", np.linspace(0.01, 0.09, 60))
     assert vf.main(["--curated", str(tmp_path / "cur")]) == 1
     err = capsys.readouterr().err
     assert "[all-safe-collapse]" in err
-    assert "0.1900" in err  # the max is printed
+    assert "0.0900" in err  # the max is printed
 
 
 def test_mean_squash_vs_previous_fails(tmp_path, capsys):

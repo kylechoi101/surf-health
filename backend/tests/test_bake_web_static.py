@@ -75,7 +75,7 @@ def test_zero_raw_probability_yields_low_not_high():
     # probability, so a posted beach reads High rather than Low while the posting
     # itself is carried by official_advisory_active.
     assert block["risk_band"] == "High"
-    assert block["p_exceed"] == 0.30
+    assert block["p_exceed"] == canon._HIGH_THRESHOLD
     assert block["advisory_floor_applied"] is True
 
 
@@ -216,18 +216,23 @@ def test_posted_beach_can_never_render_low_or_moderate():
     beside an ADVISORY badge. Sweep the whole probability range: no input may
     produce Low or Moderate while a posting is active.
     """
-    for raw in (0.0, 0.001, 0.05609, 0.11764, 0.19, 0.199999, 0.20, 0.29999):
+    # Sweep values STRICTLY BELOW the floor -- these are the ones it must lift.
+    # Bounds track _HIGH_THRESHOLD, which the 2026-08-08 band reset moved
+    # 0.30 -> 0.20; 0.20 and 0.29999 therefore graduated to the untouched sweep.
+    for raw in (0.0, 0.001, 0.05609, 0.11764, 0.19, 0.199999):
         row = pd.Series({"beach_id": "b", "p_exceed_raw": raw, "p_exceed": raw})
         block = bake._build_forecast_block(row, has_active_advisory=True)
         assert block["risk_band"] not in ("Low", "Moderate"), f"raw={raw} -> {block['risk_band']}"
-        assert block["p_exceed"] >= 0.30
+        assert block["p_exceed"] >= canon._HIGH_THRESHOLD
         assert block["advisory_floor_applied"] is True
-    # Above the cutpoint the genuine probability must survive untouched.
-    for raw in (0.30, 0.5045, 0.99):
+    # At or above the cutpoint the genuine probability must survive untouched --
+    # and must still never read Low or Moderate, which is the actual guarantee.
+    for raw in (0.20, 0.29999, 0.30, 0.5045, 0.99):
         row = pd.Series({"beach_id": "b", "p_exceed_raw": raw, "p_exceed": raw})
         block = bake._build_forecast_block(row, has_active_advisory=True)
         assert block["p_exceed"] == raw
         assert block["advisory_floor_applied"] is False
+        assert block["risk_band"] not in ("Low", "Moderate"), f"raw={raw} -> {block['risk_band']}"
     # And an unposted beach is never floored. (The unposted path passes risk_band
     # through from the parquet row rather than recomputing it, so the fixture
     # supplies it the way the real forecasts.parquet does.)
@@ -286,4 +291,4 @@ def test_display_and_feature_advisory_gates_are_different_questions():
         row = pd.Series({"beach_id": "b", "p_exceed_raw": raw, "p_exceed": raw})
         block = bake._build_forecast_block(row, has_active_advisory=True)
         assert block["risk_band"] not in ("Low", "Moderate")
-        assert block["p_exceed"] >= 0.30
+        assert block["p_exceed"] >= canon._HIGH_THRESHOLD

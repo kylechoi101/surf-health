@@ -78,6 +78,15 @@ mobile/
 # Scratch HTML/data sources downloaded during research — large and not part
 # of the source code. Re-download from the original URLs if needed.
 data/source_metadata/
+# Frozen baseline snapshots for the rebuild programme (backend/scripts/
+# snapshot_curated.py). ~20MB of copied parquets per vintage — local working
+# state only. The durable record is the MANIFEST.json, which IS committed at
+# docs/baselines/MANIFEST_<date>.json.
+data/baseline/
+# Per-step curated snapshots taken during the rebuild programme (pre / post-A /
+# post-B ...). Same deal as data/baseline/: ~20MB of copied parquets per
+# vintage, local working state only, MANIFEST.json is the durable record.
+data/snapshots/
 # Curated dataset backups created before retrains / data migrations. Real
 # parquets are tracked under data/curated/ — *.bak-* are local-only safety
 # snapshots and bloat the public repo if committed.

@@ -199,6 +199,13 @@ class SystemHealthResponse(BaseModel):
     forecast_audit: dict[str, Any] | None = None
     repository_mode: str | None = None
     serving_snapshot: dict[str, Any] | None = None
+    # Band contract (Step 10, E2/E7): cutpoints, the LEFT-CLOSED convention, the
+    # measured realized rate + beach-cluster CI per band, and the explicit
+    # statement that these are RELATIVE risk tiers rather than absolute
+    # probabilities. Served from app.ml.calibration.band_definitions() rather
+    # than from the stored payload, so a client can never render a cutpoint the
+    # serving code is not actually applying.
+    risk_bands: dict[str, Any] | None = None
 
 
 class ForecastExplanationRequest(BaseModel):

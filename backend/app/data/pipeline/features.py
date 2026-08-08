@@ -590,6 +590,74 @@ def add_temporal_features(frame: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+# Columns that let the model work out WHERE a beach is, rather than what is
+# happening at it. Excluded so leave-one-county-out / leave-one-beach-out
+# backtests measure transferable mechanism instead of a memorised location ->
+# base-rate lookup. Two distinct leak shapes, both measured 2026-08-08 on the
+# shipped frame:
+#
+#   1. COORDINATE LAUNDERING. `latitude`/`longitude` were already excluded by
+#      name -- and then re-entered two lines later as a unit conversion.
+#      `coastal_y_km` (= latitude * 110.57) measures Spearman **1.0000** against
+#      latitude; `coastal_x_km` is longitude * cos(lat) * 111.32.
+#   2. SINGLE-COUNTY SUPPORT. Every Tijuana / transboundary feature is nonzero
+#      in exactly ONE county, so "nonzero" is a perfect San Diego indicator no
+#      matter what the value means. `south_alongshore_wind_ms` is included for
+#      this reason alone -- alongshore wind is legitimate physics, but it is
+#      only ever populated for one region, so its PRESENCE is the tell.
+#      `dist_to_chronic_source_km` is the same failure in continuous form:
+#      Spearman **0.9968** against latitude, and univariate AUROC 0.479 (below
+#      chance) on statewide culture rows -- it is latitude wearing a mechanism's
+#      name.
+#
+# Deliberately NOT excluded: `dist_to_pier_km` (rho 0.29), `dist_to_estuary_km`
+# (0.34), `is_near_pier` (0.03), `is_near_estuary_mouth` (0.01). These describe
+# proximity to a TYPE of structure, are spread across 6-15 counties, and do not
+# identify a place. `test_model_is_location_blind` pins the whole rule.
+LOCATION_IDENTIFYING_COLUMNS: frozenset[str] = frozenset(
+    {
+        "latitude",
+        "longitude",
+        "coastal_x_km",
+        "coastal_y_km",
+        "dist_to_chronic_source_km",
+        "is_tijuana_plume_zone",
+        "tijuana_plume_onshore_flag",
+        "tijuana_plume_wind_interaction",
+        # Found by `test_no_model_feature_has_single_county_support`, not by
+        # inspection -- the same single-county shape as the Tijuana block.
+        # Identifiers, not measurements. Station/gage IDs are assigned
+        # geographically, so the NUMBER encodes position: `nearest_stream_gage_id`
+        # scores 0.9853 against latitude and `name` 0.9849. The streamflow VALUES
+        # read off that gage stay in the model; its id does not.
+        "name",
+        "nearest_stream_gage_id",
+        # Same transform-laundering bug already fixed once for
+        # `historical_advisory_count_log1p`: the base column was excluded and its
+        # log1p sibling was not. 0.9701 against latitude.
+        "erddap_distance_km_log1p",
+    }
+    # The San Diego boundary geography, taken from the curated lists rather than
+    # re-typed: every one of these is nonzero in exactly one county. Referencing
+    # the source of truth means a NEW boundary feature is blinded automatically
+    # instead of leaking until someone remembers to extend a second list.
+    | set(SD_BOUNDARY_FLAG_COLUMNS)
+    | set(SD_BOUNDARY_INTERACTION_COLUMNS)
+)
+
+# `is_pcr` is nonzero in exactly one county (San Diego is the only county using
+# ddPCR), so the single-county guard flags it -- correctly, as a shape. It is
+# nonetheless NOT a location feature and is deliberately exempt: Step 7 tested
+# precisely this by swapping it for an explicit San Diego indicator, and
+# performance did NOT recover (held-out-beach within-group AUROC: base 0.8648,
+# without is_pcr 0.8519, with a San Diego indicator instead 0.8505 -- worse than
+# dropping it). It encodes which action value a row's value-derived features are
+# denominated in, which varies WITHIN San Diego over time as the county migrated
+# to ddPCR through mid-2022. Removing it would leave the model unable to tell
+# 2,501 copies from 2,501 MPN.
+LOCATION_GUARD_EXEMPT_COLUMNS: frozenset[str] = frozenset({"is_pcr"})
+
+
 def _model_feature_columns(enriched: pd.DataFrame) -> list[str]:
     feature_columns = [
         column
@@ -602,6 +670,17 @@ def _model_feature_columns(enriched: pd.DataFrame) -> list[str]:
             "sample_date",
             "sample_time",
             "exceeds_stv",
+            # Assay identity. `is_pcr` IS a feature (numeric 0/1 -- the model
+            # needs to know which of the two action-value universes a row's
+            # value-derived features are denominated in). These three are not:
+            #   label_method / label_units  free text, and a one-hot of them is
+            #       just `is_pcr` with extra columns.
+            #   assay_disagreement          TARGET LEAKAGE -- it is computed
+            #       from the same-day exceedance of both assays, and one of
+            #       those is the label being predicted.
+            "label_method",
+            "label_units",
+            "assay_disagreement",
             "wave_direction_deg",
             "latitude",
             "longitude",
@@ -619,6 +698,7 @@ def _model_feature_columns(enriched: pd.DataFrame) -> list[str]:
             "cdip_station_id",
             "erddap_source_name",
         }
+        and column not in LOCATION_IDENTIFYING_COLUMNS
     ]
     raw_current_columns = set(PROSPECTIVE_EXOGENOUS_COLUMNS)
     feature_columns = [column for column in feature_columns if column not in raw_current_columns]

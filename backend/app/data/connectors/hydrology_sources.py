@@ -19,6 +19,92 @@ logger = logging.getLogger(__name__)
 _USGS_MISSING_VALUES = {"-999999", ""}
 _USGS_IV_MAX_DAYS = 90  # NWIS IV returns ReadTimeout for multi-site requests > ~90 days
 
+# Escape hatch for the all-null guard below. Set to 1/true to downgrade the hard
+# failure to a warning (the column is still refused, never cached as all-null).
+_ALLOW_NULL_VARS_ENV = "OPENMETEO_ALLOW_NULL_VARS"
+
+# A sibling variable must be at least this well populated before an entirely-null
+# variable is treated as "this endpoint does not serve it" rather than "this fetch
+# came back thin". See _assert_no_all_null_variables.
+_SIBLING_POPULATED_FRACTION = 0.5
+
+
+class AllNullVariableError(RuntimeError):
+    """A requested ``hourly`` variable came back 100% null while its siblings did not.
+
+    This is the failure mode that hid a missing feature for three months:
+    ``archive-api.open-meteo.com/v1/archive`` happily accepts ``uv_index`` in
+    ``hourly``, answers **HTTP 200**, includes the key in the payload, and fills
+    it with ``null`` for every hour. Nothing raises, the column caches as all-NaN,
+    and the downstream feature silently reads as "missing" (then zero-filled at
+    training time) forever.
+    """
+
+
+def _assert_no_all_null_variables(
+    hourly: dict,
+    requested: tuple[str, ...] | list[str],
+    *,
+    context: str,
+) -> None:
+    """Fail loudly when a requested variable is served as an all-null column.
+
+    The distinction that keeps this from breaking the daily job:
+
+    * **"this endpoint never serves this variable"** — the response is otherwise
+      healthy (times present, at least one *sibling* requested variable at least
+      ``_SIBLING_POPULATED_FRACTION`` populated) yet one variable has **zero**
+      non-null values. The endpoint clearly answered correctly for this
+      coordinate and date range, so an empty column is a property of the
+      *variable*, not of the fetch. That is a configuration bug and it raises.
+
+    * **"this fetch returned nothing"** — no timestamps at all, or *every*
+      requested variable is null. That is indistinguishable from a transient
+      upstream outage, a coordinate outside the model domain, or a date range
+      before the archive begins. It must NOT raise: the caller treats it as an
+      empty frame, declines to cache it, and the next run retries.
+
+    Chosen deliberately over "raise whenever anything is null": a reanalysis
+    outage degrades *all* variables together and is caught by the second branch,
+    while a single systematically-empty column has never once been transient in
+    this codebase.
+    """
+    times = hourly.get("time") or []
+    if not times:
+        return  # nothing came back at all — transient, caller handles it
+
+    populated: dict[str, int] = {}
+    for var in requested:
+        vals = hourly.get(var)
+        if vals is None:
+            populated[var] = 0
+            continue
+        populated[var] = sum(1 for v in vals if v is not None)
+
+    n = len(times)
+    empty = [v for v, c in populated.items() if c == 0]
+    if not empty:
+        return
+    healthy_sibling = any(
+        c >= _SIBLING_POPULATED_FRACTION * n
+        for var, c in populated.items()
+        if var not in empty
+    )
+    if not healthy_sibling:
+        return  # whole response is thin — transient, caller handles it
+
+    message = (
+        f"Open-Meteo returned 0/{n} non-null values for {empty} in {context} while "
+        f"sibling variables populated normally "
+        f"({ {v: f'{c}/{n}' for v, c in populated.items() if v not in empty} }). "
+        "This endpoint does not serve those variables; caching them would persist "
+        "an all-null column that reads downstream as a silently missing feature."
+    )
+    if os.getenv(_ALLOW_NULL_VARS_ENV, "").strip().lower() in {"1", "true", "yes"}:
+        logger.error("%s (%s set — continuing without the column)", message, _ALLOW_NULL_VARS_ENV)
+        return
+    raise AllNullVariableError(message)
+
 
 def _atomic_to_parquet(df: pd.DataFrame, path: Path) -> None:
     """Write a parquet cache file atomically.
@@ -348,9 +434,17 @@ class OpenMeteoHistoricalSolarWindConnector:
     Variables fetched per (rounded coord, date range):
       cloud_cover            — % (0–100, total column)
       shortwave_radiation    — W/m² hourly (proxy for UV at the surface)
-      uv_index               — Open-Meteo modeled UV index (1–11 scale)
       wind_speed_10m         — m/s
       wind_direction_10m     — degrees (meteorological convention: where wind is FROM)
+
+    ``uv_index`` is deliberately NOT requested here. The archive endpoint accepts
+    it, returns HTTP 200, includes the key, and fills it with ``null`` for every
+    hour — re-verified 2026-08-07 for both 2020-01-01..03 and 2023-08-06..08
+    (0/72 non-null, while all four variables above were 72/72). UV is genuinely
+    absent from ERA5; ``shortwave_radiation`` is the in-band stand-in, and real
+    historical UV now comes from :class:`OpenMeteoHistoricalUvConnector`.
+    Re-adding it to ``HOURLY_VARS`` will now raise :class:`AllNullVariableError`
+    rather than caching an empty column.
 
     Rationale: enterococci T₉₀ under full sun is ~1–2 hours; under overcast it
     can be 24+ hours. Onshore vs offshore wind compresses or disperses runoff
@@ -363,7 +457,6 @@ class OpenMeteoHistoricalSolarWindConnector:
     HOURLY_VARS: tuple[str, ...] = (
         "cloud_cover",
         "shortwave_radiation",
-        "uv_index",
         "wind_speed_10m",
         "wind_direction_10m",
     )
@@ -403,6 +496,11 @@ class OpenMeteoHistoricalSolarWindConnector:
 
         hourly = payload.get("hourly", {})
         times = hourly.get("time", [])
+        _assert_no_all_null_variables(
+            hourly,
+            self.HOURLY_VARS,
+            context=f"archive solar/wind ({lat_r}, {lon_r}) {start} → {end}",
+        )
         if not times:
             return pd.DataFrame()
 
@@ -444,6 +542,11 @@ class OpenMeteoHistoricalSolarWindConnector:
 
         frames: list[pd.DataFrame] = []
         for (lat, lon), result in zip(unique_coords, results):
+            if isinstance(result, AllNullVariableError):
+                # A misconfigured variable is not a per-coordinate transient — it
+                # would be wrong for every coordinate. gather(return_exceptions=True)
+                # would otherwise reduce it to a log line nobody reads.
+                raise result
             if isinstance(result, Exception):
                 logger.error("Open-Meteo solar/wind gather failed for (%.1f, %.1f): %s", lat, lon, result)
             elif isinstance(result, pd.DataFrame) and not result.empty:
@@ -451,6 +554,171 @@ class OpenMeteoHistoricalSolarWindConnector:
 
         if not frames:
             logger.warning("Open-Meteo solar/wind returned no data for %d locations [%s, %s]", len(locations), start, end)
+            return pd.DataFrame()
+        return pd.concat(frames, ignore_index=True)
+
+
+# Earliest date the Open-Meteo air-quality archive serves. PINNED BY PROBE,
+# 2026-08-07, single-day requests against
+# https://air-quality-api.open-meteo.com/v1/air-quality?hourly=pm10,uv_index :
+#
+#   date         uv_index non-null   pm10 non-null
+#   2022-07-25            0/24               0/24
+#   2022-07-28            0/24               0/24
+#   2022-07-29            0/24               0/24     <- Open-Meteo's documented
+#   2022-07-31            0/24               0/24        start; NOT what is served
+#   2022-08-01            0/24               0/24
+#   2022-08-02            0/24               0/24
+#   2022-08-03            0/24               0/24
+#   2022-08-04           24/24              24/24     <- first served hour
+#   2022-08-05           24/24              24/24
+#   2022-09-01           24/24              24/24
+#
+# Identical boundary at three widely separated CA coordinates (33.9/-118.4 Los
+# Angeles, 32.6/-117.1 San Diego, 40.8/-124.2 Humboldt), and a single multi-day
+# request spanning it returns its first non-null hour at exactly
+# 2022-08-04T00:00 UTC (120/192 non-null over 2022-08-01..08). ``pm10`` shares
+# the boundary, so this is the archive's start, not a UV-specific gap.
+#
+# ⚠️ 2022-08-04 is 1,464 days before the probe date, which is suspiciously close
+# to a rolling ~4-year retention window rather than a fixed epoch. If it rolls,
+# the earliest reachable UV moves forward roughly one day per day and history
+# older than the window is unrecoverable. That is an argument for caching the
+# full range once (which the backfill does) rather than re-fetching on demand.
+UV_ARCHIVE_EARLIEST_DATE = date(2022, 8, 4)
+
+
+@dataclass
+class OpenMeteoHistoricalUvConnector:
+    """Historical hourly UV index from the Open-Meteo **air-quality** archive.
+
+    Exists because ``archive-api.open-meteo.com/v1/archive`` (ERA5-Land) does not
+    carry UV at all — it accepts ``uv_index``, answers 200, and returns null for
+    every hour. See :class:`OpenMeteoHistoricalSolarWindConnector`. The
+    air-quality archive (CAMS) does serve it, from
+    :data:`UV_ARCHIVE_EARLIEST_DATE` onward.
+
+    Deliberately mirrors the solar/wind connector: same 0.1° coordinate rounding,
+    same per-(coord, date-range) parquet cache key, same ``_atomic_to_parquet``
+    write path, same ``concurrency``. The only differences are the host and the
+    variable, so the two caches can be reasoned about as one thing.
+
+    Output columns match the solar/wind frame's join keys —
+    ``station_id, time_utc, latitude, longitude, uv_index`` — so
+    ``solar_wind.merge_uv_hourly`` can splice it in before aggregation.
+    """
+
+    BASE_URL: str = "https://air-quality-api.open-meteo.com/v1/air-quality"
+    concurrency: int = 5
+    HOURLY_VARS: tuple[str, ...] = ("uv_index",)
+
+    async def _fetch_coord(
+        self,
+        client: httpx.AsyncClient,
+        lat: float,
+        lon: float,
+        start: date,
+        end: date,
+        cache_dir: Path,
+    ) -> pd.DataFrame:
+        lat_r = round(lat, 1)
+        lon_r = round(lon, 1)
+        cache_key = f"openmeteo_uv_{lat_r}_{lon_r}_{start.isoformat()}_{end.isoformat()}.parquet"
+        cache_file = cache_dir / cache_key
+        if cache_file.exists():
+            return pd.read_parquet(cache_file)
+
+        params = {
+            "latitude": lat_r,
+            "longitude": lon_r,
+            "start_date": start.isoformat(),
+            "end_date": end.isoformat(),
+            "hourly": ",".join(self.HOURLY_VARS),
+            "timezone": "UTC",
+        }
+        try:
+            r = await client.get(self.BASE_URL, params=params, timeout=60.0)
+            r.raise_for_status()
+            payload = r.json()
+        except Exception as exc:
+            logger.error("Open-Meteo UV fetch failed for (%.1f, %.1f): %s", lat_r, lon_r, exc)
+            return pd.DataFrame()
+
+        hourly = payload.get("hourly", {})
+        times = hourly.get("time", [])
+        # Only one variable is requested, so an all-null response can never have a
+        # healthy sibling — the guard's "transient / out of range" branch always
+        # takes it. That is correct: dates before UV_ARCHIVE_EARLIEST_DATE return
+        # exactly this shape and must not be a hard failure.
+        _assert_no_all_null_variables(
+            hourly,
+            self.HOURLY_VARS,
+            context=f"air-quality UV ({lat_r}, {lon_r}) {start} → {end}",
+        )
+        if not times:
+            return pd.DataFrame()
+
+        vals = hourly.get("uv_index", [])
+        if not any(v is not None for v in vals):
+            logger.warning(
+                "Open-Meteo air-quality returned 0/%d non-null uv_index for (%.1f, %.1f) %s → %s; "
+                "refusing to cache an all-null column (earliest served date is %s)",
+                len(times), lat_r, lon_r, start, end, UV_ARCHIVE_EARLIEST_DATE,
+            )
+            return pd.DataFrame()
+
+        df = pd.DataFrame({
+            "station_id": f"{lat_r}_{lon_r}",
+            "time_utc": pd.to_datetime(times, utc=True),
+            "latitude": lat_r,
+            "longitude": lon_r,
+            "uv_index": [float(v) if v is not None else np.nan for v in vals],
+            "source_name": "open_meteo_air_quality",
+        })
+        _atomic_to_parquet(df, cache_file)
+        return df
+
+    async def fetch_historical_uv(
+        self,
+        locations: list[tuple[float, float]],
+        start: date,
+        end: date,
+        cache_dir: Path,
+    ) -> pd.DataFrame:
+        if not locations:
+            return pd.DataFrame()
+        start = max(start, UV_ARCHIVE_EARLIEST_DATE)
+        if start > end:
+            logger.info(
+                "Open-Meteo UV: requested range ends %s, before the archive starts %s; skipping",
+                end, UV_ARCHIVE_EARLIEST_DATE,
+            )
+            return pd.DataFrame()
+
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        unique_coords = list({(round(lat, 1), round(lon, 1)) for lat, lon in locations})
+
+        semaphore = asyncio.Semaphore(self.concurrency)
+
+        async def _bounded(client: httpx.AsyncClient, lat: float, lon: float) -> pd.DataFrame:
+            async with semaphore:
+                return await self._fetch_coord(client, lat, lon, start, end, cache_dir)
+
+        async with httpx.AsyncClient() as client:
+            tasks = [_bounded(client, lat, lon) for lat, lon in unique_coords]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        frames: list[pd.DataFrame] = []
+        for (lat, lon), result in zip(unique_coords, results):
+            if isinstance(result, AllNullVariableError):
+                raise result
+            if isinstance(result, Exception):
+                logger.error("Open-Meteo UV gather failed for (%.1f, %.1f): %s", lat, lon, result)
+            elif isinstance(result, pd.DataFrame) and not result.empty:
+                frames.append(result)
+
+        if not frames:
+            logger.warning("Open-Meteo UV returned no data for %d locations [%s, %s]", len(locations), start, end)
             return pd.DataFrame()
         return pd.concat(frames, ignore_index=True)
 

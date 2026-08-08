@@ -105,7 +105,8 @@ def _low_band_threshold() -> float:
         return float(_LOW_THRESHOLD)
     except Exception:  # noqa: BLE001 — fall back when app deps are unavailable
         # Mirrors app/ml/calibration.py _LOW_THRESHOLD at time of writing.
-        return 0.20
+        # Pinned by tests/test_risk_bands.py so the mirror cannot go stale.
+        return 0.10
 
 
 def _finite_probs(frame: pd.DataFrame) -> np.ndarray:

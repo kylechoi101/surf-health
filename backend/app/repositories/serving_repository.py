@@ -11,8 +11,13 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from app.data.pipeline.exceedance import (
+    describe_sample_vs_action_value,
+    sample_action_value,
+)
 from app.ml.calibration import (
     advisory_floored_probability,
+    band_definitions,
     confidence_capped_risk_band,
     risk_band,
 )
@@ -721,14 +726,20 @@ class ServingSnapshotRepository(BeachRepository):
                 detail="Forecast data not available because the latest sample is not fresh.",
             )
         latest_value = float(latest["value"])
-        ratio = max(latest_value / self.stv_threshold, 0.01)
+        # Method-aware: 800 copies/100mL of ddPCR is BELOW its 1413 action value,
+        # but against the 104 culture STV it reads as ~8x over -- which used to
+        # both drive this ratio and contradict `exceeds_stv` on the same row.
+        latest_method = latest["method"] if "method" in latest.keys() else None
+        latest_units = latest["units"] if "units" in latest.keys() else None
+        action_value = sample_action_value(latest_method, latest_units, self.stv_threshold)
+        ratio = max(latest_value / action_value, 0.01)
         p_exceed = min(max(0.5 + 0.4 * (ratio - 1.0), 0.03), 0.97)
         active_advisory = beach_id in self._active_advisory_beach_ids()
         drivers = [
             "Official health advisory is active for this station." if active_advisory else None,
-            "Latest official sample is above the marine threshold"
-            if latest_value > self.stv_threshold
-            else "Latest official sample remains below the marine threshold"
+            describe_sample_vs_action_value(
+                latest_value, latest_method, latest_units, self.stv_threshold
+            ),
         ]
         drivers = [d for d in drivers if d]
         for key, label in (("weather", "weather"), ("storm_drain_flow", "storm drain flow")):
@@ -884,5 +895,11 @@ class ServingSnapshotRepository(BeachRepository):
                 "repository_mode": "sqlite",
                 "serving_snapshot": snapshot,
                 **payload,
+                # AFTER the payload spread on purpose: the band contract must
+                # come from the code that is actually banding, never from a
+                # snapshot baked at an older cutpoint vintage. A client that
+                # renders "High = 0.30+" while the API bands at 0.20 is exactly
+                # the drift this key exists to make impossible.
+                "risk_bands": band_definitions(),
             }
         )

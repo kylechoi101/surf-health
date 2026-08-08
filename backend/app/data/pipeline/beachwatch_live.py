@@ -32,6 +32,7 @@ from app.data.pipeline.beachwatch import _canonical_parameter
 from app.data.pipeline.ceden import _normalize_method_or_unit
 from app.data.pipeline.county_corrections import correct_county
 from app.data.pipeline.exceedance import compute_exceeds_stv
+from app.data.pipeline.units_corrections import correct_units_series
 from app.data.pipeline.spelling import correct_place_spelling
 
 DATA_SOURCE = "BeachWatch.Live"
@@ -106,6 +107,10 @@ def normalize_live_results(
     frame.loc[frame["value"] < 0, "value"] = np.nan
     frame["units"] = frame["unit"].fillna("unknown").astype(str).str.strip()
     frame["method"] = frame["method"].fillna("unknown").astype(str).str.strip()
+    # Source correction before the predicate reads them: a culture method
+    # cannot report copies (see units_corrections), and is_pcr_measurement
+    # would otherwise judge such a row against 1413 instead of 104.
+    frame["units"] = correct_units_series(frame["method"], frame["units"])
     frame["exceeds_stv"] = compute_exceeds_stv(
         frame["value"], frame["method"], frame["units"], stv_threshold
     )

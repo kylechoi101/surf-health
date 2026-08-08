@@ -662,11 +662,34 @@ def test_sbo_weak_stratification_interaction_winter_and_mixed_only():
     assert non_sd.iloc[0]["sbo_weak_stratification_interaction"] == 0.0
 
 
-def test_boundary_flag_and_interaction_columns_appear_in_sliding_window_dataset():
-    """All boundary columns must reach the model feature matrix."""
+def test_boundary_columns_are_computed_but_kept_out_of_the_model():
+    """Boundary columns stay COMPUTED for analysis and are kept OUT of the model.
+
+    Intent reversed 2026-08-08. This test previously asserted the opposite --
+    that every San Diego boundary flag "must reach the model feature matrix" --
+    which is precisely the leak that makes leave-one-county-out backtesting
+    meaningless: each of these columns is nonzero in exactly ONE county, so a
+    nonzero value is a perfect San Diego indicator regardless of what the number
+    denotes, and a model can score well on a held-out county by recognising it
+    rather than by learning anything transferable.
+
+    `build_sliding_windows` emits the model matrix itself, so the assertion here
+    is simply that these columns are absent from it. They are still COMPUTED by
+    `add_temporal_features` -- the tests above this one verify their values
+    directly -- and so remain available for analysis and for the app's display.
+    Only the model is blinded. See `tests/test_location_blindness.py`.
+    """
     values = [25.0 + 10.0 * (i % 3) for i in range(40)]
     frame = _make_history(SOUTH_SD_BEACH_IDS[0], "2026-04-01", values)
     dataset = build_sliding_windows(frame)
-    feature_columns = set(dataset.feature_frame.columns)
+    model_columns = set(dataset.feature_frame.columns)
+
     for column in SD_BOUNDARY_FLAG_COLUMNS + SD_BOUNDARY_INTERACTION_COLUMNS:
-        assert column in feature_columns, f"{column} missing from sliding-window feature frame"
+        assert column not in model_columns, (
+            f"{column} is a single-county indicator and must not be a model feature"
+        )
+
+    # ...and they are still built upstream, so nothing else loses access to them.
+    enriched = add_temporal_features(frame)
+    for column in SD_BOUNDARY_FLAG_COLUMNS + SD_BOUNDARY_INTERACTION_COLUMNS:
+        assert column in enriched.columns, f"{column} should still be computed"

@@ -5,12 +5,15 @@ leaking same-morning sample data into features.
 """
 from __future__ import annotations
 
+import logging
 from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
 
 from app.core.timewindows import forecast_cutoff_utc as _forecast_cutoff_utc
+
+logger = logging.getLogger(__name__)
 
 # Peak clear-noon shortwave in CA is ~900 W/m^2, which corresponds to a UV index
 # of ~11; 900/80 = 11.25. Cloudy ~300 W/m^2 -> ~3.75.
@@ -21,13 +24,19 @@ UV_INDEX_CEILING = 15.0
 def uv_index_24h_max(uv_values, shortwave_values) -> tuple[float, bool]:
     """Peak UV index over a window, and whether it is the shortwave proxy.
 
-    Open-Meteo's ARCHIVE API returns null for uv_index (it is a forecast-only
-    variable) — measured at 0 non-null across 172,512 cached hourly rows — so
-    every historical value the model trains on is the proxy below. The FORECAST
-    endpoint does return real modelled UV, which is why the served ``uv_index``
-    in latest_env.parquet runs ~43% above the trained ``uv_index_24h_max``.
+    Open-Meteo's ARCHIVE API returns null for uv_index (it is not an ERA5
+    variable) — measured at 0 non-null across every cached hourly row and
+    re-verified against the live endpoint on 2026-08-07. Historically that made
+    every trained value the proxy below.
 
-    Both producers now share this one policy so the divisor, the ceiling and the
+    Since the 2026-08-07 weather backfill, real historical UV is spliced in from
+    the Open-Meteo **air-quality** archive (see
+    ``connectors.hydrology_sources.OpenMeteoHistoricalUvConnector``) for dates
+    from ``UV_ARCHIVE_EARLIEST_DATE`` (2022-08-04) onward, so this function now
+    returns real UV on the whole 1095-day training window and the proxy only for
+    2020-01-01..2022-08-03, which the air-quality archive cannot reach.
+
+    Both producers share this one policy so the divisor, the ceiling and the
     prefer-real-then-fall-back order cannot drift apart, and the boolean makes
     the provenance explicit at the call site instead of implicit in a comment.
     """
@@ -45,6 +54,120 @@ def uv_index_24h_max(uv_values, shortwave_values) -> tuple[float, bool]:
 
 
 _PACIFIC = ZoneInfo("America/Los_Angeles")
+
+# A daily summary covers the 24 hours ending at the 5 AM PT cutoff, so a complete
+# window is exactly 24 hourly samples. Anything short is a PARTIAL window, and a
+# partial window is not a smaller measurement — it is a wrong one.
+#
+# Found 2026-08-07 during the Step 2 backfill. The daily pipeline refetches only
+# `[last_stored_date - 7d, today]` and aggregates that slice in isolation, so the
+# slice's FIRST day never has the preceding evening's hours available and its
+# aggregates come out truncated. Because the merge is `keep="last"` (new wins),
+# and each run's window starts one day later than the last, every single day was
+# written exactly once while it sat at position 0 — and then never repaired.
+# Measured on the shipped frame: 8,767 of the 8,776 beach-days between 2026-04
+# and 2026-07 that had a value carried a truncated one, `shortwave_24h_sum`
+# median 4.57 MJ/m² against 26.77 for the same rows recomputed over continuous
+# history (an 83% understatement), and `days_since_sunny` reset to 0.
+#
+# Dropping the row instead is what makes the daily merge safe: `keep="last"`
+# cannot overwrite a good value with a bad one if the bad one is never emitted.
+_MIN_WINDOW_HOURS = 24
+
+# Columns aggregate_solar_wind_windows derives from the hourly weather feed.
+# These are the ONLY beach_day columns the solar-wind path owns; the pier/estuary
+# proximity features are static geometry and are produced separately.
+SOLAR_WIND_DERIVED_COLUMNS: tuple[str, ...] = (
+    "cloud_cover_24h_mean",
+    "shortwave_24h_sum",
+    "uv_index_24h_max",
+    "wind_speed_24h_max",
+    "wind_direction_24h_mean",
+    "days_since_sunny",
+    "shore_normal_wind_ms",
+    "solar_inactivation_index",
+)
+
+
+def merge_uv_hourly(raw_solar_wind: pd.DataFrame, raw_uv: pd.DataFrame) -> pd.DataFrame:
+    """Splice real hourly ``uv_index`` from the air-quality archive into the
+    ERA5 solar/wind frame, keyed on (station_id, time_utc).
+
+    The two connectors round coordinates identically (0.1°) and both stamp
+    ``station_id = f"{lat}_{lon}"``, so the key lines up exactly. Any pre-existing
+    ``uv_index`` column is dropped first: cache files written before 2026-08-07
+    carry the archive's all-null column, and a left-join alone would leave it in
+    place under an ``_x`` suffix.
+
+    Hours with no UV (before ``UV_ARCHIVE_EARLIEST_DATE``, or an air-quality
+    outage) stay NaN, which sends ``uv_index_24h_max`` to its shortwave proxy —
+    the same behaviour as before this feed existed.
+    """
+    if raw_solar_wind is None or raw_solar_wind.empty:
+        return raw_solar_wind if raw_solar_wind is not None else pd.DataFrame()
+    out = raw_solar_wind.drop(columns=["uv_index"], errors="ignore")
+    if raw_uv is None or raw_uv.empty or "uv_index" not in raw_uv.columns:
+        return out
+    uv = raw_uv[["station_id", "time_utc", "uv_index"]].copy()
+    uv["time_utc"] = pd.to_datetime(uv["time_utc"], utc=True, errors="coerce")
+    uv = uv.dropna(subset=["time_utc"]).drop_duplicates(
+        subset=["station_id", "time_utc"], keep="last"
+    )
+    out = out.copy()
+    out["time_utc"] = pd.to_datetime(out["time_utc"], utc=True, errors="coerce")
+    return out.merge(uv, on=["station_id", "time_utc"], how="left")
+
+
+def map_beaches_to_solar_wind_stations(
+    stations: pd.DataFrame, sw_daily: pd.DataFrame
+) -> dict[str, str]:
+    """Nearest solar-wind grid cell per beach, by great-circle distance."""
+    from app.data.pipeline.external_covariates import haversine_km
+
+    sw_stations = (
+        sw_daily[["station_id", "latitude", "longitude"]]
+        .drop_duplicates("station_id")
+        .dropna()
+    )
+    beach_to_station: dict[str, str] = {}
+    for _, b in stations.iterrows():
+        if pd.isna(b.get("latitude")) or pd.isna(b.get("longitude")):
+            continue
+        nearest, min_d = None, float("inf")
+        for _, s in sw_stations.iterrows():
+            d = haversine_km(
+                float(b["latitude"]), float(b["longitude"]),
+                float(s["latitude"]), float(s["longitude"]),
+            )
+            if d < min_d:
+                nearest, min_d = str(s["station_id"]), d
+        if nearest:
+            beach_to_station[str(b["beach_id"])] = nearest
+    return beach_to_station
+
+
+def explode_solar_wind_to_beaches(
+    sw_daily: pd.DataFrame, stations: pd.DataFrame
+) -> pd.DataFrame:
+    """Fan the per-grid-cell daily solar/wind rows out to every beach in the cell."""
+    if sw_daily.empty:
+        return pd.DataFrame()
+    beach_to_station = map_beaches_to_solar_wind_stations(stations, sw_daily)
+    sw_daily = sw_daily.copy()
+    sw_daily["sample_date"] = pd.to_datetime(sw_daily["sample_date"])
+    station_to_beaches: dict[str, list[str]] = {}
+    for bid, sid in beach_to_station.items():
+        station_to_beaches.setdefault(sid, []).append(bid)
+    exploded: list[pd.DataFrame] = []
+    for sid, bids in station_to_beaches.items():
+        sub = sw_daily.loc[sw_daily["station_id"] == sid]
+        if sub.empty:
+            continue
+        for bid in bids:
+            s = sub.copy()
+            s["beach_id"] = bid
+            exploded.append(s)
+    return pd.concat(exploded, ignore_index=True) if exploded else pd.DataFrame()
 
 
 def aggregate_solar_wind_windows(raw: pd.DataFrame) -> pd.DataFrame:
@@ -67,6 +190,7 @@ def aggregate_solar_wind_windows(raw: pd.DataFrame) -> pd.DataFrame:
     output_cols = [
         "station_id", "latitude", "longitude", "sample_date",
         "cloud_cover_24h_mean", "shortwave_24h_sum", "uv_index_24h_max",
+        "uv_index_is_proxy",
         "wind_u_24h_mean", "wind_v_24h_mean", "wind_speed_24h_max",
         "wind_direction_24h_mean",
         "days_since_sunny",
@@ -98,6 +222,7 @@ def aggregate_solar_wind_windows(raw: pd.DataFrame) -> pd.DataFrame:
         df["wind_v"] = np.nan
 
     rows = []
+    partial_windows = 0
     for station_id, sdf in df.groupby("station_id"):
         sdf = sdf.set_index("time_utc").sort_index()
         lat = float(sdf["latitude"].iloc[0])
@@ -109,13 +234,14 @@ def aggregate_solar_wind_windows(raw: pd.DataFrame) -> pd.DataFrame:
             cutoff = _forecast_cutoff_utc(d.date())
             window_start = cutoff - pd.Timedelta(hours=24)
             window = sdf.loc[(sdf.index >= window_start) & (sdf.index < cutoff)]
-            if window.empty:
+            if len(window) < _MIN_WINDOW_HOURS:
+                partial_windows += 1
                 continue
 
             cc_mean = float(window["cloud_cover"].mean()) if "cloud_cover" in window else np.nan
             sw_sum_wm2_h = float(window["shortwave_radiation"].sum()) if "shortwave_radiation" in window else np.nan
             sw_mj = sw_sum_wm2_h * 3600 / 1e6 if not np.isnan(sw_sum_wm2_h) else np.nan
-            uv_max, _uv_is_proxy = uv_index_24h_max(
+            uv_max, uv_is_proxy = uv_index_24h_max(
                 window["uv_index"] if "uv_index" in window else None,
                 window["shortwave_radiation"] if "shortwave_radiation" in window else None,
             )
@@ -136,15 +262,29 @@ def aggregate_solar_wind_windows(raw: pd.DataFrame) -> pd.DataFrame:
                 "cloud_cover_24h_mean": cc_mean,
                 "shortwave_24h_sum": sw_mj,
                 "uv_index_24h_max": uv_max,
+                # Provenance, not a feature: True means uv_index_24h_max is the
+                # shortwave stand-in (no real UV for that hour window — i.e. before
+                # the air-quality archive's 2022-08-04 start, or an outage). Stays
+                # in solar_wind_daily.parquet; deliberately NOT joined into
+                # beach_day, which keeps its column set frozen for Step 2.
+                "uv_index_is_proxy": bool(uv_is_proxy),
                 "wind_u_24h_mean": u_mean,
                 "wind_v_24h_mean": v_mean,
                 "wind_speed_24h_max": ws_max,
                 "wind_direction_24h_mean": wd_mean,
             })
 
+    if partial_windows:
+        # One per station per fetch is the expected, harmless case (the leading
+        # edge of the requested range). A larger count means a gappy feed.
+        logger.info(
+            "solar_wind: skipped %d day(s) with fewer than %d hourly samples "
+            "(partial 24h window)", partial_windows, _MIN_WINDOW_HOURS,
+        )
     if not rows:
         return pd.DataFrame(columns=output_cols)
     out = pd.DataFrame(rows).sort_values(["station_id", "sample_date"]).reset_index(drop=True)
+    out["uv_index_is_proxy"] = out["uv_index_is_proxy"].astype(bool)
 
     # days_since_sunny — per station, days since cloud_cover_24h_mean ≤ 30 %
     SUN_THRESHOLD = 30.0

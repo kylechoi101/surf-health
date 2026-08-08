@@ -8,9 +8,15 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from app.core.config import get_settings
 from app.core.json_safe import write_json
 from app.data.pipeline.county_corrections import correct_county
-from app.data.pipeline.exceedance import compute_exceeds_stv
+from app.data.pipeline.exceedance import (
+    action_value_for,
+    compute_exceeds_stv,
+    is_pcr_measurement,
+)
+from app.data.pipeline.units_corrections import correct_units_series
 from app.data.pipeline.schema_guard import validate_beach_day
 from app.data.pipeline.spelling import correct_place_spelling
 
@@ -384,6 +390,10 @@ def normalize_bacteria_results(frame: pd.DataFrame, stv_threshold: float) -> pd.
     marine["method"] = _column(marine, "AnalysisMethod", "unknown").fillna("unknown").astype(str).str.strip()
     # Method-aware: PCR (copies) judged against the molecular threshold, not the
     # culture STV. See app.data.pipeline.exceedance.
+    # Source correction before the predicate reads them: a culture method
+    # cannot report copies (see units_corrections), and is_pcr_measurement
+    # would otherwise judge such a row against 1413 instead of 104.
+    marine["units"] = correct_units_series(marine["method"], marine["units"])
     marine["exceeds_stv"] = compute_exceeds_stv(
         marine["value"], marine["method"], marine["units"], stv_threshold
     )
@@ -557,8 +567,90 @@ def _advisory_temporal_features(beach_day: pd.DataFrame, advisories: pd.DataFram
     return bd
 
 
+def _attach_assay_identity(ranked: pd.DataFrame, stv_threshold: float) -> pd.DataFrame:
+    """Add the assay-identity columns the day-collapse must carry through.
+
+    ``exceeds_stv`` is not one label. Culture rows (Enterolert / EPA 1600 / MF,
+    MPN or CFU per 100 mL) are judged against the 104 marine STV; San Diego
+    ddPCR rows (copies per 100 mL) against the CDPH-developed, EPA Region 9
+    approved 1413-copies BAV. Both action values are correct and neither is
+    changed here — but until this function existed the two were merged into one
+    numeric column with no marker, so every downstream feature
+    (``enterococcus_value_lag_*``, ``log_enterococcus``, the 35/104-thresholded
+    geomeans) mixed MPN with copies, and no metric could be stratified by regime.
+
+    Adds three per-sample columns plus one per-beach-day column:
+
+    ``is_pcr``
+        Assay class of the row, from :func:`exceedance.is_pcr_measurement` — the
+        *same* predicate that picked the threshold in
+        :func:`exceedance.compute_exceeds_stv`. It must stay the same predicate:
+        a bare ``method == "ddPCR"`` comparison here would disagree with the
+        label on ``MCB-ddPCR SOP018-000`` rows and on rows that declare only
+        ``copies/100 mL`` units, silently re-splitting the population against
+        the thresholds actually applied.
+    ``_label_method`` / ``_label_units``
+        The raw method/units strings, carried under private names so the
+        day-collapse can rename them to ``label_method`` / ``label_units`` — the
+        assay of the sample that *won* the collapse, not an arbitrary one.
+    ``assay_disagreement``
+        True when that beach-day carried both a culture and a PCR sample and the
+        two classes disagreed on ``exceeds_stv``. Compared worst-of-each-class,
+        matching how the label itself is built. This is the per-row marker for
+        the ~50% paired-sample agreement rate; it is a *flag*, not a correction —
+        the collapse rule is deliberately unchanged.
+
+    ``_action_value``
+        The number *this row* is judged against — 104 for culture, 1413 for
+        ddPCR — from the single :func:`exceedance.action_value_for` mapping. The
+        day-collapse divides by it to rank same-day samples on a common
+        dimensionless scale (see :func:`build_beach_day_frame`).
+
+    ``method``/``units`` are tolerated as absent: the national WQP path adds them
+    as null, but a caller that omits them entirely gets an all-culture frame
+    rather than a KeyError.
+    """
+    frame = ranked
+    method = (
+        frame["method"]
+        if "method" in frame.columns
+        else pd.Series(pd.NA, index=frame.index, dtype="object")
+    )
+    units = (
+        frame["units"]
+        if "units" in frame.columns
+        else pd.Series(pd.NA, index=frame.index, dtype="object")
+    )
+    frame["_label_method"] = method
+    frame["_label_units"] = units
+    frame["is_pcr"] = is_pcr_measurement(method, units).fillna(False).astype(bool)
+    frame["_action_value"] = action_value_for(method, units, stv_threshold)
+
+    pcr = frame["is_pcr"].to_numpy(dtype=bool)
+    exceed = frame["_exceed_rank"].to_numpy(dtype=float)
+    if not pcr.any() or pcr.all():
+        # Single-assay frame — no beach-day can hold both classes, so skip the
+        # per-day aggregation entirely (this is the common case: only San Diego
+        # runs both).
+        frame["assay_disagreement"] = False
+        return frame
+
+    frame["_exceed_culture"] = np.where(pcr, np.nan, exceed)
+    frame["_exceed_pcr"] = np.where(pcr, exceed, np.nan)
+    per_day = frame.groupby(["beach_id", "sample_date"], sort=False)
+    worst_culture = per_day["_exceed_culture"].transform("max")
+    worst_pcr = per_day["_exceed_pcr"].transform("max")
+    frame["assay_disagreement"] = (
+        worst_culture.notna() & worst_pcr.notna() & (worst_culture != worst_pcr)
+    ).to_numpy(dtype=bool)
+    return frame.drop(columns=["_exceed_culture", "_exceed_pcr"])
+
+
 def build_beach_day_frame(
-    observations: pd.DataFrame, stations: pd.DataFrame, advisories: pd.DataFrame
+    observations: pd.DataFrame,
+    stations: pd.DataFrame,
+    advisories: pd.DataFrame,
+    stv_threshold: float | None = None,
 ) -> pd.DataFrame:
     if observations.empty:
         return pd.DataFrame()
@@ -569,18 +661,51 @@ def build_beach_day_frame(
     # labeled EXCEEDED — this is a public-health, false-negative-averse target, so
     # a morning exceedance is never erased by a clean afternoon reading (the prior
     # `.tail(1)` rule flipped 1,009 such beach-days to "safe", 100% in the
-    # false-negative direction). We represent the day with its WORST sample (max
-    # exceeds_stv, then max enterococcus value) so the kept `enterococcus_value` /
-    # `exceeds_stv` and every value-derived lag/geomean feature stay mutually
-    # consistent. `sample_time` is the final tiebreak so the pick is deterministic
-    # even when same-day samples share an identical timestamp.
+    # false-negative direction). We represent the day with its WORST sample so the
+    # kept `enterococcus_value` / `exceeds_stv` and every value-derived lag/geomean
+    # feature stay mutually consistent. `sample_time` is the final tiebreak so the
+    # pick is deterministic even when same-day samples share an identical timestamp.
+    #
+    # "Worst" is ranked on TWO keys, and both must be on the same scale:
+    #
+    #   1. `_exceed_rank` — the method-aware `exceeds_stv`, i.e. `value >
+    #      action_value` (104 culture / 1413 ddPCR).
+    #   2. `_value_rank`  — the tiebreak among rows that agree on (1).
+    #
+    # Key 2 used to be the RAW value, which compares ddPCR *copies* against
+    # culture *MPN*. Those are different units on different scales with no
+    # constant conversion between them (Verbyla & Lacarra 2026 fit a log-log
+    # slope of 0.52 at one site vs the county-wide ICE's 16x-steeper relation —
+    # see CLAUDE.md), so the comparison was meaningless: copy counts simply run
+    # numerically larger, and ddPCR won 590 of the 591 mixed-assay days on which
+    # the two assays AGREED about the label, purely on magnitude (median 2,501
+    # copies vs 10 MPN).
+    #
+    # The label never moved from this — key 1 dominates — but the NUMBER kept in
+    # `enterococcus_value` did, and that column feeds `enterococcus_value_lag_*`,
+    # `enterococcus_value_last_obs`, `log_enterococcus` and the 35/104-thresholded
+    # geomeans. So on those days a copies count was seated in an otherwise-MPN
+    # column by an arbitrary unit artifact.
+    #
+    # Key 2 is now `value / action_value`: each result expressed as a multiple of
+    # the number IT is judged against. This is the only normalisation available
+    # that does not require inventing a copies<->MPN conversion the data cannot
+    # support (three defensible estimators span 21x), and it makes the two keys
+    # the SAME monotone function of the row — key 1 is exactly `ratio > 1`, so
+    # the tiebreak is now a refinement of the primary key rather than a second,
+    # contradictory scale. Ties within an assay are unaffected (dividing every
+    # row of one assay by the same constant preserves their order), so this can
+    # only change which sample represents a MIXED-assay day.
     _ranked = observations.copy()
     _ranked["_exceed_rank"] = (
         _ranked["exceeds_stv"].fillna(False).astype(bool).astype(int)
     )
-    _ranked["_value_rank"] = pd.to_numeric(_ranked["value"], errors="coerce").fillna(
-        float("-inf")
-    )
+    if stv_threshold is None:
+        stv_threshold = float(get_settings().epa_marine_enterococcus_stv)
+    _ranked = _attach_assay_identity(_ranked, stv_threshold)
+    _ranked["_value_rank"] = (
+        pd.to_numeric(_ranked["value"], errors="coerce") / _ranked["_action_value"]
+    ).fillna(float("-inf"))
     per_day_observation = (
         _ranked.sort_values(["_exceed_rank", "_value_rank", "sample_time"])
         .groupby(["beach_id", "sample_date"], as_index=False)
@@ -592,6 +717,10 @@ def build_beach_day_frame(
             "sample_time",
             "value",
             "exceeds_stv",
+            "_label_method",
+            "_label_units",
+            "is_pcr",
+            "assay_disagreement",
             "weather",
             "storm_drain_flow",
             "tidal_height",
@@ -600,7 +729,13 @@ def build_beach_day_frame(
             "odor",
             "water_color",
         ]
-    ].rename(columns={"value": "enterococcus_value"})
+    ].rename(
+        columns={
+            "value": "enterococcus_value",
+            "_label_method": "label_method",
+            "_label_units": "label_units",
+        }
+    )
 
     station_columns = [
         "beach_id",

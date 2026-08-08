@@ -23,6 +23,7 @@ import pytest
 
 from app.repositories import curated_repository as curated
 from app.repositories import serving_repository as serving
+from app.ml.calibration import _HIGH_THRESHOLD
 
 
 COERCION_INPUTS = [
@@ -153,7 +154,9 @@ def test_friendly_name_prefers_explicit_beach_name_over_the_id_slug():
         # Genuinely posted: band from the floored MODEL value, stored p preserved.
         (0.18, 0.72, True, "fresh", "High", 0.72),
         # Posted with nothing stored above the floor.
-        (0.05, 0.05, True, "fresh", "High", 0.30),
+        # Expected p is the advisory floor itself, so it tracks _HIGH_THRESHOLD
+        # (0.30 -> 0.20 at the 2026-08-08 band reset) instead of a literal.
+        (0.05, 0.05, True, "fresh", "High", _HIGH_THRESHOLD),
         # Not posted, model is genuinely high on a fresh sample -> not capped.
         (0.55, 0.55, False, "fresh", "High", 0.55),
         # Not posted, high model band but a very stale sample -> confidence cap.

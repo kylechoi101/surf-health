@@ -14,7 +14,11 @@ import pandas as pd
 import pyarrow.parquet as pq
 from fastapi import HTTPException
 
-from app.ml.calibration import advisory_floored_probability, risk_band
+from app.data.pipeline.exceedance import (
+    describe_sample_vs_action_value,
+    sample_action_value,
+)
+from app.ml.calibration import advisory_floored_probability, band_definitions, risk_band
 from app.repositories._coerce import (
     derive_friendly_name,
     coerce_advisory_website as _coerce_advisory_website,
@@ -614,13 +618,19 @@ class CuratedBeachRepository(BeachRepository):
                 detail="Forecast data not available because the latest sample is not fresh.",
             )
         latest_value = float(latest["value"])
-        ratio = max(latest_value / self.stv_threshold, 0.01)
+        # Method-aware: 800 copies/100mL of ddPCR is BELOW its 1413 action value,
+        # but against the 104 culture STV it reads as ~8x over -- which used to
+        # both drive this ratio and contradict `exceeds_stv` on the same row.
+        latest_method = latest.get("method")
+        latest_units = latest.get("units")
+        action_value = sample_action_value(latest_method, latest_units, self.stv_threshold)
+        ratio = max(latest_value / action_value, 0.01)
         p_exceed = min(max(0.5 + 0.4 * (ratio - 1.0), 0.03), 0.97)
         predicted_log = log10(max(latest_value, 1.0))
         drivers = [
-            "Latest official sample is above the marine threshold"
-            if latest_value > self.stv_threshold
-            else "Latest official sample remains below the marine threshold"
+            describe_sample_vs_action_value(
+                latest_value, latest_method, latest_units, self.stv_threshold
+            )
         ]
         weather = latest.get("weather")
         if weather and str(weather).lower() not in ("nan", "none", ""):
@@ -774,5 +784,9 @@ class CuratedBeachRepository(BeachRepository):
             "active_advisories_count": active_count,
             "forecast_audit": audit,
             "repository_mode": "parquet",
-            **payload
+            **payload,
+            # AFTER the payload spread on purpose — see the sqlite twin. The
+            # band contract is a property of the serving code, not of the last
+            # training run's snapshot.
+            "risk_bands": band_definitions(),
         })

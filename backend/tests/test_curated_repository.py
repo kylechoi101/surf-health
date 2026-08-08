@@ -8,6 +8,7 @@ import pandas as pd
 import pyarrow as pa
 
 from app.repositories.curated_repository import CuratedBeachRepository, _safe_bool
+from app.ml.calibration import _HIGH_THRESHOLD
 
 
 class TestSafeBool:
@@ -211,7 +212,7 @@ def test_curated_repository_overrides_forecast_when_official_advisory_active(tmp
         "Official health advisory is active for this station.",
         "model signal",
     ]
-    assert forecast.p_exceed == 0.30
+    assert forecast.p_exceed == _HIGH_THRESHOLD
     assert forecast.p_exceed_raw == 0.08
 
 
@@ -255,7 +256,12 @@ def test_curated_repository_overrides_derived_forecast_when_official_advisory_ac
     assert forecast.model_risk_band == "High"
     assert forecast.forecast_label_mode == "official_advisory_override"
     assert forecast.top_drivers[0] == "Official health advisory is active for this station."
-    assert "above the marine threshold" in forecast.top_drivers[1]
+    # The driver names the action value that actually applies. It used to say
+    # "above the marine threshold" with no number, which is unreadable for a
+    # ddPCR beach where "the" threshold is 1413, not 104.
+    assert forecast.top_drivers[1] == (
+        "Latest official sample (120 CFU/100ml) is above the 104 culture action value"
+    )
 
 
 def test_curated_repository_does_not_derive_forecast_from_stale_sample(tmp_path):

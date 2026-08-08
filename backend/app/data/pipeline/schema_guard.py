@@ -37,7 +37,7 @@ LABEL_COLUMNS: tuple[str, ...] = ("exceeds_stv",)
 # hard failure (a single-day connector outage produces a legitimate all-NaN
 # column and must not break the live daily job).
 EXPECTED_FEATURE_COLUMNS: tuple[str, ...] = (
-    # 11 marine-microbiology features (--with-solar-wind)
+    # 12 marine-microbiology features (--with-solar-wind)
     "shore_normal_wind_ms",
     "solar_inactivation_index",
     "cloud_cover_24h_mean",
@@ -49,6 +49,7 @@ EXPECTED_FEATURE_COLUMNS: tuple[str, ...] = (
     "is_near_pier",
     "dist_to_estuary_km",
     "is_near_estuary_mouth",
+    "dist_to_chronic_source_km",
     # key precip features (--with-hydrology)
     "precip_mm_24h",
     "precip_mm_72h",
