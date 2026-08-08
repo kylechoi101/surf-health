@@ -636,6 +636,15 @@ LOCATION_IDENTIFYING_COLUMNS: frozenset[str] = frozenset(
         # `historical_advisory_count_log1p`: the base column was excluded and its
         # log1p sibling was not. 0.9701 against latitude.
         "erddap_distance_km_log1p",
+        # ...and its sibling, which the first pass of this very change MISSED --
+        # caught in review. `cdip_distance_km` is excluded by name right beside
+        # `erddap_distance_km`, but only one of the two log1p transforms was.
+        # It scores 0.4133 against latitude and is nonzero in 15 counties, so it
+        # clears both statistical guards, and it is the single largest driver of
+        # held-out-beach location recovery. The codebase already treats it as a
+        # coordinate: it is one of COASTAL_CELL_FEATURE_COLUMNS, the KMeans
+        # geography basis.
+        "cdip_distance_km_log1p",
     }
     # The San Diego boundary geography, taken from the curated lists rather than
     # re-typed: every one of these is nonzero in exactly one county. Referencing

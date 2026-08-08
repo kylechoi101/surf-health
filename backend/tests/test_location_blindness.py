@@ -7,8 +7,8 @@ numbers meaningless: a model can score well on a held-out county purely by
 recognising it and recalling its rate.
 
 `latitude` and `longitude` were excluded by name for exactly this reason. That
-was not enough. Measured on the shipped frame 2026-08-08, **14** location
-identifying columns were reaching the model anyway, via two routes:
+was not enough. Measured on the shipped frame 2026-08-08, **19** location-identifying
+columns were reaching a fitted model, via three routes:
 
   * coordinate laundering -- `coastal_y_km` is `latitude * 110.57` and scores
     Spearman **1.0000** against latitude;
@@ -59,6 +59,11 @@ _MAX_ABS_LATITUDE_CORRELATION = 0.85
 # Below this many distinct counties with a nonzero value, "nonzero" is itself a
 # location indicator regardless of what the number means.
 _MIN_COUNTIES_WITH_SUPPORT = 2
+
+# How far above the majority-class baseline a held-out-beach county prediction
+# may sit. Anything more and the feature set is carrying position, whatever the
+# per-feature correlations say.
+_MAX_COUNTY_RECOVERY_LIFT = 0.25
 
 
 def _enriched_sample(beach_day: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -155,3 +160,78 @@ def test_proximity_features_are_deliberately_retained(
     ):
         if retained in enriched.columns:
             assert retained in features, f"{retained} should remain a feature"
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "KNOWN FAILING, recorded rather than hidden. Measured: county is "
+        "recovered on held-out beaches at 0.955 against a 0.278 majority "
+        "baseline, and held-out latitude to ~4 km. Cause is ~21 features that "
+        "are CONSTANT within every beach and vary statewide (stormwater "
+        "statics, watershed_area_km2, distance_to_gage_km, the pier/estuary "
+        "proximities this change deliberately retained). Together they are a "
+        "96%-unique per-beach fingerprint, so leave-one-BEACH-out remains a "
+        "memorisation number even though leave-one-COUNTY-out is now clean "
+        "(a genuinely unseen county cannot be placed: mean |error| 1.80 deg "
+        "against a statewide sd of 1.71). Dropping them is a modelling "
+        "decision with a real trade-off -- they cannot affect day-to-day "
+        "discrimination, only a beach's baseline, so the cost to within-beach "
+        "AUROC should be ~nil -- but it is not this PR's to make silently."
+    ),
+)
+def test_county_cannot_be_recovered_from_features_on_held_out_beaches(
+    beach_day_frame: pd.DataFrame,
+) -> None:
+    """The guard that asks the ACTUAL question instead of a proxy for it.
+
+    Added after review demolished the correlation test's coverage claim. Two
+    confirmed blind spots in `|rho| vs latitude`:
+
+      * `coastal_x_km` is `longitude * cos(lat) * 111.32` -- a raw coordinate --
+        but California's coast runs north-south, so it scores only 0.47 against
+        LATITUDE and sails under the threshold. Deleting it from the denylist
+        left all correlation/support tests green.
+      * any NON-MONOTONE function of latitude (e.g. `abs(lat - 35)`) evades a
+        rank correlation entirely.
+
+    Correlation against one axis was always a proxy. The real question is
+    whether a learner can recover WHERE a row is from the features the model
+    gets, so ask that directly: fit a small tree on some beaches and predict the
+    county of beaches it has never seen. Near-majority-baseline accuracy means
+    the features do not carry location.
+    """
+    from sklearn.ensemble import RandomForestClassifier
+    from sklearn.model_selection import GroupShuffleSplit
+
+    enriched, raw = _enriched_sample(beach_day_frame)
+    features = [
+        c for c in _model_feature_columns(enriched)
+        if pd.api.types.is_numeric_dtype(enriched[c])
+    ]
+    matrix = enriched[features].replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    county = raw["county"].astype(str).to_numpy()
+    groups = raw["beach_id"].astype(str).to_numpy()
+
+    keep = county != "nan"
+    matrix, county, groups = matrix[keep], county[keep], groups[keep]
+    if len(np.unique(groups)) < 20:  # pragma: no cover - truncated frame
+        pytest.skip("too few beaches to hold any out")
+
+    train_idx, test_idx = next(
+        GroupShuffleSplit(n_splits=1, test_size=0.3, random_state=0).split(
+            matrix, county, groups
+        )
+    )
+    model = RandomForestClassifier(
+        n_estimators=60, max_depth=12, random_state=0, n_jobs=-1
+    ).fit(matrix.iloc[train_idx], county[train_idx])
+
+    accuracy = float((model.predict(matrix.iloc[test_idx]) == county[test_idx]).mean())
+    values, counts = np.unique(county[test_idx], return_counts=True)
+    majority = float(counts.max() / counts.sum())
+
+    assert accuracy <= majority + _MAX_COUNTY_RECOVERY_LIFT, (
+        f"county recovered on held-out beaches at {accuracy:.3f} against a "
+        f"{majority:.3f} majority baseline -- the features still carry location"
+    )
