@@ -5,12 +5,15 @@ leaking same-morning sample data into features.
 """
 from __future__ import annotations
 
+import logging
 from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
 
 from app.core.timewindows import forecast_cutoff_utc as _forecast_cutoff_utc
+
+logger = logging.getLogger(__name__)
 
 # Peak clear-noon shortwave in CA is ~900 W/m^2, which corresponds to a UV index
 # of ~11; 900/80 = 11.25. Cloudy ~300 W/m^2 -> ~3.75.
@@ -45,6 +48,25 @@ def uv_index_24h_max(uv_values, shortwave_values) -> tuple[float, bool]:
 
 
 _PACIFIC = ZoneInfo("America/Los_Angeles")
+
+# A daily summary covers the 24 hours ending at the 5 AM PT cutoff, so a complete
+# window is exactly 24 hourly samples. Anything short is a PARTIAL window, and a
+# partial window is not a smaller measurement — it is a wrong one.
+#
+# Found 2026-08-07. The daily pipeline refetches only
+# `[last_stored_date - 7d, today]` and aggregates that slice in isolation, so the
+# slice's FIRST day never has the preceding evening's hours available and its
+# aggregates come out truncated. Because the merge is `keep="last"` (new wins),
+# and each run's window starts one day later than the last, every single day was
+# written exactly once while it sat at position 0 — and then never repaired.
+# Measured on the shipped frame: 8,767 of the 8,776 beach-days between 2026-04
+# and 2026-07 that had a value carried a truncated one, `shortwave_24h_sum`
+# median 4.57 MJ/m² against 26.77 for the same rows recomputed over continuous
+# history (an 83% understatement), and `days_since_sunny` reset to 0.
+#
+# Dropping the row instead is what makes the daily merge safe: `keep="last"`
+# cannot overwrite a good value with a bad one if the bad one is never emitted.
+_MIN_WINDOW_HOURS = 24
 
 
 def aggregate_solar_wind_windows(raw: pd.DataFrame) -> pd.DataFrame:
@@ -98,6 +120,7 @@ def aggregate_solar_wind_windows(raw: pd.DataFrame) -> pd.DataFrame:
         df["wind_v"] = np.nan
 
     rows = []
+    partial_windows = 0
     for station_id, sdf in df.groupby("station_id"):
         sdf = sdf.set_index("time_utc").sort_index()
         lat = float(sdf["latitude"].iloc[0])
@@ -109,7 +132,8 @@ def aggregate_solar_wind_windows(raw: pd.DataFrame) -> pd.DataFrame:
             cutoff = _forecast_cutoff_utc(d.date())
             window_start = cutoff - pd.Timedelta(hours=24)
             window = sdf.loc[(sdf.index >= window_start) & (sdf.index < cutoff)]
-            if window.empty:
+            if len(window) < _MIN_WINDOW_HOURS:
+                partial_windows += 1
                 continue
 
             cc_mean = float(window["cloud_cover"].mean()) if "cloud_cover" in window else np.nan
@@ -142,6 +166,13 @@ def aggregate_solar_wind_windows(raw: pd.DataFrame) -> pd.DataFrame:
                 "wind_direction_24h_mean": wd_mean,
             })
 
+    if partial_windows:
+        # One per station per fetch is the expected, harmless case (the leading
+        # edge of the requested range). A larger count means a gappy feed.
+        logger.info(
+            "solar_wind: skipped %d day(s) with fewer than %d hourly samples "
+            "(partial 24h window)", partial_windows, _MIN_WINDOW_HOURS,
+        )
     if not rows:
         return pd.DataFrame(columns=output_cols)
     out = pd.DataFrame(rows).sort_values(["station_id", "sample_date"]).reset_index(drop=True)
