@@ -984,8 +984,14 @@ def main() -> None:
 
         if args.with_solar_wind:
             from datetime import date as _date
-            from app.data.connectors.hydrology_sources import OpenMeteoHistoricalSolarWindConnector
-            from app.data.pipeline.solar_wind import aggregate_solar_wind_windows
+            from app.data.connectors.hydrology_sources import (
+                OpenMeteoHistoricalSolarWindConnector,
+                OpenMeteoHistoricalUvConnector,
+            )
+            from app.data.pipeline.solar_wind import (
+                aggregate_solar_wind_windows,
+                merge_uv_hourly,
+            )
             from app.data.pipeline.marine_microbiology import (
                 compute_beach_shore_azimuth,
                 compute_beach_coastal_features,
@@ -1027,6 +1033,21 @@ def main() -> None:
                     cache_dir=settings.precip_cache_dir / "openmeteo_solar_wind",
                 )
             )
+            # Real UV comes from the air-quality archive, NOT from the ERA5 archive
+            # above (which serves uv_index as an all-null column). Fetched over the
+            # same window and spliced in per (grid cell, hour) before aggregation so
+            # uv_index_24h_max is a measurement rather than the shortwave proxy.
+            # A failure here degrades to the proxy — it must never block the run.
+            raw_uv = asyncio.run(
+                OpenMeteoHistoricalUvConnector().fetch_historical_uv(
+                    station_locs,
+                    _sw_fetch_start,
+                    end_date,
+                    cache_dir=settings.precip_cache_dir / "openmeteo_uv",
+                )
+            )
+            print(f"[solar-wind] air-quality UV hours fetched: {len(raw_uv)}")
+            raw_sw = merge_uv_hourly(raw_sw, raw_uv)
             new_sw_daily = aggregate_solar_wind_windows(raw_sw)
             if _sw_path.exists() and not args.start_date:
                 _existing_sw = pd.read_parquet(_sw_path)
