@@ -28,6 +28,10 @@ def curate_beach_days(
     frame = bacteria_frame.copy()
     frame["sample_date"] = pd.to_datetime(frame["sample_time"]).dt.date
     frame["enterococcus_value"] = pd.to_numeric(frame["enterococcus_value"], errors="coerce")
+    # Local-dev fixture path only. The sample rows carry no method/units, so they
+    # stand in for culture sampling and the culture action value is the divisor.
+    # Emitted so a fixture-built beach_day has the same schema the model expects.
+    frame["enterococcus_action_ratio"] = frame["enterococcus_value"] / float(stv_threshold)
     frame["exceeds_stv"] = (frame["enterococcus_value"] > stv_threshold).astype("Int64")
 
     covariates = [item for item in covariate_frames if not item.empty]

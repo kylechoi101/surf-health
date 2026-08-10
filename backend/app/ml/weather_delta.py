@@ -23,10 +23,17 @@ import numpy as np
 import pandas as pd
 
 
+# Bacteria-history features are now built from `enterococcus_action_ratio`
+# (value / that row's own action value) rather than the raw mixed-unit
+# `enterococcus_value` — see docs/ACTION_VALUE_NORMALIZATION.md. Both spellings
+# are matched: the raw-column patterns stay so a frame built by older code, or a
+# persisted holdout artifact from before the change, is still censored correctly
+# rather than leaking a bacteria-history feature into an environment-only view.
 BACTERIA_HISTORY_PATTERNS = (
+    re.compile(r"^enterococcus_action_ratio(?:_last_obs|_lag_\d+)?$"),
     re.compile(r"^enterococcus_value(?:_last_obs|_lag_\d+)?$"),
-    re.compile(r"^days_since_enterococcus_value_obs$"),
-    re.compile(r"^enterococcus_geomean_"),
+    re.compile(r"^days_since_enterococcus_(?:value|action_ratio)_obs$"),
+    re.compile(r"^enterococcus_(?:action_ratio_)?geomean_"),
     re.compile(r"^geomean_"),
     re.compile(r"^samples_in_geomean_"),
     re.compile(r"^log_enterococcus$"),
