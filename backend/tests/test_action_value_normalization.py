@@ -360,6 +360,51 @@ def test_log_enterococcus_stays_on_the_raw_scale():
     assert float(enriched.iloc[0]["log_enterococcus"]) == pytest.approx(math.log10(1000.0))
 
 
+def test_renamed_features_are_still_detected_as_bacteria_history():
+    """The rename's sharpest risk. `is_bacteria_history_feature` drives the
+    serve-time stale-censoring path (app/ml/stale_evaluation.py); if its regexes
+    stopped matching the renamed columns, censoring would silently stop zeroing
+    the bacteria history on between-sample rows — a leak with no error.
+    """
+    from app.ml.weather_delta import is_bacteria_history_feature
+
+    for column in (
+        "enterococcus_action_ratio_lag_1",
+        "enterococcus_action_ratio_lag_28",
+        "enterococcus_action_ratio_last_obs",
+        "enterococcus_action_ratio_geomean_30d_lagged",
+        "enterococcus_action_ratio_geomean_42d_lagged",
+        "geomean_30d_exceeds_35_lagged",
+        "samples_in_geomean_30d_lagged",
+        "days_since_enterococcus_value_obs",
+        # Legacy spellings stay matched so a persisted holdout artifact from
+        # before the rename is still censored rather than leaking.
+        "enterococcus_value_lag_1",
+        "enterococcus_value_last_obs",
+        "enterococcus_geomean_30d_lagged",
+    ):
+        assert is_bacteria_history_feature(column), column
+
+    for column in ("precip_mm_24h", "wave_height_m_lag_1", "solar_inactivation_index"):
+        assert not is_bacteria_history_feature(column), column
+
+
+def test_persistence_fallback_prefers_the_ratio_and_is_method_correct():
+    """The legacy `enterococcus_value_last_obs > 104` fallback is method-blind:
+    it reads a clean San Diego copy count as an exceedance. With the ratio
+    present, "exceeded" is `> 1.0` and is correct for either assay."""
+    from app.ml.training import _persistence_probabilities
+
+    # 1000 copies is CLEAN (below 1413) but 1000 > 104, so the raw rule would
+    # have said "exceeded". 150 MPN genuinely exceeds.
+    features = pd.DataFrame(
+        {
+            "enterococcus_action_ratio_last_obs": [1000 / 1413, 150 / 104, np.nan],
+        }
+    )
+    assert _persistence_probabilities(features, 104.0).tolist() == [0.0, 1.0, 0.0]
+
+
 def test_frame_without_a_ratio_column_falls_back_to_the_culture_action_value():
     """Legacy/fixture frames carry no assay information at all. They must not
     silently blank every bacteria-history feature; the culture action value is

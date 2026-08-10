@@ -616,10 +616,12 @@ def build_beach_day_frame(
 
     # `enterococcus_value` is the raw lab number and mixes two incompatible
     # units: culture methods report MPN/CFU (action value 104), San Diego ddPCR
-    # reports copies/100mL (action value 1413). It is kept raw because it is what
-    # the lab actually reported and what the data-diff tooling and analysis
-    # notebooks compare against — renaming its meaning under readers would be a
-    # silent semantic change.
+    # reports copies/100mL (action value 1413). It is kept raw, under its own
+    # name, because it is what the lab actually reported: it is already excluded
+    # from the model feature set as a leaked target, and no reader in app/api,
+    # app/repositories, app/schemas, web/ or mobile/ touches it (the API surfaces
+    # sample values from observations.parquet). Redefining it in place would be a
+    # silent semantic change for zero benefit.
     #
     # `enterococcus_action_ratio` is the same reading divided by the action value
     # that reading is judged against, so 1.0 means "at the action value" for

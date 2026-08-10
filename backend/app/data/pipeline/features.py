@@ -30,7 +30,7 @@ LAGS = (1, 2, 3, 7, 14, 21, 28)
 # PREVIOUS row's value. Measured on the shipped 1095-day window, 46 beaches
 # carry both assays (median reading 1,894 copies vs 8.0 MPN) and 2,114 rows —
 # 2.38% of the window, 21.3% of those beaches' rows — have a previous sample
-# from the *other* assay, so on those rows a ~180x step change enters the lag
+# from the *other* assay, so on those rows a ~237x step change enters the lag
 # with no input that explains it. The rolling geomeans are worse still: 5.21% of
 # rows average MPN and copies together inside one 30-day window before the model
 # ever sees the number. There is no lagged assay indicator in the feature set to
