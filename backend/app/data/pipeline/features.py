@@ -5,13 +5,69 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from app.data.pipeline.exceedance import PCR_ENTEROCOCCUS_THRESHOLD_COPIES
 from app.data.pipeline.stormwater import STORMWATER_NUMERIC_COLUMNS
 
 
 WINDOW_DAYS = 30
 LAGS = (1, 2, 3, 7, 14, 21, 28)
+
+# ---------------------------------------------------------------------------
+# The enterococcus scale used for modelling.
+#
+# `enterococcus_value` is the RAW lab number and mixes two incompatible units in
+# one column: culture methods (Enterolert / MF / EPA 1600 / MTF) report MPN or
+# CFU per 100mL and are judged against an action value of 104; San Diego's ddPCR
+# program reports copies/100mL and is judged against 1413. Both action values are
+# correct and regulatory (see app/data/pipeline/exceedance.py).
+#
+# Every value-derived feature therefore had to be rebuilt on
+# `enterococcus_action_ratio` = value / (that row's own action value), where 1.0
+# means "at the action value" regardless of assay.
+#
+# A same-row assay FLAG cannot fix this, which is the whole reason for the
+# column swap: a flag describes the CURRENT row's assay, but a lag holds a
+# PREVIOUS row's value. Measured on the shipped 1095-day window, 46 beaches
+# carry both assays (median reading 1,894 copies vs 8.0 MPN) and 2,114 rows —
+# 2.38% of the window, 21.3% of those beaches' rows — have a previous sample
+# from the *other* assay, so on those rows a ~237x step change enters the lag
+# with no input that explains it. The rolling geomeans are worse still: 5.21% of
+# rows average MPN and copies together inside one 30-day window before the model
+# ever sees the number. There is no lagged assay indicator in the feature set to
+# disambiguate them, and adding one would still leave the geomeans unfixable.
+# ---------------------------------------------------------------------------
+ENTEROCOCCUS_RAW_VALUE_COLUMN = "enterococcus_value"
+ENTEROCOCCUS_RATIO_COLUMN = "enterococcus_action_ratio"
+
+# Culture single-sample action value (EPA marine STV). Mirrors the
+# `epa_marine_enterococcus_stv` setting; kept as a literal here so the feature
+# module has no runtime dependency on app.core.config, and pinned equal to it
+# by a test.
+CULTURE_ENTEROCOCCUS_STV = 104.0
+
+# Sub-detection floor for log/geomean transforms, in ratio space, resolved PER
+# ROW. The raw-space convention this replaces was `clip(lower=1)` — "a reading
+# of one reported unit logs as zero" — so its faithful ratio-space form is ONE
+# REPORTED UNIT DIVIDED BY THAT ROW'S OWN ACTION VALUE: 1/104 for a culture
+# result, 1/1413 for a ddPCR one. Anything else is a different clipping rule for
+# one of the two assays.
+#
+# A single constant does not work, and getting it wrong is not cosmetic. A flat
+# 1/1413 (13.59x below the culture floor) is what a *molecular* single copy maps
+# to; applied to culture rows it clips them 13.59x lower than the old rule did,
+# which breaks the property that makes this whole change safe: on a beach that
+# only ever used culture there is no assay mixing, so moving to the ratio scale
+# must be a pure monotone rescale — every geomean exactly 1/104 of the raw one,
+# every trigger flag identical, and therefore every tree model provably
+# invariant. Measured over FULL history on pure-culture beaches only, a flat
+# 1/1413 floor moves 29 / 6 / 52 of the three geomean trigger flags and knocks
+# 3,519 30-day geomeans (max relative deviation 0.926) off the exact rescale.
+# Per-assay: 0 / 0 / 0 flags, 0 values, max relative deviation 6.7e-15.
+CULTURE_RATIO_SUBDETECTION_FLOOR = 1.0 / CULTURE_ENTEROCOCCUS_STV
+PCR_RATIO_SUBDETECTION_FLOOR = 1.0 / PCR_ENTEROCOCCUS_THRESHOLD_COPIES
+
 BASE_NUMERIC_COLUMNS = [
-    "enterococcus_value",
+    ENTEROCOCCUS_RATIO_COLUMN,
     "wave_height_m",
     "dominant_period_s",
     "water_temperature_c",
@@ -63,8 +119,21 @@ MARINE_MICROBIOLOGY_NUMERIC_COLUMNS = [
 STORMWATER_EXPERT_NUMERIC_COLUMNS = STORMWATER_NUMERIC_COLUMNS
 
 PROSPECTIVE_EXOGENOUS_COLUMNS = [
-    column for column in BASE_NUMERIC_COLUMNS if column != "enterococcus_value"
+    column for column in BASE_NUMERIC_COLUMNS if column != ENTEROCOCCUS_RATIO_COLUMN
 ]
+
+# Derived-feature name overrides. The `days_since_*_obs` family measures sample
+# RECENCY, which is assay-independent: the ratio column is non-null in exactly
+# the rows the raw value is, so the series is bit-identical before and after
+# normalization. Renaming it would churn the serving router's staleness constant
+# (app/ml/stale_evaluation.RECENCY_COLUMN), the spatial diagnostics and the
+# bacteria-history regexes for zero information gain, so it keeps its historical
+# name. The two families that genuinely changed meaning — `*_lag_*` and
+# `*_last_obs` — are renamed, so no artifact ever carries a ratio under a name
+# that says "value".
+_DAYS_SINCE_NAME_OVERRIDES = {
+    ENTEROCOCCUS_RATIO_COLUMN: "days_since_enterococcus_value_obs",
+}
 
 ROLLING_COLUMNS = [
     "wave_height_m",
@@ -94,17 +163,33 @@ SPATIAL_NUMERIC_COLUMNS = [
 # causally-correct signal we can give the model for the chronic-advisory pool.
 # All columns are strictly lagged (closed='left') — the same-day sample is
 # never in the rolling window, so there is no leakage of the prediction target.
+#
+# The two geomean VALUE columns carry `action_ratio` in their names because their
+# number changed scale (multiples of the action value, not MPN/100mL). The
+# `geomean_*_exceeds_*` flags keep theirs: 35 and 104 name the regulatory trigger,
+# which is unchanged — only the arithmetic that tests it is now assay-correct.
 REGULATORY_GEOMEAN_COLUMNS = [
-    "enterococcus_geomean_30d_lagged",
-    "enterococcus_geomean_42d_lagged",
+    "enterococcus_action_ratio_geomean_30d_lagged",
+    "enterococcus_action_ratio_geomean_42d_lagged",
     "geomean_30d_exceeds_35_lagged",
     "geomean_30d_exceeds_104_lagged",
     "geomean_42d_exceeds_35_lagged",
     "samples_in_geomean_30d_lagged",
 ]
-_GEOMEAN_THRESHOLD_LOG10 = {
-    35: float(np.log10(35)),
-    104: float(np.log10(104)),
+# Geomean posting triggers, expressed on the action-value ratio scale the geomean
+# is now computed on. §115880's numbers are culture numbers, so each becomes the
+# fraction of the CULTURE action value it represents: 104 -> 1.0 (exactly at the
+# action value) and 35 -> 35/104 ~ 0.3365. On a culture beach the flags are
+# therefore unchanged. On a ddPCR beach they become the proportional analogue
+# (0.3365 x 1413 ~ 476 copies) rather than what they were before, which was the
+# raw copy geomean compared against 35 — a test that ~every ddPCR row passes, so
+# the "flag" was a constant 1 and the model could only read it as "this is San
+# Diego". There is no published ddPCR geomean action value to use instead; the
+# proportional reading is the honest approximation and is documented as such in
+# docs/ACTION_VALUE_NORMALIZATION.md.
+_GEOMEAN_RATIO_THRESHOLD_LOG10 = {
+    35: float(np.log10(35.0 / 104.0)),
+    104: 0.0,
 }
 
 
@@ -390,7 +475,8 @@ def _rolling_and_spacing_features(enriched: pd.DataFrame) -> pd.DataFrame:
                 .shift(1)
                 .ffill()
             )
-            feature_map[f"days_since_{column}_obs"] = (
+            days_since_name = _DAYS_SINCE_NAME_OVERRIDES.get(column, f"days_since_{column}_obs")
+            feature_map[days_since_name] = (
                 sample_date_series - observed_dates
             ).dt.days
             # Last observed value before this row (avoids leaking current reading).
@@ -400,20 +486,61 @@ def _rolling_and_spacing_features(enriched: pd.DataFrame) -> pd.DataFrame:
         # Last observed EXCEEDANCE before this row. Same shift(1).ffill() rule as
         # the *_last_obs values above, so it is forecast-safe in the identical way.
         #
-        # This exists because `enterococcus_value` is not comparable across rows:
-        # San Diego ddPCR reports copies/100mL (threshold 1413) while culture
-        # methods report MPN/CFU (threshold 104), and beach_day carries no
-        # method/units column to tell them apart — 84 beaches report BOTH ways.
-        # `exceeds_stv` was already decided per-sample by the method-aware
-        # exceedance.compute_exceeds_stv, so carrying the decision forward is the
-        # only correct "what did we see last time" signal. Re-thresholding the raw
-        # value (the old persistence baseline) judged copy counts against 104.
+        # This exists because the RAW `enterococcus_value` is not comparable
+        # across rows: San Diego ddPCR reports copies/100mL (action value 1413)
+        # while culture methods report MPN/CFU (action value 104), and beaches
+        # report BOTH ways. `exceeds_stv` was already decided per-sample by the
+        # method-aware exceedance.compute_exceeds_stv, so carrying the decision
+        # forward is a correct "what did we see last time" signal. Re-thresholding
+        # the raw value (the old persistence baseline) judged copy counts against
+        # 104. `enterococcus_action_ratio_last_obs` above now carries the same
+        # information continuously — this stays because it is the exact binary
+        # the regulator acted on, and `_persistence_probabilities` reads it.
         exceedance = pd.to_numeric(group["exceeds_stv"], errors="coerce")
         feature_map["exceeds_stv_last_obs"] = exceedance.shift(1).ffill()
 
         feature_frames.append(pd.DataFrame(feature_map, index=group.index))
 
     return pd.concat(feature_frames).reindex(enriched.index) if feature_frames else pd.DataFrame()
+
+
+def implied_action_values(raw: pd.Series, ratio: pd.Series) -> np.ndarray:
+    """Per-row action value each reading was judged against (104.0 or 1413.0).
+
+    ``beach_day`` deliberately does not carry ``method``/``units`` — it is a
+    beach-day frame, and putting the assay on it is a separate change — but it
+    does carry both the raw reading and the ratio, and the divisor that relates
+    them is recoverable exactly: ``action_value = raw / ratio``. The quotient is
+    snapped to the two known action values so floating-point noise can never
+    produce a third.
+
+    Unrecoverable rows (``raw`` absent, or ``raw == 0`` so the quotient is 0/0)
+    fall back to the **culture** action value — the same default
+    :func:`exceedance.action_value_for` uses when method/units say nothing, and
+    the assumption the pre-normalization code made for every row. Measured over
+    all of history that fallback is wrong for at most **4** rows: exactly four
+    ddPCR observations report a value of 0, and a floor only ever applies to a
+    reading below one reported unit in the first place.
+    """
+    with np.errstate(divide="ignore", invalid="ignore"):
+        implied = raw.to_numpy(dtype="float64") / ratio.to_numpy(dtype="float64")
+    is_pcr = np.isclose(implied, PCR_ENTEROCOCCUS_THRESHOLD_COPIES, rtol=1e-6)
+    return np.where(
+        is_pcr, PCR_ENTEROCOCCUS_THRESHOLD_COPIES, CULTURE_ENTEROCOCCUS_STV
+    )
+
+
+def _ratio_subdetection_floors(frame: pd.DataFrame) -> pd.Series:
+    """One reported unit, in ratio space, for each row's own assay."""
+    ratio = pd.to_numeric(frame[ENTEROCOCCUS_RATIO_COLUMN], errors="coerce")
+    raw = pd.to_numeric(
+        frame.get(
+            ENTEROCOCCUS_RAW_VALUE_COLUMN,
+            pd.Series(np.nan, index=frame.index, dtype="float64"),
+        ),
+        errors="coerce",
+    )
+    return pd.Series(1.0 / implied_action_values(raw, ratio), index=frame.index)
 
 
 def _regulatory_geomean_features(enriched: pd.DataFrame) -> pd.DataFrame:
@@ -424,18 +551,25 @@ def _regulatory_geomean_features(enriched: pd.DataFrame) -> pd.DataFrame:
     *prior* samples (closed='left'), so the same-day sample is never in the window —
     no leakage of the prediction target.
 
-    Sub-detection samples are clipped to 1 MPN/100mL (== log10 = 0) before averaging,
-    matching the convention used for `log_enterococcus` elsewhere in the pipeline.
+    The geomean is taken over ``enterococcus_action_ratio``, NOT the raw value: a
+    30-day window on a beach that switched assays would otherwise average
+    copies/100mL and MPN/100mL into one number before the model ever sees it,
+    which happens on 5.21% of rows in the shipped 1095-day window. On the ratio
+    scale every term is a multiple of its own action value, so the average is
+    defined. Sub-detection samples are floored at one reported unit in each
+    row's OWN action value (:func:`_ratio_subdetection_floors`) — the ratio-space
+    form of the old "clip to 1 MPN/100mL" convention, which keeps a pure-culture
+    beach an exact 1/104 rescale of the raw derivation.
     """
     feature_frames: list[pd.DataFrame] = []
-    threshold_35 = _GEOMEAN_THRESHOLD_LOG10[35]
-    threshold_104 = _GEOMEAN_THRESHOLD_LOG10[104]
+    threshold_35 = _GEOMEAN_RATIO_THRESHOLD_LOG10[35]
+    threshold_104 = _GEOMEAN_RATIO_THRESHOLD_LOG10[104]
 
     for _, group in enriched.groupby("beach_id", sort=False):
         group = group.sort_values("sample_date").copy()
         sample_dates = pd.DatetimeIndex(pd.to_datetime(group["sample_date"], errors="coerce"))
-        ent_values = pd.to_numeric(group["enterococcus_value"], errors="coerce")
-        log_ent = np.log10(ent_values.clip(lower=1.0))
+        ent_values = pd.to_numeric(group[ENTEROCOCCUS_RATIO_COLUMN], errors="coerce")
+        log_ent = np.log10(ent_values.clip(lower=_ratio_subdetection_floors(group)))
         log_ent_series = pd.Series(log_ent.to_numpy(), index=sample_dates, dtype=float)
 
         feature_map: dict[str, pd.Series] = {}
@@ -444,10 +578,10 @@ def _regulatory_geomean_features(enriched: pd.DataFrame) -> pd.DataFrame:
         sample_count_30d = log_ent_series.rolling("30D", min_periods=1, closed="left").count()
         log_mean_42d = log_ent_series.rolling("42D", min_periods=2, closed="left").mean()
 
-        feature_map["enterococcus_geomean_30d_lagged"] = pd.Series(
+        feature_map["enterococcus_action_ratio_geomean_30d_lagged"] = pd.Series(
             (10.0 ** log_mean_30d).to_numpy(), index=group.index
         )
-        feature_map["enterococcus_geomean_42d_lagged"] = pd.Series(
+        feature_map["enterococcus_action_ratio_geomean_42d_lagged"] = pd.Series(
             (10.0 ** log_mean_42d).to_numpy(), index=group.index
         )
         feature_map["geomean_30d_exceeds_35_lagged"] = pd.Series(
@@ -507,6 +641,28 @@ def _distributed_lag_hydrology_features(enriched: pd.DataFrame) -> pd.DataFrame:
 
 def add_temporal_features(frame: pd.DataFrame) -> pd.DataFrame:
     enriched = frame.copy()
+    # The raw value is no longer a BASE_NUMERIC_COLUMN (nothing model-facing is
+    # built from it) but `log_enterococcus` — the density regression target — and
+    # `days_since_enterococcus_value_obs` still read it, so guarantee it exists.
+    if ENTEROCOCCUS_RAW_VALUE_COLUMN not in enriched.columns:
+        enriched[ENTEROCOCCUS_RAW_VALUE_COLUMN] = np.nan
+    # A frame that carries a raw value but no ratio has no assay information at
+    # all (legacy artifacts, fixtures, the national WQP shim). Falling through to
+    # the all-NaN branch below would silently blank every bacteria-history
+    # feature, so derive the ratio against the culture action value instead —
+    # the only defensible default when nothing says otherwise, and the exact
+    # assumption the pre-normalization code made everywhere. For a culture-only
+    # frame this is a constant rescale of every affected feature, so tree models
+    # (and the geomean trigger flags, whose thresholds rescale identically) are
+    # numerically unchanged by it.
+    if (
+        ENTEROCOCCUS_RATIO_COLUMN not in enriched.columns
+        and enriched[ENTEROCOCCUS_RAW_VALUE_COLUMN].notna().any()
+    ):
+        enriched[ENTEROCOCCUS_RATIO_COLUMN] = (
+            pd.to_numeric(enriched[ENTEROCOCCUS_RAW_VALUE_COLUMN], errors="coerce")
+            / CULTURE_ENTEROCOCCUS_STV
+        )
     missing_base_columns = {
         column: np.nan for column in BASE_NUMERIC_COLUMNS if column not in enriched.columns
     }
@@ -543,7 +699,20 @@ def add_temporal_features(frame: pd.DataFrame) -> pd.DataFrame:
             "day_of_year": enriched["sample_date"].dt.dayofyear,
             "sin_doy": np.sin(2 * np.pi * enriched["sample_date"].dt.dayofyear / 365.25),
             "cos_doy": np.cos(2 * np.pi * enriched["sample_date"].dt.dayofyear / 365.25),
-            "log_enterococcus": np.log10(enriched["enterococcus_value"].clip(lower=1)),
+            # Deliberately still RAW-derived, and deliberately not a model
+            # feature (`_model_feature_columns` drops it). This is the density
+            # REGRESSION TARGET, and the regressor's output is served to users
+            # as `ForecastRecord.predicted_log_enterococcus` — with a serve-time
+            # fallback in serving_repository that computes log10(raw value)
+            # directly. Moving it to the ratio scale would silently change what a
+            # published number means and desynchronise it from that fallback, so
+            # the mixed-unit regression TARGET is left alone here and recorded as
+            # the known remaining gap in docs/ACTION_VALUE_NORMALIZATION.md.
+            "log_enterococcus": np.log10(
+                pd.to_numeric(
+                    enriched[ENTEROCOCCUS_RAW_VALUE_COLUMN], errors="coerce"
+                ).clip(lower=1)
+            ),
         },
         index=enriched.index,
     )
@@ -590,6 +759,49 @@ def add_temporal_features(frame: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+class RawEnterococcusFeatureError(ValueError):
+    """A model feature was built from the raw, mixed-unit enterococcus column."""
+
+
+# Features that may legitimately mention the raw column name. Recency is the only
+# quantity derivable from `enterococcus_value` that is assay-independent (it uses
+# the column's null pattern, never its magnitude), so it is the only entry — and
+# adding a second one should require the same argument in writing.
+_RAW_VALUE_FEATURE_ALLOWLIST = frozenset({"days_since_enterococcus_value_obs"})
+
+
+def assert_no_raw_value_features(feature_columns: list[str]) -> None:
+    """Fail loudly if any model feature derives from the raw, mixed-unit column.
+
+    ``enterococcus_value`` mixes MPN/CFU (action value 104) with ddPCR
+    copies/100mL (action value 1413). Any feature that carries its magnitude —
+    a lag, a carry-forward, a rolling mean — is numerically undefined the moment
+    a beach reports both ways, and no same-row assay flag can repair it because
+    a lag holds a PREVIOUS row's assay. Build from ``enterococcus_action_ratio``
+    instead; it is the same reading divided by the action value it is judged
+    against, so it is comparable across assays by construction.
+
+    This is a build-time tripwire, not a style check: it fires the first time a
+    new feature is added on the wrong column, which is how the original defect
+    was introduced and how it would come back.
+    """
+    offenders = sorted(
+        column
+        for column in feature_columns
+        if (ENTEROCOCCUS_RAW_VALUE_COLUMN in column or column == "log_enterococcus")
+        and column not in _RAW_VALUE_FEATURE_ALLOWLIST
+    )
+    if offenders:
+        raise RawEnterococcusFeatureError(
+            "Model features derived from the raw mixed-unit enterococcus column: "
+            f"{offenders}. Build them from '{ENTEROCOCCUS_RATIO_COLUMN}' "
+            "(value / that row's own action value) instead — see "
+            "docs/ACTION_VALUE_NORMALIZATION.md. If a new feature genuinely uses "
+            "only the column's null pattern and never its magnitude, add it to "
+            "_RAW_VALUE_FEATURE_ALLOWLIST with the reason."
+        )
+
+
 def _model_feature_columns(enriched: pd.DataFrame) -> list[str]:
     feature_columns = [
         column
@@ -623,9 +835,14 @@ def _model_feature_columns(enriched: pd.DataFrame) -> list[str]:
     raw_current_columns = set(PROSPECTIVE_EXOGENOUS_COLUMNS)
     feature_columns = [column for column in feature_columns if column not in raw_current_columns]
     feature_columns = [column for column in feature_columns if not column.endswith("_missing")]
-    for leaked_target_column in ("enterococcus_value", "log_enterococcus"):
+    for leaked_target_column in (
+        ENTEROCOCCUS_RAW_VALUE_COLUMN,
+        ENTEROCOCCUS_RATIO_COLUMN,
+        "log_enterococcus",
+    ):
         if leaked_target_column in feature_columns:
             feature_columns.remove(leaked_target_column)
+    assert_no_raw_value_features(feature_columns)
     return feature_columns
 
 

@@ -37,7 +37,10 @@ from app.data.pipeline.beachwatch import (
     ADVISORY_OPEN_ENDED_MAX_DAYS,
     fill_open_ended_advisory_end,
 )
+from app.data.pipeline.exceedance import action_value_ratio
 from app.data.pipeline.features import (
+    CULTURE_ENTEROCOCCUS_STV,
+    ENTEROCOCCUS_RATIO_COLUMN,
     MARINE_MICROBIOLOGY_NUMERIC_COLUMNS,
     STORMWATER_EXPERT_NUMERIC_COLUMNS,
     SlidingWindowDataset,
@@ -251,6 +254,14 @@ def _prepare_observation_training_frame(observations: pd.DataFrame) -> pd.DataFr
     frame["sample_time"] = pd.to_datetime(frame["sample_time"], errors="coerce")
     frame["sample_date"] = pd.to_datetime(frame["sample_date"], errors="coerce")
     frame["enterococcus_value"] = pd.to_numeric(frame["value"], errors="coerce")
+    # Observations carry method/units, so the per-row action value is known
+    # exactly here — no culture fallback needed.
+    frame[ENTEROCOCCUS_RATIO_COLUMN] = action_value_ratio(
+        frame["enterococcus_value"],
+        frame.get("method", pd.Series(index=frame.index, dtype="object")),
+        frame.get("units", pd.Series(index=frame.index, dtype="object")),
+        get_settings().epa_marine_enterococcus_stv,
+    )
     frame["exceeds_stv"] = frame["exceeds_stv"].astype(int)
     for column in (
         "county",
@@ -283,6 +294,7 @@ def _prepare_observation_training_frame(observations: pd.DataFrame) -> pd.DataFr
             "sample_date",
             "sample_time",
             "enterococcus_value",
+            ENTEROCOCCUS_RATIO_COLUMN,
             "exceeds_stv",
             "latitude",
             "longitude",
@@ -319,6 +331,13 @@ def _load_fixture_training_frame() -> pd.DataFrame:
                     "sample_date": observation["sample_time"][:10],
                     "sample_time": observation["sample_time"],
                     "enterococcus_value": observation["value"],
+                    # Fixtures carry no method/units; they stand in for culture
+                    # sampling, so the culture action value is the right divisor.
+                    ENTEROCOCCUS_RATIO_COLUMN: (
+                        observation["value"] / CULTURE_ENTEROCOCCUS_STV
+                        if observation["value"] is not None
+                        else np.nan
+                    ),
                     "exceeds_stv": int(observation["exceeds_stv"]),
                     "latitude": 32.9,
                     "longitude": -117.25,
@@ -363,6 +382,26 @@ def _load_curated_training_frame(curated_dir: Path) -> pd.DataFrame:
     frame["sample_time"] = pd.to_datetime(frame["sample_time"], errors="coerce")
     frame["sample_date"] = pd.to_datetime(frame["sample_date"], errors="coerce")
     frame["enterococcus_value"] = pd.to_numeric(frame["enterococcus_value"], errors="coerce")
+    # Every bacteria-history feature is built from the action-value ratio, not
+    # the raw mixed-unit value. A beach_day artifact predating that change has
+    # no ratio column; training on it would silently revert the fix, so say so
+    # loudly and fall back to the culture action value (what the old code
+    # effectively assumed for every row).
+    if ENTEROCOCCUS_RATIO_COLUMN not in frame.columns:
+        print(
+            f"[training] WARNING: beach_day has no '{ENTEROCOCCUS_RATIO_COLUMN}' column; "
+            "bacteria-history features fall back to the culture action value for ALL rows, "
+            "which is wrong for San Diego ddPCR beaches. Re-run the data pipeline. "
+            "See docs/ACTION_VALUE_NORMALIZATION.md.",
+            file=sys.stderr,
+            flush=True,
+        )
+        frame[ENTEROCOCCUS_RATIO_COLUMN] = (
+            frame["enterococcus_value"] / CULTURE_ENTEROCOCCUS_STV
+        )
+    frame[ENTEROCOCCUS_RATIO_COLUMN] = pd.to_numeric(
+        frame[ENTEROCOCCUS_RATIO_COLUMN], errors="coerce"
+    )
     frame["exceeds_stv"] = frame["exceeds_stv"].astype(int)
     for column in (
         "county",
@@ -412,6 +451,7 @@ def _load_curated_training_frame(curated_dir: Path) -> pd.DataFrame:
             "sample_date",
             "sample_time",
             "enterococcus_value",
+            ENTEROCOCCUS_RATIO_COLUMN,
             "exceeds_stv",
             "latitude",
             "longitude",
@@ -525,6 +565,21 @@ def _persistence_probabilities(features: pd.DataFrame, stv_threshold: float) -> 
         exceeded = pd.to_numeric(last_exceedance, errors="coerce")
         return exceeded.fillna(0.0).gt(0.0).astype(float).to_numpy()
 
+    # Preferred fallback: the action-value ratio, where "exceeded" is `> 1.0`
+    # for either assay. This is method-correct without needing a threshold.
+    last_ratio = features.get(f"{ENTEROCOCCUS_RATIO_COLUMN}_last_obs")
+    if last_ratio is not None:
+        return (
+            pd.to_numeric(last_ratio, errors="coerce")
+            .fillna(0.0)
+            .gt(1.0)
+            .astype(float)
+            .to_numpy()
+        )
+
+    # Last resort: the raw mixed-unit value against the culture STV. Method-blind
+    # — it reads a San Diego copy count as an exceedance — and reachable only from
+    # a frame predating both columns above.
     last_obs = features.get("enterococcus_value_last_obs")
     if last_obs is None:
         return np.zeros(len(features), dtype=float)
@@ -3110,6 +3165,9 @@ def _build_forecast_candidates(
         candidate["sample_date"] = pd.Timestamp(forecast_date)
         candidate["sample_time"] = pd.Timestamp(forecast_timestamp)
         candidate["enterococcus_value"] = np.nan
+        # Must be nulled with the raw value: the lag/last_obs machinery keys on
+        # this column being NaN to know the forecast row has no sample of its own.
+        candidate[ENTEROCOCCUS_RATIO_COLUMN] = np.nan
         candidate["exceeds_stv"] = np.nan
         for column in covariate_columns:
             # Primary: use the windowed beach history (recent 60 days).
@@ -3255,8 +3313,14 @@ def _compute_local_drivers(
                 driver_strings.append(f"elevated surf ({val:.1f} m)")
             elif col.startswith("wave_height_m_mean_"):
                 driver_strings.append(f"persistently elevated swell ({val:.1f} m avg)")
-            elif col.startswith("enterococcus_value_lag_"):
-                driver_strings.append(f"elevated bacteria in recent sample ({val:.0f} CFU/100 mL)")
+            elif col.startswith("enterococcus_action_ratio_lag_"):
+                # The feature is now a multiple of the beach's own action value,
+                # so it renders the same way for a culture beach and a ddPCR one.
+                # The old string said "CFU/100 mL" for every row, which was wrong
+                # for San Diego's copies/100mL readings even before this change.
+                driver_strings.append(
+                    f"recent sample at {val:.1f}x the action value for bacteria"
+                )
             elif col.startswith("turbidity_observed_lag_"):
                 driver_strings.append("recent turbidity noted in field observations")
             elif col.startswith("salinity_psu_lag_") and val < 25:

@@ -37,6 +37,11 @@ LABEL_COLUMNS: tuple[str, ...] = ("exceeds_stv",)
 # hard failure (a single-day connector outage produces a legitimate all-NaN
 # column and must not break the live daily job).
 EXPECTED_FEATURE_COLUMNS: tuple[str, ...] = (
+    # The modelling scale for enterococcus: the raw reading divided by the action
+    # value it is judged against (104 culture / 1413 ddPCR). Every bacteria-history
+    # feature is built from it, so an absent or all-NaN column means the model is
+    # silently back on the raw mixed-unit value.
+    "enterococcus_action_ratio",
     # 11 marine-microbiology features (--with-solar-wind)
     "shore_normal_wind_ms",
     "solar_inactivation_index",

@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 
 from app.data.pipeline.features import (
+    CULTURE_ENTEROCOCCUS_STV,
     REGULATORY_GEOMEAN_COLUMNS,
     SD_BOUNDARY_FLAG_COLUMNS,
     SD_BOUNDARY_INTERACTION_COLUMNS,
@@ -79,8 +80,13 @@ def test_build_sliding_windows_uses_antecedent_history_only():
     dataset = build_sliding_windows(frame)
 
     assert len(dataset.feature_frame) == 2
-    assert dataset.feature_frame.iloc[0]["enterococcus_value_lag_1"] == 23
-    assert dataset.sequence_array[0, -1, 0] == 23
+    # Bacteria-history features are on the action-value ratio scale. This frame
+    # carries no method/units, so add_temporal_features divides by the culture
+    # action value (see ENTEROCOCCUS_RATIO_COLUMN).
+    assert dataset.feature_frame.iloc[0][
+        "enterococcus_action_ratio_lag_1"
+    ] == 23 / CULTURE_ENTEROCOCCUS_STV
+    assert dataset.sequence_array[0, -1, 0] == 23 / CULTURE_ENTEROCOCCUS_STV
     assert math.isclose(dataset.feature_frame.iloc[0]["wave_height_m_mean_7d"], 1.2)
     assert dataset.feature_frame.iloc[0]["days_since_wave_height_m_obs"] == 1.0
     assert dataset.targets_log_density[0] == math.log10(24)
@@ -123,8 +129,10 @@ def test_build_inference_windows_emits_only_unlabeled_forecast_rows():
 
     assert len(dataset.feature_frame) == 1
     assert str(dataset.metadata.iloc[0]["sample_date"].date()) == "2026-04-05"
-    assert dataset.feature_frame.iloc[0]["enterococcus_value_lag_1"] == 24
-    assert dataset.sequence_array[0, -1, 0] == 24
+    assert dataset.feature_frame.iloc[0][
+        "enterococcus_action_ratio_lag_1"
+    ] == 24 / CULTURE_ENTEROCOCCUS_STV
+    assert dataset.sequence_array[0, -1, 0] == 24 / CULTURE_ENTEROCOCCUS_STV
 
 
 def test_build_inference_features_keeps_unlabeled_rows_without_sequence_history():
@@ -289,12 +297,14 @@ def test_build_sliding_windows_uses_calendar_day_lags_for_sparse_history():
     dataset = build_sliding_windows(frame)
 
     assert len(dataset.feature_frame) == 1
-    assert pd.isna(dataset.feature_frame.iloc[0]["enterococcus_value_lag_1"])
-    assert dataset.feature_frame.iloc[0]["enterococcus_value_lag_7"] == 23.0
+    assert pd.isna(dataset.feature_frame.iloc[0]["enterococcus_action_ratio_lag_1"])
+    assert dataset.feature_frame.iloc[0][
+        "enterococcus_action_ratio_lag_7"
+    ] == 23.0 / CULTURE_ENTEROCOCCUS_STV
     assert dataset.feature_frame.iloc[0]["days_since_previous_sample"] == 6.0
-    assert dataset.sequence_array[0, -6, 0] == 24.0
-    assert dataset.sequence_array[0, -7, 0] == 23.0
-    assert dataset.sequence_array[0, -9, 0] == 21.0
+    assert dataset.sequence_array[0, -6, 0] == np.float32(24.0 / CULTURE_ENTEROCOCCUS_STV)
+    assert dataset.sequence_array[0, -7, 0] == np.float32(23.0 / CULTURE_ENTEROCOCCUS_STV)
+    assert dataset.sequence_array[0, -9, 0] == np.float32(21.0 / CULTURE_ENTEROCOCCUS_STV)
 
 
 def test_exact_lag_features_survive_a_non_contiguous_index():
@@ -303,7 +313,7 @@ def test_exact_lag_features_survive_a_non_contiguous_index():
     RangeIndex.  ``add_temporal_features`` combines the two with ``pd.concat(axis=1)``,
     which aligns on index — so the two UNION instead of aligning and every ``*_lag_*``
     value lands on the wrong row.  Production hit both training entry points:
-    ``enterococcus_value_lag_7`` was correct on only 33% of rows and the lag block
+    ``enterococcus_action_ratio_lag_7`` was correct on only 33% of rows and the lag block
     retained 55% of its signal.  The lag frame must carry the caller's index.
     """
 
@@ -345,7 +355,9 @@ def test_exact_lag_features_survive_a_non_contiguous_index():
     dataset = build_sliding_windows(filtered)
 
     assert len(dataset.feature_frame) == 1
-    assert dataset.feature_frame.iloc[0]["enterococcus_value_lag_7"] == 23.0
+    assert dataset.feature_frame.iloc[0][
+        "enterococcus_action_ratio_lag_7"
+    ] == 23.0 / CULTURE_ENTEROCOCCUS_STV
 
 
 def _make_history(beach_id: str, start: str, values: list[float]) -> pd.DataFrame:
@@ -384,13 +396,16 @@ def test_regulatory_geomean_features_match_log10_arithmetic_mean():
 
     # Row 0: no prior samples -> NaN until min_periods reached. Min_periods=2,
     # so row 0 is NaN, row 1 is NaN, row 2 has 2 prior samples.
-    assert pd.isna(geomean.iloc[0]["enterococcus_geomean_30d_lagged"])
-    assert pd.isna(geomean.iloc[1]["enterococcus_geomean_30d_lagged"])
+    assert pd.isna(geomean.iloc[0]["enterococcus_action_ratio_geomean_30d_lagged"])
+    assert pd.isna(geomean.iloc[1]["enterococcus_action_ratio_geomean_30d_lagged"])
 
-    # Row 2: prior samples are values[:2] = [10, 100], geomean = sqrt(10*100) = ~31.62.
-    expected_geomean_row2 = 10 ** ((math.log10(10) + math.log10(100)) / 2)
+    # Row 2: prior samples are values[:2] = [10, 100], geomean = sqrt(10*100) =
+    # ~31.62 MPN -- reported as a multiple of the culture action value, so /104.
+    expected_geomean_row2 = (
+        10 ** ((math.log10(10) + math.log10(100)) / 2)
+    ) / CULTURE_ENTEROCOCCUS_STV
     assert math.isclose(
-        float(geomean.iloc[2]["enterococcus_geomean_30d_lagged"]),
+        float(geomean.iloc[2]["enterococcus_action_ratio_geomean_30d_lagged"]),
         expected_geomean_row2,
         rel_tol=1e-9,
     )
@@ -398,14 +413,17 @@ def test_regulatory_geomean_features_match_log10_arithmetic_mean():
     # Row 6: prior samples are values[:6] = [10, 100, 50, 200, 35, 1000], geomean
     # = 10 ** mean(log10) = 10 ** 1.957 ≈ 90.6.
     log_mean_row6 = np.mean([math.log10(v) for v in history_values[:6]])
-    expected_geomean_row6 = 10 ** log_mean_row6
+    expected_geomean_row6 = (10 ** log_mean_row6) / CULTURE_ENTEROCOCCUS_STV
     assert math.isclose(
-        float(geomean.iloc[6]["enterococcus_geomean_30d_lagged"]),
+        float(geomean.iloc[6]["enterococcus_action_ratio_geomean_30d_lagged"]),
         expected_geomean_row6,
         rel_tol=1e-9,
     )
 
-    # Threshold flags: 10 ** 1.957 = ~90.6 -> exceeds 35 (yes) but not 104 (no).
+    # Threshold flags: 10 ** 1.957 = ~90.6 MPN -> exceeds 35 (yes) but not 104
+    # (no). UNCHANGED by the ratio rescale on a culture beach: dividing the
+    # geomean by 104 and the trigger by 104 leaves the same comparison, which is
+    # why this fix is inert everywhere except beaches that report by ddPCR.
     assert geomean.iloc[6]["geomean_30d_exceeds_35_lagged"] == 1.0
     assert geomean.iloc[6]["geomean_30d_exceeds_104_lagged"] == 0.0
 
@@ -420,9 +438,10 @@ def test_regulatory_geomean_does_not_leak_same_day_sample():
     enriched = add_temporal_features(frame)
     geomean = _regulatory_geomean_features(enriched)
 
-    last_row_geomean = float(geomean.iloc[-1]["enterococcus_geomean_30d_lagged"])
-    # Window for last row should contain only the six 10.0 samples; geomean = 10.
-    assert math.isclose(last_row_geomean, 10.0, rel_tol=1e-9)
+    last_row_geomean = float(geomean.iloc[-1]["enterococcus_action_ratio_geomean_30d_lagged"])
+    # Window for last row should contain only the six 10.0 samples; geomean = 10
+    # MPN, i.e. 10/104 of the culture action value.
+    assert math.isclose(last_row_geomean, 10.0 / CULTURE_ENTEROCOCCUS_STV, rel_tol=1e-9)
     assert geomean.iloc[-1]["geomean_30d_exceeds_104_lagged"] == 0.0
     assert geomean.iloc[-1]["geomean_30d_exceeds_35_lagged"] == 0.0
 

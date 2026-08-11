@@ -57,7 +57,7 @@ FEATURE_CONTEXT_COLUMNS = [
     "days_since_wave_height_m_obs",
     "dominant_period_s_last_obs",
     "days_since_dominant_period_s_obs",
-    "enterococcus_value_last_obs",
+    "enterococcus_action_ratio_last_obs",
     "days_since_enterococcus_value_obs",
     "streamflow_cfs_mean_24h",
     "streamflow_rising_flag",

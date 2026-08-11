@@ -10,7 +10,7 @@ import pandas as pd
 
 from app.core.json_safe import write_json
 from app.data.pipeline.county_corrections import correct_county
-from app.data.pipeline.exceedance import compute_exceeds_stv
+from app.data.pipeline.exceedance import action_value_ratio, compute_exceeds_stv
 from app.data.pipeline.schema_guard import validate_beach_day
 from app.data.pipeline.spelling import correct_place_spelling
 
@@ -558,10 +558,17 @@ def _advisory_temporal_features(beach_day: pd.DataFrame, advisories: pd.DataFram
 
 
 def build_beach_day_frame(
-    observations: pd.DataFrame, stations: pd.DataFrame, advisories: pd.DataFrame
+    observations: pd.DataFrame,
+    stations: pd.DataFrame,
+    advisories: pd.DataFrame,
+    stv_threshold: float | None = None,
 ) -> pd.DataFrame:
     if observations.empty:
         return pd.DataFrame()
+    if stv_threshold is None:
+        from app.core.config import get_settings
+
+        stv_threshold = get_settings().epa_marine_enterococcus_stv
 
     # Collapse multiple same-day samples to one training row using ANY-exceedance,
     # not the chronologically-last sample. A beach sampled twice in a day where an
@@ -599,8 +606,45 @@ def build_beach_day_frame(
             "turbidity_observed",
             "odor",
             "water_color",
+            *(
+                column
+                for column in ("method", "units")
+                if column in _ranked.columns
+            ),
         ]
     ].rename(columns={"value": "enterococcus_value"})
+
+    # `enterococcus_value` is the raw lab number and mixes two incompatible
+    # units: culture methods report MPN/CFU (action value 104), San Diego ddPCR
+    # reports copies/100mL (action value 1413). It is kept raw, under its own
+    # name, because it is what the lab actually reported: it is already excluded
+    # from the model feature set as a leaked target, and no reader in app/api,
+    # app/repositories, app/schemas, web/ or mobile/ touches it (the API surfaces
+    # sample values from observations.parquet). Redefining it in place would be a
+    # silent semantic change for zero benefit.
+    #
+    # `enterococcus_action_ratio` is the same reading divided by the action value
+    # that reading is judged against, so 1.0 means "at the action value" for
+    # either assay. EVERY value-derived model feature (the exact lags, the
+    # *_last_obs carry-forward, the rolling regulatory geomeans) is built from
+    # THIS column, not the raw one — see app/data/pipeline/features.py. Rows
+    # whose method/units are unknown fall back to the culture action value,
+    # matching compute_exceeds_stv's own default for those rows.
+    per_day_observation["enterococcus_action_ratio"] = action_value_ratio(
+        per_day_observation["enterococcus_value"],
+        per_day_observation.get(
+            "method", pd.Series(index=per_day_observation.index, dtype="object")
+        ),
+        per_day_observation.get(
+            "units", pd.Series(index=per_day_observation.index, dtype="object")
+        ),
+        stv_threshold,
+    )
+    # method/units were carried only to resolve the action value; beach_day stays
+    # a beach-day frame and does not gain per-assay columns here.
+    per_day_observation = per_day_observation.drop(
+        columns=[c for c in ("method", "units") if c in per_day_observation.columns]
+    )
 
     station_columns = [
         "beach_id",
