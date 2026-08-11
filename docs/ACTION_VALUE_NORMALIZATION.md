@@ -128,21 +128,32 @@ mixed-unit regression target** — see [Known remaining gaps](#known-remaining-g
 
 - On a **culture** beach this is the identical comparison (divide both sides by
   104), so the flags are bit-identical. Measured over the window: every culture
-  row whose flag moved (588 / 442 / 591 for the three flags) is on a
+  row whose flag moved (560 / 419 / 563 for the three flags) is on a
   **mixed-assay** beach, and **zero** moved on a pure-culture beach or from the
-  sub-detection floor change.
+  sub-detection floor change. That last clause holds only because the floor is
+  per-assay — over full history a flat floor breaks it; see item 5.
 - On a **ddPCR** beach the old rule compared a raw *copy* geomean against 35,
   which nearly every window clears. It was not a trigger, it was a San Diego
   indicator:
 
   | flag | ddPCR rows firing, before | after |
   |---|---|---|
-  | `geomean_30d_exceeds_35_lagged` | **96.2%** | 76.9% |
-  | `geomean_30d_exceeds_104_lagged` | **92.4%** | 59.0% |
-  | `geomean_42d_exceeds_35_lagged` | **96.9%** | 77.4% |
+  | `geomean_30d_exceeds_35_lagged` | **96.79%** | 77.26% |
+  | `geomean_30d_exceeds_104_lagged` | **92.89%** | 59.24% |
+  | `geomean_42d_exceeds_35_lagged` | **97.46%** | 77.75% |
 
-  (culture rows, for contrast: 18.0% / 6.5% / 17.5% before, 17.3% / 5.9% / 16.8%
-  after.)
+  (culture rows, for contrast: 18.49% / 6.73% / 17.96% before, 17.74% / 6.17% /
+  17.21% after.)
+
+  📐 **Denominator.** Every count and rate in this section is over the **88,766
+  evaluated rows** of the 1095-day window — the population the A/B scores. An
+  earlier revision quoted the same quantities over the 94,425-row *build* frame,
+  which additionally contains the 60-day rolling-window warm-up (`96.2 / 92.4 /
+  96.9 -> 76.9 / 59.0 / 77.4`, and `588 / 442 / 591` moved culture rows). Those
+  figures were arithmetically right on that denominator, but the warm-up rows are
+  never scored and their geomeans are largely undefined, which deflated every
+  rate by roughly half a point. Both were reproduced exactly; only the
+  denominator changed.
 
   ⚠️ **There is no published ddPCR geomean action value.** §115880's 30-day
   geomean of 35 is a culture standard. `0.3365 x 1413 ≈ 476 copies` is a
@@ -150,12 +161,67 @@ mixed-unit regression target** — see [Known remaining gaps](#known-remaining-g
   in the code. It is defensible as the honest approximation; it is not a
   regulator's number.
 
-**5. Sub-detection floor moves into ratio space.** The old convention clipped the
-raw value at 1 ("a non-detect logs as zero"). The ratio-space form is
-`RATIO_SUBDETECTION_FLOOR = 1/1413`, the ratio a single copy takes under the
-molecular action value — the smallest one-unit reading either assay can produce,
-so no real reading is clipped by it. Only exact zeros are (1,602 rows in all of
-history; measured impact on the geomean flags: zero rows).
+**5. Sub-detection floor moves into ratio space — per assay.** The old convention
+clipped the raw value at 1: "a reading of one reported unit logs as zero". Its
+faithful ratio-space form is **one reported unit divided by that row's own action
+value** — `CULTURE_RATIO_SUBDETECTION_FLOOR = 1/104` for a culture result,
+`PCR_RATIO_SUBDETECTION_FLOOR = 1/1413` for a ddPCR one. The per-row divisor is
+recovered inside `features.py` as `raw / ratio` and snapped to the two known
+action values (`implied_action_values`), so `beach_day` still carries no assay
+column.
+
+**What the floor actually does.** It is not inert, and an earlier revision of this
+document was wrong to say "no real reading is ever clipped by it":
+
+| reading | rows, all of history (`observations`, and `beach_day`) | raw `clip(lower=1)` | flat `1/1413` | per-assay (shipped) |
+|---|---:|---|---|---|
+| `value < 0` (−999 / −1000 sentinels that survived the guards) | 280 (278) | clipped | clipped | clipped |
+| `value == 0` (non-detect) | 1,602 (1,397) | clipped | clipped | clipped |
+| `0 < value < 1` (every one of them is exactly `0.5`) | 31 (27) | clipped | **30 of 31 NOT clipped** | clipped |
+
+Negative values *are* real rows and they *are* clipped; the floor is what keeps
+`log10` finite on them. And a flat `1/1413` floor sits *below* one culture unit
+(`104/1413 = 0.0736` raw), so it silently stopped clipping the 30 culture rows
+reading `0.5 MPN` that the old rule did clip — only the single `0.5 copies` ddPCR
+row still floored. What is true — of the per-assay floor — is that no reading of
+**one reported unit or more** is ever touched, which is the property the geomeans
+need.
+
+**Why a single constant is wrong.** The flat `1/1413` this PR originally shipped
+is one *molecular* copy; applied to a culture row it clips 13.59× lower than
+`clip(lower=1)` did. That breaks the property the whole change rests on — on a
+beach that only ever used culture there is no assay mixing, so the move to the
+ratio scale must be a **pure monotone rescale** by 1/104, hence provably
+invariant for tree models. Measured on pure-culture beaches only:
+
+| pure-culture beaches only | flat `1/1413` | per-assay |
+|---|---|---|
+| trigger flags moved, **full history** (411,214 rows / 752 beaches) | **29 / 6 / 52** (87 total) | **0 / 0 / 0** |
+| 30-day geomeans off the exact 1/104 rescale, full history | **3,519** (max rel. dev. **0.926**) | **0** (max rel. dev. **6.7e-15**) |
+| same, **1095-day window** (71,281 rows of the A/B population) | 0 flags; **115** 30-day + **144** 42-day values | 0; 0 |
+
+So the "measured impact on the geomean flags: zero rows" this document previously
+claimed was true **in-window** and false over full history, where the flat floor
+moves 87 flags. The null result's justification — "monotone rescale ⇒ trees
+invariant ⇒ null expected" — only holds under the per-assay floor, and it has to
+hold on exactly the population where no assay mixing is possible. Pinned by
+`test_culture_only_ratio_geomeans_are_an_exact_rescale_of_the_raw_ones`, which
+reimplements the raw convention independently and fails under a flat floor.
+
+**Does this move the A/B?** Not materially, but not by zero either, and the A/B
+was **not** re-run. Inside the scored population the floor change alters 125
+30-day and 166 42-day geomean values (of ~86k defined) and exactly **one**
+`geomean_42d_exceeds_35_lagged` bit, on a mixed-assay beach. Those are model
+inputs, so every figure in the tables below could shift in the far decimals; ~291
+changed cells out of 88,766 × 214 cannot change a conclusion, and the direction of
+the correction is to make the culture stratum *more* inert, which is what the
+reported null already says.
+
+⚠️ **One documented gap.** `raw == 0` makes the quotient 0/0, so those rows fall
+back to the culture action value. Over all of history exactly **4** ddPCR
+observations report 0, so at most 4 rows get a 1/104 floor where 1/1413 was
+meant. Everything else — including every negative sentinel and every
+`0 < value < 1` reading — resolves its own assay exactly.
 
 **6. A build-time tripwire.** `assert_no_raw_value_features` runs inside
 `_model_feature_columns` and raises `RawEnterococcusFeatureError` if any model
@@ -356,7 +422,11 @@ Three independent reasons the ceiling on this change is low:
    feature by a constant is a strictly monotone rescale, and gradient-boosted
    trees are invariant to monotone rescaling of an individual feature; the
    geomean trigger thresholds rescale by the same constant, so those flags are
-   bit-identical. Measured: **zero** flag changes on pure-culture beaches. The
+   bit-identical. Measured: **zero** flag changes on pure-culture beaches, over
+   the window *and* over full history, and the geomeans match the raw-derived
+   ones to 6.7e-15 relative. This is exactly the property the per-assay
+   sub-detection floor exists to preserve — under a flat floor it fails (item 5),
+   which is why the floor was fixed before this argument could be relied on. The
    only reachable effect is (a) mixed-assay beaches and (b) the *relative*
    scaling between culture and ddPCR rows, which a global model's shared split
    thresholds can see.

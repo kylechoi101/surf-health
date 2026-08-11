@@ -31,8 +31,9 @@ from app.data.pipeline.exceedance import (
 )
 from app.data.pipeline.features import (
     CULTURE_ENTEROCOCCUS_STV,
+    CULTURE_RATIO_SUBDETECTION_FLOOR,
     ENTEROCOCCUS_RATIO_COLUMN,
-    RATIO_SUBDETECTION_FLOOR,
+    PCR_RATIO_SUBDETECTION_FLOOR,
     RawEnterococcusFeatureError,
     _model_feature_columns,
     _regulatory_geomean_features,
@@ -208,7 +209,12 @@ def test_beach_day_keeps_the_raw_value_and_drops_the_assay_columns():
 
 
 # --------------------------------------------------------------------------- 3
-def _ratio_history(beach_id: str, start: str, ratios: list[float]) -> pd.DataFrame:
+def _ratio_history(
+    beach_id: str,
+    start: str,
+    ratios: list[float],
+    action_value: float = CULTURE_ENTEROCOCCUS_STV,
+) -> pd.DataFrame:
     base = pd.Timestamp(start)
     rows = []
     for offset, ratio in enumerate(ratios):
@@ -218,7 +224,7 @@ def _ratio_history(beach_id: str, start: str, ratios: list[float]) -> pd.DataFra
                 "beach_id": beach_id,
                 "sample_date": day.strftime("%Y-%m-%d"),
                 "sample_time": day.strftime("%Y-%m-%dT08:00:00-07:00"),
-                "enterococcus_value": ratio * CULTURE_ENTEROCOCCUS_STV,
+                "enterococcus_value": ratio * action_value,
                 ENTEROCOCCUS_RATIO_COLUMN: ratio,
                 "exceeds_stv": int(ratio > 1.0),
             }
@@ -287,15 +293,121 @@ def test_geomean_averages_across_an_assay_switch_without_a_unit_jump():
     assert float(geomean.iloc[-1]["enterococcus_action_ratio_geomean_30d_lagged"]) == pytest.approx(0.5)
 
 
-def test_subdetection_floor_is_applied_in_ratio_space():
-    """A zero reading must not send log10 to -inf. The floor replaces the old
-    raw `clip(lower=1)` convention."""
-    frame = _ratio_history("nondetect", "2026-04-01", [0.0, 0.0, 0.0, 0.0])
-    geomean = _regulatory_geomean_features(add_temporal_features(frame))
-    value = float(geomean.iloc[-1]["enterococcus_action_ratio_geomean_30d_lagged"])
-    assert np.isfinite(value)
-    assert value == pytest.approx(RATIO_SUBDETECTION_FLOOR)
-    assert RATIO_SUBDETECTION_FLOOR == pytest.approx(1.0 / PCR_ENTEROCOCCUS_THRESHOLD_COPIES)
+def test_subdetection_floor_is_one_reported_unit_of_the_rows_own_assay():
+    """A zero reading must not send log10 to -inf, and the floor that replaces
+    the old raw `clip(lower=1)` convention is ONE REPORTED UNIT — which is 1/104
+    of a culture action value but 1/1413 of a molecular one. A single constant
+    for both assays silently reclips one of them (see
+    ``test_culture_only_ratio_geomeans_are_an_exact_rescale_of_the_raw_ones``).
+    """
+    assert CULTURE_RATIO_SUBDETECTION_FLOOR == pytest.approx(1.0 / CULTURE_ENTEROCOCCUS_STV)
+    assert PCR_RATIO_SUBDETECTION_FLOOR == pytest.approx(
+        1.0 / PCR_ENTEROCOCCUS_THRESHOLD_COPIES
+    )
+
+    culture = _ratio_history("nondetect-culture", "2026-04-01", [0.0, 0.0, 0.0, 0.0])
+    culture_geo = _regulatory_geomean_features(add_temporal_features(culture))
+    culture_value = float(culture_geo.iloc[-1]["enterococcus_action_ratio_geomean_30d_lagged"])
+    assert np.isfinite(culture_value)
+    assert culture_value == pytest.approx(CULTURE_RATIO_SUBDETECTION_FLOOR)
+
+    # 0.5 copies/100mL is below one reported unit, so it floors — at the
+    # MOLECULAR unit, recovered per row from raw / ratio.
+    pcr = _ratio_history(
+        "subunit-pcr",
+        "2026-04-01",
+        [0.5 / PCR_ENTEROCOCCUS_THRESHOLD_COPIES] * 4,
+        action_value=PCR_ENTEROCOCCUS_THRESHOLD_COPIES,
+    )
+    pcr_geo = _regulatory_geomean_features(add_temporal_features(pcr))
+    assert float(
+        pcr_geo.iloc[-1]["enterococcus_action_ratio_geomean_30d_lagged"]
+    ) == pytest.approx(PCR_RATIO_SUBDETECTION_FLOOR)
+
+    # …and 0.5 MPN/100mL on a culture beach floors at the CULTURE unit, 13.59x
+    # higher. Same number, different assay, different floor.
+    culture_subunit = _ratio_history(
+        "subunit-culture", "2026-04-01", [0.5 / CULTURE_ENTEROCOCCUS_STV] * 4
+    )
+    culture_subunit_geo = _regulatory_geomean_features(add_temporal_features(culture_subunit))
+    assert float(
+        culture_subunit_geo.iloc[-1]["enterococcus_action_ratio_geomean_30d_lagged"]
+    ) == pytest.approx(CULTURE_RATIO_SUBDETECTION_FLOOR)
+
+
+def _raw_convention_geomeans(raw_values: list[float], dates: pd.DatetimeIndex):
+    """`main`'s derivation, reimplemented independently: geomean of the RAW value
+    clipped at one reported unit, compared against the raw 35 / 104 triggers."""
+    log_raw = pd.Series(
+        np.log10(np.clip(np.asarray(raw_values, dtype=float), 1.0, None)), index=dates
+    )
+    mean_30d = log_raw.rolling("30D", min_periods=2, closed="left").mean()
+    mean_42d = log_raw.rolling("42D", min_periods=2, closed="left").mean()
+    flags = pd.DataFrame(
+        {
+            "geomean_30d_exceeds_35_lagged": (mean_30d >= np.log10(35.0)).astype(float),
+            "geomean_30d_exceeds_104_lagged": (mean_30d >= np.log10(104.0)).astype(float),
+            "geomean_42d_exceeds_35_lagged": (mean_42d >= np.log10(35.0)).astype(float),
+        }
+    ).reset_index(drop=True)
+    return (
+        (10.0**mean_30d).reset_index(drop=True),
+        (10.0**mean_42d).reset_index(drop=True),
+        flags,
+    )
+
+
+def test_culture_only_ratio_geomeans_are_an_exact_rescale_of_the_raw_ones():
+    """THE property that makes this change safe, and the one a wrong floor breaks.
+
+    On a beach that only ever used culture there is no assay mixing to repair,
+    so moving the geomeans onto the ratio scale must be a **pure monotone
+    rescale** by 1/104: every geomean exactly 1/104 of the raw-derived one, every
+    trigger flag identical, and therefore every tree model provably invariant.
+    "Monotone rescale => trees invariant => null result expected" is the
+    load-bearing argument for this PR's measured null, so it has to hold exactly
+    on the population where no mixing is possible.
+
+    It only holds if the sub-detection floor is one reported unit of THIS row's
+    action value. A flat molecular floor (1/1413) clips culture rows 13.59x lower
+    than `clip(lower=1)` did, which both moves the geomean values and — the two
+    zero readings below are what forces it — flips a trigger flag. Measured over
+    full history on pure-culture beaches, a flat 1/1413 floor moves 29 / 6 / 52
+    of the three flags and 3,519 30-day geomeans; per-assay moves none.
+    """
+    raw_values = [0.0, 100.0, 120.0, 90.0, 80.0, 110.0, 50.0, 0.0, 4.0, 260.0]
+    frame = _ratio_history(
+        "pure-culture", "2026-04-01", [v / CULTURE_ENTEROCOCCUS_STV for v in raw_values]
+    )
+    enriched = add_temporal_features(frame)
+    geomean = _regulatory_geomean_features(enriched).reset_index(drop=True)
+
+    dates = pd.DatetimeIndex(pd.to_datetime(frame["sample_date"]))
+    expected_30d, expected_42d, expected_flags = _raw_convention_geomeans(raw_values, dates)
+
+    for column, expected in (
+        ("enterococcus_action_ratio_geomean_30d_lagged", expected_30d),
+        ("enterococcus_action_ratio_geomean_42d_lagged", expected_42d),
+    ):
+        got = geomean[column]
+        # min_periods=2, so only the first two rows are undefined.
+        assert got.notna().sum() == len(raw_values) - 2
+        pd.testing.assert_series_equal(
+            got,
+            expected / CULTURE_ENTEROCOCCUS_STV,
+            check_names=False,
+            rtol=1e-12,
+            atol=0.0,
+        )
+
+    for column in expected_flags.columns:
+        pd.testing.assert_series_equal(
+            geomean[column], expected_flags[column], check_names=False
+        )
+
+    # Guard the guard: these values are chosen so a flat molecular floor is not
+    # merely imprecise but changes a published trigger flag.
+    assert expected_flags["geomean_30d_exceeds_35_lagged"].iloc[6] == 1.0
 
 
 # --------------------------------------------------------------------------- 4

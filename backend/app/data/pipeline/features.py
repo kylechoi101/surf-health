@@ -45,12 +45,26 @@ ENTEROCOCCUS_RATIO_COLUMN = "enterococcus_action_ratio"
 # by a test.
 CULTURE_ENTEROCOCCUS_STV = 104.0
 
-# Sub-detection floor for log/geomean transforms, in ratio space. The raw-space
-# convention this replaces was `clip(lower=1)` — "a non-detect logs as zero".
-# 1/1413 is the ratio a single copy takes under the molecular action value, i.e.
-# the smallest one-unit reading either assay can produce, so no real reading is
-# ever clipped by it; only exact zeros are (1,602 rows in all of history).
-RATIO_SUBDETECTION_FLOOR = 1.0 / PCR_ENTEROCOCCUS_THRESHOLD_COPIES
+# Sub-detection floor for log/geomean transforms, in ratio space, resolved PER
+# ROW. The raw-space convention this replaces was `clip(lower=1)` — "a reading
+# of one reported unit logs as zero" — so its faithful ratio-space form is ONE
+# REPORTED UNIT DIVIDED BY THAT ROW'S OWN ACTION VALUE: 1/104 for a culture
+# result, 1/1413 for a ddPCR one. Anything else is a different clipping rule for
+# one of the two assays.
+#
+# A single constant does not work, and getting it wrong is not cosmetic. A flat
+# 1/1413 (13.59x below the culture floor) is what a *molecular* single copy maps
+# to; applied to culture rows it clips them 13.59x lower than the old rule did,
+# which breaks the property that makes this whole change safe: on a beach that
+# only ever used culture there is no assay mixing, so moving to the ratio scale
+# must be a pure monotone rescale — every geomean exactly 1/104 of the raw one,
+# every trigger flag identical, and therefore every tree model provably
+# invariant. Measured over FULL history on pure-culture beaches only, a flat
+# 1/1413 floor moves 29 / 6 / 52 of the three geomean trigger flags and knocks
+# 3,519 30-day geomeans (max relative deviation 0.926) off the exact rescale.
+# Per-assay: 0 / 0 / 0 flags, 0 values, max relative deviation 6.7e-15.
+CULTURE_RATIO_SUBDETECTION_FLOOR = 1.0 / CULTURE_ENTEROCOCCUS_STV
+PCR_RATIO_SUBDETECTION_FLOOR = 1.0 / PCR_ENTEROCOCCUS_THRESHOLD_COPIES
 
 BASE_NUMERIC_COLUMNS = [
     ENTEROCOCCUS_RATIO_COLUMN,
@@ -490,6 +504,45 @@ def _rolling_and_spacing_features(enriched: pd.DataFrame) -> pd.DataFrame:
     return pd.concat(feature_frames).reindex(enriched.index) if feature_frames else pd.DataFrame()
 
 
+def implied_action_values(raw: pd.Series, ratio: pd.Series) -> np.ndarray:
+    """Per-row action value each reading was judged against (104.0 or 1413.0).
+
+    ``beach_day`` deliberately does not carry ``method``/``units`` — it is a
+    beach-day frame, and putting the assay on it is a separate change — but it
+    does carry both the raw reading and the ratio, and the divisor that relates
+    them is recoverable exactly: ``action_value = raw / ratio``. The quotient is
+    snapped to the two known action values so floating-point noise can never
+    produce a third.
+
+    Unrecoverable rows (``raw`` absent, or ``raw == 0`` so the quotient is 0/0)
+    fall back to the **culture** action value — the same default
+    :func:`exceedance.action_value_for` uses when method/units say nothing, and
+    the assumption the pre-normalization code made for every row. Measured over
+    all of history that fallback is wrong for at most **4** rows: exactly four
+    ddPCR observations report a value of 0, and a floor only ever applies to a
+    reading below one reported unit in the first place.
+    """
+    with np.errstate(divide="ignore", invalid="ignore"):
+        implied = raw.to_numpy(dtype="float64") / ratio.to_numpy(dtype="float64")
+    is_pcr = np.isclose(implied, PCR_ENTEROCOCCUS_THRESHOLD_COPIES, rtol=1e-6)
+    return np.where(
+        is_pcr, PCR_ENTEROCOCCUS_THRESHOLD_COPIES, CULTURE_ENTEROCOCCUS_STV
+    )
+
+
+def _ratio_subdetection_floors(frame: pd.DataFrame) -> pd.Series:
+    """One reported unit, in ratio space, for each row's own assay."""
+    ratio = pd.to_numeric(frame[ENTEROCOCCUS_RATIO_COLUMN], errors="coerce")
+    raw = pd.to_numeric(
+        frame.get(
+            ENTEROCOCCUS_RAW_VALUE_COLUMN,
+            pd.Series(np.nan, index=frame.index, dtype="float64"),
+        ),
+        errors="coerce",
+    )
+    return pd.Series(1.0 / implied_action_values(raw, ratio), index=frame.index)
+
+
 def _regulatory_geomean_features(enriched: pd.DataFrame) -> pd.DataFrame:
     """Per-station rolling 30/42-day geometric means of enterococcus, strictly lagged.
 
@@ -503,8 +556,10 @@ def _regulatory_geomean_features(enriched: pd.DataFrame) -> pd.DataFrame:
     copies/100mL and MPN/100mL into one number before the model ever sees it,
     which happens on 5.21% of rows in the shipped 1095-day window. On the ratio
     scale every term is a multiple of its own action value, so the average is
-    defined. Sub-detection samples are floored at ``RATIO_SUBDETECTION_FLOOR``
-    (the ratio-space form of the old "clip to 1 MPN/100mL" convention).
+    defined. Sub-detection samples are floored at one reported unit in each
+    row's OWN action value (:func:`_ratio_subdetection_floors`) — the ratio-space
+    form of the old "clip to 1 MPN/100mL" convention, which keeps a pure-culture
+    beach an exact 1/104 rescale of the raw derivation.
     """
     feature_frames: list[pd.DataFrame] = []
     threshold_35 = _GEOMEAN_RATIO_THRESHOLD_LOG10[35]
@@ -514,7 +569,7 @@ def _regulatory_geomean_features(enriched: pd.DataFrame) -> pd.DataFrame:
         group = group.sort_values("sample_date").copy()
         sample_dates = pd.DatetimeIndex(pd.to_datetime(group["sample_date"], errors="coerce"))
         ent_values = pd.to_numeric(group[ENTEROCOCCUS_RATIO_COLUMN], errors="coerce")
-        log_ent = np.log10(ent_values.clip(lower=RATIO_SUBDETECTION_FLOOR))
+        log_ent = np.log10(ent_values.clip(lower=_ratio_subdetection_floors(group)))
         log_ent_series = pd.Series(log_ent.to_numpy(), index=sample_dates, dtype=float)
 
         feature_map: dict[str, pd.Series] = {}
