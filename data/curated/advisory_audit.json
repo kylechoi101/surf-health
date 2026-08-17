@@ -1,20 +1,20 @@
 {
-  "generated_at": "2026-08-16T17:41:04.160715+00:00",
-  "forecast_date": "2026-08-16",
+  "generated_at": "2026-08-17T17:36:29.561918+00:00",
+  "forecast_date": "2026-08-17",
   "model_version": "xgb-undersample-ensemble-curated-v0",
   "risk_threshold": 0.2,
   "total_beaches": 540,
-  "active_advisories": 30,
+  "active_advisories": 25,
   "agreement_rate": 1.0,
   "pool_metrics": {
     "acute": {
-      "advised_beaches": 25,
-      "model_flagged": 25,
+      "advised_beaches": 21,
+      "model_flagged": 21,
       "agreement_rate": 1.0
     },
     "closure": {
-      "advised_beaches": 5,
-      "model_flagged": 5,
+      "advised_beaches": 4,
+      "model_flagged": 4,
       "agreement_rate": 1.0
     },
     "chronic": {
@@ -47,9 +47,16 @@
     "worst_chronic": []
   },
   "false_positives": {
-    "count": 32,
+    "count": 37,
     "description": "Model says High/VeryHigh but no active advisory",
     "worst": [
+      {
+        "beach_id": "ca604254-san-diego-coronado-north-beach-eh-060",
+        "risk_band": "High",
+        "p_exceed": 0.538,
+        "pool": "none",
+        "advisory_age_days": null
+      },
       {
         "beach_id": "ca839312-san-diego-baja-california-mexico-bc-010",
         "risk_band": "High",
@@ -58,7 +65,21 @@
         "advisory_age_days": null
       },
       {
-        "beach_id": "ca104746-san-diego-tijuana-slough-national-wildlife-refuge-ib-030",
+        "beach_id": "ca113100-san-mateo-erckenbrack-park-foster-city-erckenbrack-park",
+        "risk_band": "High",
+        "p_exceed": 0.462,
+        "pool": "none",
+        "advisory_age_days": null
+      },
+      {
+        "beach_id": "ca852440-san-mateo-pillar-point-harbor-pillar-point-9",
+        "risk_band": "High",
+        "p_exceed": 0.301,
+        "pool": "none",
+        "advisory_age_days": null
+      },
+      {
+        "beach_id": "ca228730-humboldt-clam-beach-co-park-clam-beach-co-park",
         "risk_band": "High",
         "p_exceed": 0.301,
         "pool": "none",
@@ -72,7 +93,7 @@
         "advisory_age_days": null
       },
       {
-        "beach_id": "ca113100-san-mateo-erckenbrack-park-foster-city-erckenbrack-park",
+        "beach_id": "ca104746-san-diego-tijuana-slough-national-wildlife-refuge-ib-030",
         "risk_band": "High",
         "p_exceed": 0.301,
         "pool": "none",
@@ -93,6 +114,20 @@
         "advisory_age_days": null
       },
       {
+        "beach_id": "ca308430-san-mateo-aquatic-park-aquatic-park",
+        "risk_band": "High",
+        "p_exceed": 0.3,
+        "pool": "none",
+        "advisory_age_days": null
+      },
+      {
+        "beach_id": "ca125649-santa-barbara-goleta-beach-wp0000037",
+        "risk_band": "High",
+        "p_exceed": 0.3,
+        "pool": "none",
+        "advisory_age_days": null
+      },
+      {
         "beach_id": "ca674364-los-angeles-inner-cabrillo-beach-cb-01",
         "risk_band": "High",
         "p_exceed": 0.3,
@@ -107,28 +142,7 @@
         "advisory_age_days": null
       },
       {
-        "beach_id": "ca844317-ventura-solimar-beach-10000",
-        "risk_band": "High",
-        "p_exceed": 0.3,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
-        "beach_id": "ca308430-san-mateo-aquatic-park-aquatic-park",
-        "risk_band": "High",
-        "p_exceed": 0.3,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
-        "beach_id": "ca643858-los-angeles-malibu-lagoon-state-beach-smb-mc-2",
-        "risk_band": "High",
-        "p_exceed": 0.3,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
-        "beach_id": "ca699607-long-beach-city-colorado-lagoon-b-25",
+        "beach_id": "ca809706-san-diego-border-field-state-park-ib-010",
         "risk_band": "High",
         "p_exceed": 0.3,
         "pool": "none",
@@ -142,49 +156,35 @@
         "advisory_age_days": null
       },
       {
-        "beach_id": "ca809706-san-diego-border-field-state-park-ib-010",
+        "beach_id": "ca699607-long-beach-city-colorado-lagoon-b-25",
         "risk_band": "High",
         "p_exceed": 0.3,
         "pool": "none",
         "advisory_age_days": null
       },
       {
+        "beach_id": "ca643858-los-angeles-malibu-lagoon-state-beach-smb-mc-2",
+        "risk_band": "High",
+        "p_exceed": 0.3,
+        "pool": "none",
+        "advisory_age_days": null
+      },
+      {
+        "beach_id": "ca844317-ventura-solimar-beach-10000",
+        "risk_band": "High",
+        "p_exceed": 0.3,
+        "pool": "none",
+        "advisory_age_days": null
+      },
+      {
+        "beach_id": "ca296453-humboldt-luffenholtz-beach-luffenholtz-creek",
+        "risk_band": "Moderate",
+        "p_exceed": 0.28,
+        "pool": "none",
+        "advisory_age_days": null
+      },
+      {
         "beach_id": "ca674364-los-angeles-inner-cabrillo-beach-cb-02",
-        "risk_band": "Moderate",
-        "p_exceed": 0.284,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
-        "beach_id": "ca852440-san-mateo-pillar-point-harbor-pillar-point-9",
-        "risk_band": "Moderate",
-        "p_exceed": 0.284,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
-        "beach_id": "ca228730-humboldt-clam-beach-co-park-clam-beach-co-park",
-        "risk_band": "Moderate",
-        "p_exceed": 0.28,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
-        "beach_id": "ca517375-san-mateo-fitzgerald-marine-moss-beach-fitzgerald-marine-moss-beach",
-        "risk_band": "Moderate",
-        "p_exceed": 0.28,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
-        "beach_id": "ca809706-san-diego-border-field-state-park-ib-020",
-        "risk_band": "Moderate",
-        "p_exceed": 0.28,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
-        "beach_id": "ca801475-san-diego-silver-strand-state-beach-ib-069",
         "risk_band": "Moderate",
         "p_exceed": 0.28,
         "pool": "none",
