@@ -614,6 +614,46 @@ def add_temporal_features(frame: pd.DataFrame) -> pd.DataFrame:
 # (0.34), `is_near_pier` (0.03), `is_near_estuary_mouth` (0.01). These describe
 # proximity to a TYPE of structure, are spread across 6-15 counties, and do not
 # identify a place. `test_model_is_location_blind` pins the whole rule.
+#
+# ⚠️ WHAT THIS DENYLIST DOES *NOT* DO -- measured 2026-08-26, on the shipped
+# frame, AFTER every exclusion above is applied.
+#
+# The guards above are all PER-COLUMN: |rho| against latitude, count of counties
+# with nonzero support. Fourteen retained features survive both and are
+# nevertheless per-beach CONSTANTS -- `dist_to_pier_km`, `dist_to_estuary_km`,
+# `distance_to_gage_km`, `is_near_pier`, `is_near_estuary_mouth`, the three
+# `nearest_stormwater_*_km` distances, and the six `stormwater_*_count_*` counts.
+# Jointly they give **96.3% of beaches (599 of 622) a UNIQUE fingerprint**. No
+# single column identifies a place; the vector very nearly does.
+#
+# That alone is not the leak `historical_advisory_count` was -- a unique
+# fingerprint cannot be looked up for a beach the model never trained on. The
+# measurable consequence is one step further out: a random forest fitted on the
+# static block of SOME beaches ranks the exceedance rate of beaches it has NEVER
+# SEEN at **Spearman 0.386** (0.422 on the full 1095d window, R2 0.256). So a
+# leave-one-beach-out fold hands the model a usable prior on the held-out
+# beach's base rate before it reads a single measurement.
+#
+# This is deliberately NOT excluded, because unlike the advisory count it is
+# real transferable mechanism: more stormwater outfalls within 2 km genuinely
+# means dirtier water, and that it generalises to unseen beaches is the evidence
+# it is mechanism rather than memorisation. Two things follow, and both are
+# obligations rather than caveats:
+#
+#   1. The leave-one-beach-out figure (AUCPR ~0.93) is NOT a measure of daily
+#      skill and never was. Part of it is this static-geography prior, which
+#      would score above chance if every time-varying feature were deleted.
+#      `within_beach_auroc` remains the only metric immune to it.
+#   2. The stormwater counts score **0.57-0.73 against latitude** -- ABOVE
+#      `cdip_distance_km_log1p` (0.4133), which IS excluded above. The denylist
+#      is therefore not internally consistent on its own stated criterion. The
+#      distinction being drawn is mechanism-vs-coordinate, not correlation
+#      magnitude, and _MAX_ABS_LATITUDE_CORRELATION (0.85) is set high enough to
+#      let them through. If anyone tightens that constant, they are deciding
+#      this question, and they should A/B the model before doing it.
+#
+# `test_static_block_does_not_pin_held_out_beach_base_rate` pins the level so a
+# future feature that pushes it materially higher fails instead of passing.
 LOCATION_IDENTIFYING_COLUMNS: frozenset[str] = frozenset(
     {
         "latitude",

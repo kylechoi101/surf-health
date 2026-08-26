@@ -235,3 +235,79 @@ def test_county_cannot_be_recovered_from_features_on_held_out_beaches(
         f"county recovered on held-out beaches at {accuracy:.3f} against a "
         f"{majority:.3f} majority baseline -- the features still carry location"
     )
+
+
+# The static per-beach block ranks unseen beaches' base rates at Spearman 0.386
+# on this sample (0.422 over the full 1095d window). Retained deliberately --
+# stormwater-outfall density really does predict dirty water, and generalising
+# to unseen beaches is what distinguishes mechanism from memorisation. The
+# ceiling is set well above the measured level: this test exists to catch a NEW
+# static feature that turns a modest mechanistic prior into a base-rate lookup,
+# not to relitigate the features already adjudicated in features.py.
+_MAX_HELD_OUT_BASE_RATE_RECOVERY = 0.55
+
+
+def test_static_block_does_not_pin_held_out_beach_base_rate(
+    beach_day_frame: pd.DataFrame,
+) -> None:
+    """Per-column guards are blind to what the static features do JOINTLY.
+
+    Every guard above asks about one column at a time -- its correlation with
+    latitude, the number of counties it is nonzero in. Fourteen retained
+    features pass both and are still per-beach constants, and together they
+    fingerprint 96% of beaches uniquely.
+
+    A unique fingerprint is not itself the `historical_advisory_count` leak: it
+    cannot be looked up for a beach that was never trained on. The question that
+    matters is whether it lets a learner PREDICT an unseen beach's exceedance
+    rate, so ask that directly -- fit on some beaches' static vectors, rank the
+    held-out ones. See the long note in `features.py` for why a nonzero answer
+    is accepted here rather than excluded.
+    """
+    from sklearn.ensemble import RandomForestRegressor
+    from sklearn.model_selection import KFold
+
+    enriched, raw = _enriched_sample(beach_day_frame)
+    numeric = [
+        c for c in _model_feature_columns(enriched)
+        if pd.api.types.is_numeric_dtype(enriched[c])
+    ]
+    frame = enriched[numeric].copy()
+    frame["_beach"] = raw["beach_id"].astype(str).to_numpy()
+    frame["_label"] = pd.to_numeric(raw["exceeds_stv"], errors="coerce").to_numpy()
+
+    varies = frame.groupby("_beach")[numeric].nunique(dropna=False)
+    static = [c for c in numeric if (varies[c] <= 1).all()]
+    # Exclude the columns that are constant only because this beach has no
+    # observations of them -- they are not geography, just missing data.
+    static = [
+        c for c in static
+        if not c.startswith(("uv_index", "wind_speed_mps", "days_since_"))
+    ]
+    if len(static) < 3:  # pragma: no cover - truncated frame
+        pytest.skip("too few static features to test jointly")
+
+    vectors = frame.groupby("_beach")[static].first()
+    vectors = vectors.loc[:, vectors.nunique(dropna=False) > 1]
+
+    rates = frame.groupby("_beach")["_label"].agg(["mean", "size"])
+    rates = rates[rates["size"] >= 15]
+    if len(rates) < 50:  # pragma: no cover - truncated frame
+        pytest.skip("too few well-sampled beaches")
+
+    matrix = vectors.reindex(rates.index).fillna(-1.0)
+    truth = rates["mean"].to_numpy()
+    predicted = np.zeros(len(matrix))
+    for train_idx, test_idx in KFold(5, shuffle=True, random_state=0).split(matrix):
+        predicted[test_idx] = RandomForestRegressor(
+            n_estimators=200, min_samples_leaf=3, random_state=0, n_jobs=-1
+        ).fit(matrix.iloc[train_idx], truth[train_idx]).predict(matrix.iloc[test_idx])
+
+    recovered = float(spearmanr(predicted, truth).statistic)
+    assert recovered <= _MAX_HELD_OUT_BASE_RATE_RECOVERY, (
+        f"static per-beach features rank held-out beaches' base rates at "
+        f"Spearman {recovered:.3f} (ceiling {_MAX_HELD_OUT_BASE_RATE_RECOVERY}) "
+        f"-- a new static feature has turned a mechanistic prior into a "
+        f"per-beach base-rate lookup, and leave-one-beach-out no longer measures "
+        f"what it claims to"
+    )

@@ -199,11 +199,32 @@ problems, fixed separately:
   `system_health.json["scraper_gate"]`, returns 0, and lets the pipeline finish;
   `scripts/verify_scraper_gate.py` fails the job **after** the commit AND after the Render deploy
   (that step is `if: success()`, so failing earlier would commit a fresh forecast and then skip
-  shipping it). Only a **hard** trip aborts in place, before training consumes
-  `advisory_active_prev_14d`: >15 unexpected unresolved, or a county that resolved advisories
+  shipping it). Only a **hard** trip aborts in place, before `_export_forecasts` builds the
+  advisory floor: >15 unexpected unresolved, or a county that resolved advisories
   last run and resolves none now (`detect_county_resolution_regressions`, baselined against the
   previous run's committed `county_advisories_report.json` — a volume-independent schema-drift
   signal the ratio only approximated). `--strict-gate` restores exit-on-soft for local debugging.
+  - ⚠️ **What the hard abort actually protects — corrected 2026-08-26.** This section, and the
+    workflow comment beside the step, used to justify the abort as protecting "the training step
+    that consumes `advisory_active_prev_14d`". **Training does not consume it.** The column is
+    built into `beach_day.parquet` by `_advisory_temporal_features`, and then dropped by
+    `_load_curated_training_frame`'s allowlist — verified: neither it nor `days_since_advisory_
+    closed` appears among the **194** columns `_model_feature_columns` returns. `training.py:2767`
+    still assigns both onto forecast candidates, where `reindex(columns=features.columns)`
+    discards them. No model has ever read an advisory.
+  - **The abort is still warranted, on a stronger and more immediate ground: the SERVING floor.**
+    `_export_forecasts` (training.py:4589) forces `p_exceed` to at least `_HIGH_THRESHOLD` (0.20)
+    — i.e. the band to **High** — whenever `advisory_active_recent_for_floor` (a serve-path
+    column set at training.py:3434, *not* a model feature despite what the comment beside it
+    says) or `_display_active_advisory_ids` fires. On the shipped 2026-08-07 forecast that is
+    **21 of 541 rows (3.9%)**, and all 21 are High *because of the floor* — nothing else put them
+    there. So a mis-resolved advisory does not merely lose a warning: it floors the **wrong**
+    beach to High and leaves the real one showing its unfloored band. That is exactly the
+    wrong-beach failure the 2026-08-05 resolver work targeted, and it reaches users the same day
+    with no model involvement at all.
+  - **Consequence for the placement.** "Before training" is the right ordering for the wrong
+    stated reason: what must precede the gate is `_export_forecasts`, not feature construction.
+    Anything that reorders these steps should preserve *that* dependency.
 
 ### Pipeline robustness guards (2026-06-11)
 

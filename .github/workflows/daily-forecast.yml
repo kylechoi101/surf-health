@@ -131,15 +131,25 @@ jobs:
         # This step scrapes the SD County DEH page (sdbeachinfo.com) for live
         # postings and rewrites advisories.parquet's "active" records for any
         # beach the county currently has posted. Must run AFTER the state
-        # ingest (which writes advisories.parquet) and BEFORE training (which
-        # consumes it as a feature).
+        # ingest (which writes advisories.parquet) and BEFORE training — NOT
+        # because the model reads advisories (it does not; see below) but
+        # because training.py's _export_forecasts applies the advisory FLOOR.
         #
         # G.1: this step is NOT continue-on-error, but since 2026-08-05 the
         # script only self-fails (exit 1) on a HARD gate trip — mass resolution
         # loss (>15 unexpected unresolved) or a county that resolved advisories
-        # last run and resolves none now. Those mean the advisory feed cannot be
-        # trusted by the training step that consumes advisory_active_prev_14d,
-        # so the run must stop here.
+        # last run and resolves none now.
+        #
+        # Corrected 2026-08-26: this comment used to say the feed "cannot be
+        # trusted by the training step that consumes advisory_active_prev_14d".
+        # Training does NOT consume it — _load_curated_training_frame's
+        # allowlist drops it, and it is absent from all 194 model features.
+        # The real exposure is the serving floor at training.py:4589, which
+        # forces any advisory-active beach to p_exceed >= 0.20 (band High).
+        # On the 2026-08-07 forecast that floored 21 of 541 rows (3.9%). A
+        # mis-resolved advisory therefore floors the WRONG beach to High and
+        # leaves the real one unfloored — user-visible the same day. That is
+        # why the run must stop here.
         #
         # A SOFT trip (over the absolute floor or the 10% ratio) publishes its
         # verdict to system_health.json['scraper_gate'] and returns 0 so the day
@@ -314,15 +324,43 @@ jobs:
           git add data/curated/
           if git diff --staged --quiet; then
             echo "No data changes."
-          else
-            FORECAST_DATE=$(TZ=America/Los_Angeles date +%Y-%m-%d)
-            git commit -m "chore: daily forecast refresh ${FORECAST_DATE}"
-            # -X theirs: on rebase, "theirs" = our local commit. Binary files
-            # like serving.sqlite can't auto-merge — always prefer the freshly
-            # regenerated version produced by this pipeline run.
-            git pull --rebase --autostash -X theirs origin main
-            git push
+            exit 0
           fi
+          FORECAST_DATE=$(TZ=America/Los_Angeles date +%Y-%m-%d)
+          git commit -m "chore: daily forecast refresh ${FORECAST_DATE}"
+          # Retry, because a single-shot push loses a race we are structurally
+          # likely to lose: closures-refresh pushes hourly and scraper-health
+          # pushes daily, while THIS push moves ~10 MB of parquet and takes
+          # ~13 s — a wide window in which origin/main can advance between our
+          # rebase and our push. On 2026-08-18 it did ("cannot lock ref
+          # 'refs/heads/main': is at 6018c6b... but expected 64aea21..."), the
+          # step exited 1, and a fully-successful 55-minute training run's
+          # forecast was thrown away — the ONLY failure that day.
+          #
+          # -X theirs: on rebase, "theirs" = our local commit. Binary files
+          # like serving.sqlite can't auto-merge — always prefer the freshly
+          # regenerated version produced by this pipeline run. Our commit only
+          # ever stages data/curated/ files this run regenerated, so no other
+          # bot's work can be clobbered by that preference.
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase --autostash -X theirs origin main; then
+              if git push; then
+                echo "pushed (attempt ${attempt})"
+                exit 0
+              fi
+              echo "push rejected — origin/main moved; re-basing (attempt ${attempt})"
+            else
+              # A rebase that halts on a conflict leaves an unmerged worktree in
+              # which every later pull fails outright ("Pulling is not possible
+              # because you have unmerged files"), so the retry loop would be
+              # dead on arrival. Abort back to a clean tip before retrying.
+              echo "rebase failed; aborting before retry (attempt ${attempt})"
+              git rebase --abort || true
+            fi
+            sleep $(( attempt * 5 ))
+          done
+          echo "::error::could not push daily forecast after 5 attempts"
+          exit 1
 
       - name: Verify public release gate (fail the job if publication was blocked)
         # MUST run AFTER the commit/push: when --enforce-release-gate blocks
