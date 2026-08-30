@@ -1,9 +1,9 @@
 {
-  "pipeline_freshness": "2026-08-29T20:26:32.413859+00:00",
+  "pipeline_freshness": "2026-08-30T20:18:27.261065+00:00",
   "source_freshness": {
-    "beaches": "2026-08-29T19:20:03+00:00",
-    "observations": "2026-08-29T19:20:03+00:00",
-    "advisories": "2026-08-29T19:20:03+00:00"
+    "beaches": "2026-08-30T19:12:06+00:00",
+    "observations": "2026-08-30T19:12:06+00:00",
+    "advisories": "2026-08-30T19:12:06+00:00"
   },
   "model_registry": {
     "production_model": "xgb-undersample-ensemble-curated-v0",
@@ -602,19 +602,19 @@
           }
         },
         "serving_router": {
-          "fresh_beaches": 43,
-          "blended_beaches": 83,
-          "stale_beaches": 410,
+          "fresh_beaches": 26,
+          "blended_beaches": 17,
+          "stale_beaches": 493,
           "fresh_cutoff_days": 3,
           "blend_end_days": 5,
-          "handoff_mean_abs_delta": 0.03141538530722087,
-          "handoff_p90_abs_delta": 0.07963131254351155
+          "handoff_mean_abs_delta": 0.02873153170248784,
+          "handoff_p90_abs_delta": 0.07197345311975317
         }
       }
     }
   },
   "scraper_gate": {
-    "generated_at": "2026-08-29T19:24:01.955093+00:00",
+    "generated_at": "2026-08-30T19:16:01.550927+00:00",
     "passed": true,
     "hard_failed": false,
     "total_scraped": 58,
@@ -649,38 +649,38 @@
   },
   "served_metrics": {
     "definition": "Served p_exceed from forecast_history.parquet (final issue per beach-day) scored against observations.parquet worst-sample-per-day; same_day = outcome on the forecast day, forward = first outcome in D+1..D+3 (provably unseen by the forecast).",
-    "history_rows": 74030,
-    "final_forecast_rows": 42769,
-    "history_span_days": 129,
+    "history_rows": 74566,
+    "final_forecast_rows": 43305,
+    "history_span_days": 130,
     "verifiable_fraction": 0.4892,
     "window_90d": {
       "same_day": {
-        "n_pairs": 4305,
-        "n_positive": 584,
-        "base_rate": 0.1357,
-        "brier": 0.0916,
-        "brier_flat_base_rate": 0.1173,
-        "aucpr": 0.4854,
-        "auroc": 0.8477,
-        "sensitivity_at_spec_0_87": 0.7209,
+        "n_pairs": 4173,
+        "n_positive": 575,
+        "base_rate": 0.1378,
+        "brier": 0.093,
+        "brier_flat_base_rate": 0.1188,
+        "aucpr": 0.4867,
+        "auroc": 0.847,
+        "sensitivity_at_spec_0_87": 0.72,
         "band_operating": {
-          "n_pairs": 4305,
-          "exceedances": 584,
-          "sensitivity": 0.7055,
-          "specificity": 0.8761,
-          "exceedances_shown_low": 172,
-          "false_alarms": 461
+          "n_pairs": 4173,
+          "exceedances": 575,
+          "sensitivity": 0.7061,
+          "specificity": 0.8752,
+          "exceedances_shown_low": 169,
+          "false_alarms": 449
         }
       },
       "forward_1_3d": {
-        "n_pairs": 10209,
-        "n_positive": 926,
-        "base_rate": 0.0907,
+        "n_pairs": 10127,
+        "n_positive": 917,
+        "base_rate": 0.0906,
         "brier": 0.0756,
-        "brier_flat_base_rate": 0.0825,
-        "aucpr": 0.3352,
-        "auroc": 0.8038,
-        "sensitivity_at_spec_0_87": 0.6274
+        "brier_flat_base_rate": 0.0824,
+        "aucpr": 0.3345,
+        "auroc": 0.8041,
+        "sensitivity_at_spec_0_87": 0.627
       },
       "calibration_bins": [
         {
@@ -688,85 +688,85 @@
             0.0,
             0.05
           ],
-          "n": 8120,
-          "predicted_mean": 0.0238,
-          "actual_rate": 0.0276
+          "n": 7980,
+          "predicted_mean": 0.0239,
+          "actual_rate": 0.0277
         },
         {
           "p_range": [
             0.05,
             0.1
           ],
-          "n": 2899,
+          "n": 2867,
           "predicted_mean": 0.0668,
-          "actual_rate": 0.0528
+          "actual_rate": 0.0527
         },
         {
           "p_range": [
             0.1,
             0.2
           ],
-          "n": 692,
-          "predicted_mean": 0.1367,
-          "actual_rate": 0.146
+          "n": 687,
+          "predicted_mean": 0.1366,
+          "actual_rate": 0.1456
         },
         {
           "p_range": [
             0.2,
             0.3
           ],
-          "n": 251,
-          "predicted_mean": 0.2481,
-          "actual_rate": 0.3307
+          "n": 247,
+          "predicted_mean": 0.2483,
+          "actual_rate": 0.332
         },
         {
           "p_range": [
             0.3,
             0.7
           ],
-          "n": 1224,
-          "predicted_mean": 0.3512,
-          "actual_rate": 0.3219
+          "n": 1205,
+          "predicted_mean": 0.3517,
+          "actual_rate": 0.3228
         },
         {
           "p_range": [
             0.7,
             1.0
           ],
-          "n": 320,
-          "predicted_mean": 0.9965,
-          "actual_rate": 0.4531
+          "n": 318,
+          "predicted_mean": 0.9979,
+          "actual_rate": 0.4497
         }
       ]
     },
     "window_30d": {
       "same_day": {
-        "n_pairs": 1792,
-        "n_positive": 263,
-        "base_rate": 0.1468,
-        "brier": 0.0842,
-        "brier_flat_base_rate": 0.1252,
-        "aucpr": 0.6323,
-        "auroc": 0.9055,
-        "sensitivity_at_spec_0_87": 0.73,
+        "n_pairs": 1771,
+        "n_positive": 256,
+        "base_rate": 0.1446,
+        "brier": 0.0833,
+        "brier_flat_base_rate": 0.1237,
+        "aucpr": 0.6318,
+        "auroc": 0.9056,
+        "sensitivity_at_spec_0_87": 0.7383,
         "band_operating": {
-          "n_pairs": 1792,
-          "exceedances": 263,
-          "sensitivity": 0.8251,
-          "specificity": 0.8443,
+          "n_pairs": 1771,
+          "exceedances": 256,
+          "sensitivity": 0.8203,
+          "specificity": 0.8475,
           "exceedances_shown_low": 46,
-          "false_alarms": 238
+          "false_alarms": 231
         }
       },
       "forward_1_3d": {
-        "n_pairs": 4432,
-        "n_positive": 404,
+        "n_pairs": 4209,
+        "n_positive": 384,
         "base_rate": 0.0912,
-        "brier": 0.066,
-        "brier_flat_base_rate": 0.0828,
-        "aucpr": 0.4172,
-        "auroc": 0.8515,
-        "sensitivity_at_spec_0_87": 0.6683
+        "brier": 0.0657,
+        "brier_flat_base_rate": 0.0829,
+        "aucpr": 0.4228,
+        "auroc": 0.8561,
+        "sensitivity_at_spec_0_87": 0.6771
       },
       "calibration_bins": [
         {
@@ -774,45 +774,45 @@
             0.0,
             0.05
           ],
-          "n": 2797,
-          "predicted_mean": 0.0293,
-          "actual_rate": 0.0143
+          "n": 2757,
+          "predicted_mean": 0.0291,
+          "actual_rate": 0.0138
         },
         {
           "p_range": [
             0.05,
             0.1
           ],
-          "n": 1757,
-          "predicted_mean": 0.0673,
-          "actual_rate": 0.0461
+          "n": 1640,
+          "predicted_mean": 0.0668,
+          "actual_rate": 0.0482
         },
         {
           "p_range": [
             0.1,
             0.2
           ],
-          "n": 292,
-          "predicted_mean": 0.134,
-          "actual_rate": 0.1747
+          "n": 271,
+          "predicted_mean": 0.1341,
+          "actual_rate": 0.1845
         },
         {
           "p_range": [
             0.2,
             0.3
           ],
-          "n": 192,
-          "predicted_mean": 0.2509,
-          "actual_rate": 0.3385
+          "n": 185,
+          "predicted_mean": 0.2518,
+          "actual_rate": 0.3405
         },
         {
           "p_range": [
             0.3,
             0.7
           ],
-          "n": 697,
-          "predicted_mean": 0.3598,
-          "actual_rate": 0.3429
+          "n": 655,
+          "predicted_mean": 0.3556,
+          "actual_rate": 0.3466
         },
         {
           "p_range": [
@@ -825,11 +825,11 @@
         }
       ]
     },
-    "generated_at": "2026-08-29T20:26:32.413652+00:00"
+    "generated_at": "2026-08-30T20:18:27.260877+00:00"
   },
   "serving_calibration": {
     "active": true,
-    "fitted_at": "2026-08-29T20:26:23.247866+00:00",
+    "fitted_at": "2026-08-30T20:18:18.448075+00:00",
     "window_days": 120,
     "n_pairs": 17864,
     "n_positive": 1246,
@@ -849,7 +849,7 @@
     "blockers": []
   },
   "forecast_audit": {
-    "generated_at": "2026-08-29T20:26:42.023881+00:00",
+    "generated_at": "2026-08-30T20:18:35.662596+00:00",
     "agreement_rate": 1.0,
     "acute_agreement_rate": 1.0,
     "acute_advised_beaches": 22,
@@ -863,7 +863,7 @@
       "stale": 0,
       "unknown_duration": 0
     },
-    "false_positives": 39,
+    "false_positives": 33,
     "active_advisories": 28,
     "risk_threshold": 0.2
   }
