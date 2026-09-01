@@ -1,7 +1,7 @@
 # Model Card: Shorelife `xgb-undersample-ensemble-curated-v0`
 
 ## Deployment Status
-- **Generated at**: 2026-08-31T22:21:06.669974+00:00
+- **Generated at**: 2026-09-01T20:31:23.262170+00:00
 - **Deployment stage**: candidate_ready
 - **Public release eligible**: true
 - **Promotion blocker (latest)**: None
