@@ -765,6 +765,39 @@ committed (40 × 30 s) and fails the job otherwise → `notify-failure` opens th
 issue. `deploy-backend.yml`'s old bare "returns 200" poll could not catch this (the previous
 image answers 200 too), so it was replaced by the same check.
 
+**Deploy verification could only detect, never remediate (2026-09-02 failure).** That day the
+whole pipeline succeeded — every gate green, forecast committed and pushed (`252f2ef`) — and the
+Render build for it never shipped: all 40 polls saw the 2026-09-01 snapshot (`20:31:23Z`), then
+CI gave up. Detection without remediation is a **>24 h publication outage**, because nothing else
+re-triggers a deploy for a *data* commit:
+- the daily workflow POSTs the hook exactly once, fire-and-forget;
+- `deploy-backend.yml` (whose `paths:` include `data/curated/**`) never fires for it — the daily
+  commit is pushed with `GITHUB_TOKEN`, and by design **pushes made with `GITHUB_TOKEN` trigger no
+  workflows**. Confirmed: no `deploy-backend` run exists for any daily/closures data commit.
+So the fresh forecast sits unpublished until the *next* day's cron happens to POST the hook again
+— long enough for `/system/health` to cross its 36 h fail-closed limit (`api/routes.py:145`) and
+503 the whole API.
+`verify_deploy.py` now **re-POSTs the deploy hook itself** when the served snapshot stops
+advancing: `--retrigger-after 10` polls (5 min) of no progress, `--max-retriggers 2`, budget
+raised 40 → **60 polls (30 min)** so the last re-triggered build has 20 min to land. Calibration:
+a healthy build ships in **~2 min** (measured — the 2026-09-01 run verified 20:31:47 → 20:33:48),
+so a 5-min stall is already ~2.5× a healthy build and never fires on a merely slow deploy.
+Re-triggering is idempotent (same commit); a *deterministically* failing build burns both retries
+and the job still goes red, now naming how many were spent so the reader knows to open the Render
+build log rather than re-run. The hook URL is a credential — it is passed by env
+(`RENDER_DEPLOY_HOOK`, wired into the verify step of BOTH workflows) and scrubbed from every
+printed message (`_redact`), pinned by a test. ⚠️ **What this does NOT do:** it cannot say *why*
+a build failed (Render's dashboard/API is not reachable from CI), and it does not remove the
+single-point-of-failure that `data/curated/` is baked into the image at build time.
+- **Confirmed transient, and the outage was real (2026-09-03).** A manual `deploy-backend`
+  dispatch at 14:21 UTC found the API answering **503 — `pipeline_freshness is 41 h old (limit
+  36 h)`** on two consecutive polls: Render never self-healed on its own, so the API had been
+  hard-down since the served 09-01 snapshot crossed 36 h at ~08:31 UTC (~6 h). The dispatched
+  build then shipped and verified on the **third poll (~60 s), first try** — Render was healthy,
+  and the 09-02 build failure was a one-off, which is exactly the case the re-trigger absorbs. It
+  also re-confirms the ~1-2 min healthy-build figure the 5-minute stall window is calibrated
+  against.
+
 **Daily spatial backtest folds — 6 counties / 15 beaches** (`--spatial-county-limit 6
 --spatial-beach-limit 15`, commit `153f1368a`, 2026-06-10). The full 12-county / 50-beach
 sweep at 1095d (~84k rows, ~60 retrains) overran the ML budget and timed the whole job out

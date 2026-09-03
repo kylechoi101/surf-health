@@ -386,7 +386,18 @@ jobs:
         # Poll until the SERVED pipeline_freshness catches up to the one we just
         # committed; a non-zero exit here fails the job so notify-failure opens
         # the pipeline-failure issue.
+        #
+        # RENDER_DEPLOY_HOOK is passed so the verifier can RE-POST it when the
+        # served snapshot stops advancing, instead of only reporting the stall.
+        # On 2026-09-02 the whole pipeline succeeded and this build never
+        # shipped; nothing else re-triggers a deploy for a data commit (this
+        # push is made with GITHUB_TOKEN, which by design fires no workflows, so
+        # deploy-backend.yml never runs for it), so the fresh forecast sat
+        # unpublished until the next day's cron — long enough for
+        # /system/health to cross its 36 h limit and 503.
         if: steps.render_deploy.outputs.triggered == 'true'
+        env:
+          RENDER_DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
         run: python scripts/verify_deploy.py --curated ../data/curated/
         working-directory: backend
 
