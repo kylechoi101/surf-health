@@ -789,6 +789,14 @@ build log rather than re-run. The hook URL is a credential — it is passed by e
 printed message (`_redact`), pinned by a test. ⚠️ **What this does NOT do:** it cannot say *why*
 a build failed (Render's dashboard/API is not reachable from CI), and it does not remove the
 single-point-of-failure that `data/curated/` is baked into the image at build time.
+- **Confirmed transient, and the outage was real (2026-09-03).** A manual `deploy-backend`
+  dispatch at 14:21 UTC found the API answering **503 — `pipeline_freshness is 41 h old (limit
+  36 h)`** on two consecutive polls: Render never self-healed on its own, so the API had been
+  hard-down since the served 09-01 snapshot crossed 36 h at ~08:31 UTC (~6 h). The dispatched
+  build then shipped and verified on the **third poll (~60 s), first try** — Render was healthy,
+  and the 09-02 build failure was a one-off, which is exactly the case the re-trigger absorbs. It
+  also re-confirms the ~1-2 min healthy-build figure the 5-minute stall window is calibrated
+  against.
 
 **Daily spatial backtest folds — 6 counties / 15 beaches** (`--spatial-county-limit 6
 --spatial-beach-limit 15`, commit `153f1368a`, 2026-06-10). The full 12-county / 50-beach
