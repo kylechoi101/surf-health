@@ -76,10 +76,13 @@ jobs:
         # shipped looked identical to a successful deploy (2026-07-25: the app
         # served a 47 h-old snapshot while main held a 22 h-old one). Poll until
         # the SERVED pipeline_freshness matches the commit being deployed.
-        # Budget: 40 x 30s = 20 min, covering a full image rebuild plus a
-        # free-tier cold start. Guarded by the same RENDER_DEPLOY_HOOK presence
-        # check as the webhook step so PRs/forks (no secret) don't fail — if we
-        # never POSTed a deploy, there is nothing to health-check.
+        # Budget: 60 x 30s = 30 min, covering a full image rebuild plus a
+        # free-tier cold start, plus room for the verifier to re-POST the hook
+        # (which it does off this same env var) when a build dies without
+        # shipping — the 2026-09-02 failure mode. Guarded by the same
+        # RENDER_DEPLOY_HOOK presence check as the webhook step so PRs/forks
+        # (no secret) don't fail — if we never POSTed a deploy, there is
+        # nothing to health-check.
         env:
           RENDER_DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
         run: |
