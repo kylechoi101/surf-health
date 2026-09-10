@@ -22,19 +22,26 @@ from scripts import bake_conditions_map as m
 from scripts import bake_web_static as web
 
 
-def _advisories(rows):
-    return pd.DataFrame(
+def _advisories(rows, *, with_ended_at=False):
+    """Rows are (beach_id, status, advisory_type, started_at[, ended_at]).
+
+    `with_ended_at=False` deliberately omits the column entirely, exercising
+    the legacy-frame path where a baker must not assume `ended_at` exists.
+    """
+    frame = pd.DataFrame(
         [
             {
-                "beach_id": bid,
-                "status": status,
-                "advisory_type": atype,
-                "started_at": started,
+                "beach_id": row[0],
+                "status": row[1],
+                "advisory_type": row[2],
+                "started_at": row[3],
                 "advisory_website": None,
+                **({"ended_at": row[4] if len(row) > 4 else None} if with_ended_at else {}),
             }
-            for bid, status, atype, started in rows
+            for row in rows
         ]
     )
+    return frame
 
 
 def _days_ago(n):
@@ -69,13 +76,61 @@ def test_window_and_closure_exemption():
     )
     got = m._active_advisory_set(adv)
     assert "fresh-posting" in got
-    assert "old-closure" in got, "closures bypass the 14-day acute window"
+    assert "old-closure" in got, "closures bypass the acute age window"
     assert "stale-posting" not in got, "a 40-day-old posting is a zombie"
     assert "inactive" not in got
 
 
 def test_window_constant_matches_the_web_baker():
     assert m.ACTIVE_WINDOW_DAYS == web.ACTIVE_WINDOW_DAYS
+
+
+def test_window_constant_matches_the_canonical_repository_window():
+    """The bakers are vendored copies (curl'd standalone by the web deploy and
+    unable to import the app package), so nothing but this test stops them
+    drifting from the API's own advisory window."""
+    from app.repositories.curated_repository import ADVISORY_MAX_AGE_DAYS
+
+    assert m.ACTIVE_WINDOW_DAYS == ADVISORY_MAX_AGE_DAYS
+
+
+def test_an_explicit_lift_clears_the_advisory_in_both_bakers():
+    """Once the county logs `ended_at`, the advisory clears immediately rather
+    than being held for the rest of the age window — closures included, since
+    they are exempt from the AGE gate but not from an explicit lift."""
+    adv = _advisories(
+        [
+            ("lifted-posting", "active", "Posting", _days_ago(2), _days_ago(0.25)),
+            ("running-posting", "active", "Posting", _days_ago(2), None),
+            ("lifted-closure", "active", "Closure", _days_ago(300), _days_ago(0.25)),
+            ("running-closure", "active", "Closure", _days_ago(300), None),
+            # A pre-declared future end date is not a lift; it is still in
+            # effect right now and must keep warning.
+            ("ends-later", "active", "Posting", _days_ago(2), _days_ago(-3)),
+        ],
+        with_ended_at=True,
+    )
+    mine = m._active_advisory_set(adv)
+    theirs, _ = web._active_advisory_set(adv)
+    assert mine == theirs, f"map baker {mine} disagrees with web baker {theirs}"
+    assert mine == {"running-posting", "running-closure", "ends-later"}
+
+
+def test_a_missing_ended_at_column_does_not_drop_every_advisory():
+    """Regression guard for the null trap: a naive `ended_at > now` filter is
+    NULL (falsy) for un-lifted rows, and `ended_at` is NULL on essentially
+    every row in the feed — so getting this wrong silently expires the entire
+    advisory layer rather than failing loudly."""
+    adv = _advisories([("fresh-posting", "active", "Posting", _days_ago(2))])
+    assert "ended_at" not in adv.columns
+    assert m._active_advisory_set(adv) == {"fresh-posting"}
+    assert web._active_advisory_set(adv)[0] == {"fresh-posting"}
+
+    with_nulls = _advisories(
+        [("fresh-posting", "active", "Posting", _days_ago(2), None)], with_ended_at=True
+    )
+    assert m._active_advisory_set(with_nulls) == {"fresh-posting"}
+    assert web._active_advisory_set(with_nulls)[0] == {"fresh-posting"}
 
 
 def test_empty_or_schemaless_advisories_are_safe():

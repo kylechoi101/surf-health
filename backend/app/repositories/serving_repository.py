@@ -192,10 +192,10 @@ class ServingSnapshotRepository(BeachRepository):
     # data.ca.gov advisories are sometimes left status='active' for years after
     # the actual posting was lifted (counties don't reliably log closure events).
     # Only treat an advisory as currently in effect if its start date is within
-    # this window. 14 days matches WHO/EPA acute-event guidance and the audit
-    # script's acute-pool boundary — any advisory not re-posted in two weeks
-    # is bureaucratic, not operational.
-    _ACTIVE_ADVISORY_WINDOW_DAYS = 14
+    # this window. Keep in lockstep with
+    # `curated_repository.ADVISORY_MAX_AGE_DAYS` — that docstring carries the
+    # rationale for the 7-day figure and the measured cost of it.
+    _ACTIVE_ADVISORY_WINDOW_DAYS = 7
 
     def _snapshot_generated_at(self) -> datetime | None:
         """When this serving snapshot was baked, from the metadata row the
@@ -236,9 +236,18 @@ class ServingSnapshotRepository(BeachRepository):
         cutoff = reference - timedelta(days=self._ACTIVE_ADVISORY_WINDOW_DAYS)
         # started_at is stored as ISO-8601 text; compare lexicographically.
         cutoff_iso = cutoff.astimezone(UTC).replace(tzinfo=None).isoformat(timespec="seconds")
+        reference_iso = reference.astimezone(UTC).replace(tzinfo=None).isoformat(timespec="seconds")
+        # An explicit lift always wins, closures included: once the county tells
+        # us `ended_at` has passed we stop showing the advisory immediately
+        # rather than holding it for the rest of the age window. `ended_at` is
+        # NULL on the overwhelming majority of rows (never lifted), and NULL
+        # must survive the filter — hence the explicit `is null` arm rather
+        # than a bare `ended_at > ?`, which SQL would evaluate to NULL (falsy)
+        # and silently drop every un-lifted advisory in the product.
         return (
-            "(lower(coalesce(advisory_type, '')) like '%closure%' or started_at >= ?)",
-            (cutoff_iso,),
+            "(ended_at is null or ended_at = '' or ended_at > ?) "
+            "and (lower(coalesce(advisory_type, '')) like '%closure%' or started_at >= ?)",
+            (reference_iso, cutoff_iso),
         )
 
     def _active_advisory_beach_ids(self) -> set[str]:

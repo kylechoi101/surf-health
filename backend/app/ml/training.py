@@ -3841,7 +3841,8 @@ def _export_forecasts(
     # (advisory_active_recent_for_floor) answers a different question -- it gates on
     # "started within 365d OR Tijuana River" to keep stale bookkeeping advisories out
     # of a MODEL feature -- while display authority is filter_currently_active
-    # ("closure, OR posted within 14d"). Those two legitimately disagree, and when
+    # ("closure, OR posted within ADVISORY_MAX_AGE_DAYS, and never explicitly
+    # lifted"). Those two legitimately disagree, and when
     # they do the parquet shipped a band the serve layer then floored, so
     # forecasts.parquet (and forecast_history, and the served_metrics computed from
     # it) disagreed with what users actually saw. Measured 2026-07-30: 5 posted
