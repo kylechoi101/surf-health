@@ -42,10 +42,22 @@ from app.schemas.domain import (
 # the county never logged a closure event. A bacterial-violation advisory in
 # real life rarely lasts more than a week; treating a 4-year-old "active" row
 # as currently in effect produces false positives like Windansea (advisory
-# posted 2022-07-12, never closed). 14 days matches WHO/EPA acute-event
-# guidance and the audit script's acute-pool boundary — any advisory not
-# re-posted in two weeks is bureaucratic, not operational.
-ADVISORY_MAX_AGE_DAYS = 14
+# posted 2022-07-12, never closed).
+#
+# The window is 7 days: an advisory is presumed in effect for one week from the
+# day it was posted, and an explicit lift (`ended_at` in the past) clears it
+# sooner. Counties sample on a ~7-day cadence, so a posting that has not been
+# re-issued within a week has normally been superseded by a fresh result.
+#
+# This was 14 days until 2026-09-10. Widening it back is a ONE-LINE change here
+# (plus the two vendored baker copies that `test_bake_conditions_map` pins).
+# Measured on the 2026-09-09 snapshot, 7 of 40 active advisories sit in the
+# 7-14 day band; 6 of those 7 have a clean follow-up sample and are genuinely
+# stale, but Tourmaline Surfing Park (posted 09-01) was still reading 2366
+# copies on 09-02 — so this window can drop a beach that is still dirty when a
+# county is slow to re-post. That is the accepted trade for not showing
+# week-old postings as current.
+ADVISORY_MAX_AGE_DAYS = 7
 
 
 def filter_currently_active(advisories: pd.DataFrame) -> pd.DataFrame:
@@ -54,6 +66,12 @@ def filter_currently_active(advisories: pd.DataFrame) -> pd.DataFrame:
     Postings (and similar acute advisories) are gated by the
     ADVISORY_MAX_AGE_DAYS window to prevent zombie records (counties
     don't reliably log closure events).
+
+    An explicit lift always wins: a row whose ``ended_at`` is in the past is
+    dropped even when the feed still calls it active and even when it is a
+    closure. The age window is only a fallback for feeds that never log the
+    lift, so when a county DOES tell us the advisory is over we honour it
+    immediately rather than holding the warning for the rest of the window.
 
     Closures are NOT age-gated — they describe ongoing health hazards that
     persist until the county explicitly lifts them. Long-standing shoreline
@@ -67,10 +85,18 @@ def filter_currently_active(advisories: pd.DataFrame) -> pd.DataFrame:
     active = advisories.loc[advisories["status"] == "active"].copy()
     if active.empty:
         return active
+    now = pd.Timestamp.now(tz="UTC")
+    if "ended_at" in active.columns:
+        ended = pd.to_datetime(active["ended_at"], errors="coerce", utc=True)
+        # NaT (never lifted) must survive, so test for "lifted" rather than
+        # negating "still running" — `NaT > now` is False either way.
+        active = active.loc[~(ended.notna() & (ended <= now))]
+        if active.empty:
+            return active
     if "started_at" not in active.columns:
         return active
     started = pd.to_datetime(active["started_at"], errors="coerce", utc=True)
-    cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=ADVISORY_MAX_AGE_DAYS)
+    cutoff = now - pd.Timedelta(days=ADVISORY_MAX_AGE_DAYS)
     advisory_type = active.get("advisory_type", pd.Series("", index=active.index))
     is_closure = advisory_type.fillna("").str.contains("closure", case=False, na=False)
     return active.loc[is_closure | (started >= cutoff)]
@@ -194,6 +220,7 @@ class CuratedBeachRepository(BeachRepository):
         self._per_beach_read_lock = RLock()
         self._obs_cache: dict[str, pd.DataFrame] = {}
         self._beach_day_cache: dict[str, pd.DataFrame] = {}
+        self._cached_beach_wide_advisories: dict[str, str | None] | None = None
 
     def _cached_filtered_parquet(
         self,
@@ -399,6 +426,7 @@ class CuratedBeachRepository(BeachRepository):
                 forecast_models[row["beach_id"]] = str(row.get("model_version", "unknown"))
 
         population = self._beach_geometry_population()
+        rollup = self._beach_wide_advisory_map()
         beaches: list[BeachSummary] = []
         for _, row in self.beaches_frame.iterrows():
             bid = row["beach_id"]
@@ -421,6 +449,8 @@ class CuratedBeachRepository(BeachRepository):
                     ),
                     geometry=Point(latitude=float(row["latitude"]), longitude=float(row["longitude"])),
                     shore_normal_deg=compute_shore_normal_deg(str(bid), population),
+                    parent_has_active_advisory=str(bid) in rollup,
+                    parent_advisory_website=rollup.get(str(bid)),
                 )
             )
         return beaches
@@ -439,6 +469,7 @@ class CuratedBeachRepository(BeachRepository):
 
         support = row["support_status"] if model_v else "unsupported"
 
+        parent_has_advisory, parent_advisory_url = self._parent_advisory_signal(str(row["beach_id"]))
         return BeachSummary(
             id=row["beach_id"],
             name=_derive_friendly_name(row),
@@ -454,6 +485,8 @@ class CuratedBeachRepository(BeachRepository):
                 else None
             ),
             geometry=Point(latitude=float(row["latitude"]), longitude=float(row["longitude"])),
+            parent_has_active_advisory=parent_has_advisory,
+            parent_advisory_website=parent_advisory_url,
             shore_normal_deg=compute_shore_normal_deg(
                 str(row["beach_id"]),
                 self._beach_geometry_population(),
@@ -544,6 +577,12 @@ class CuratedBeachRepository(BeachRepository):
             row["forecast_label_mode"] = "official_advisory_override"
             row["top_drivers"] = self._advisory_override_drivers(row.get("top_drivers"))
             row["advisory_website"] = self._active_advisory_website(beach_id)
+        else:
+            # Only meaningful when this station has no posting of its own; a
+            # posted station already renders its own advisory.
+            parent_has_advisory, parent_advisory_url = self._parent_advisory_signal(beach_id)
+            row["parent_has_active_advisory"] = parent_has_advisory
+            row["parent_advisory_website"] = parent_advisory_url
 
         sample_age = _safe_int(row.get("sample_age_days"))
         if sample_age is None:
@@ -582,6 +621,56 @@ class CuratedBeachRepository(BeachRepository):
 
     def _has_active_advisory(self, beach_id: str) -> bool:
         return beach_id in self._active_advisory_beach_ids()
+
+    def _beach_wide_advisory_map(self) -> dict[str, str | None]:
+        """station beach_id -> the posted sibling's advisory URL, for every
+        station that is NOT itself posted but shares a parent with one.
+
+        Built in one pass and memoised on the instance: list_beaches renders
+        the whole roster, and resolving this per row would rescan the parent
+        frame once per station.
+        """
+        if self._cached_beach_wide_advisories is not None:
+            return self._cached_beach_wide_advisories
+        result: dict[str, str | None] = {}
+        active = self._active_advisory_beach_ids()
+        if active and not self.parent_beaches_frame.empty:
+            for _, row in self.parent_beaches_frame.iterrows():
+                members = [str(member) for member in list(row["member_beach_ids"])]
+                posted = [member for member in members if member in active]
+                if not posted:
+                    continue
+                website = next(
+                    (
+                        url
+                        for url in (self._active_advisory_website(member) for member in posted)
+                        if url
+                    ),
+                    None,
+                )
+                for member in members:
+                    if member not in active:
+                        result[member] = website
+        self._cached_beach_wide_advisories = result
+        return result
+
+    def _parent_advisory_signal(self, beach_id: str) -> tuple[bool, str | None]:
+        """Return (parent_has_active_advisory, parent_advisory_website).
+
+        Beach-wide rollup for a station that is NOT itself posted: if any
+        sibling under the same parent is posted, this station shows the
+        beach-wide advisory badge too. The county and the city sometimes
+        sample different points of one beach and disagree, so a clean reading
+        at this exact station is not evidence the beach is clean.
+
+        Parity twin of `serving_repository._parent_advisory_signal`. The band is
+        deliberately NOT touched here — only the badge rolls up, so the station
+        keeps showing its own honest modelled result.
+        """
+        rollup = self._beach_wide_advisory_map()
+        if beach_id not in rollup:
+            return False, None
+        return True, rollup[beach_id]
 
     def _active_advisory_website(self, beach_id: str) -> str | None:
         active = filter_currently_active(self.advisories_frame)
@@ -635,8 +724,12 @@ class CuratedBeachRepository(BeachRepository):
         raw_p_exceed = p_exceed
         p_exceed, floor_applied = advisory_floored_probability(p_exceed, active_advisory)
         model_risk_band = risk_band(p_exceed)
+        parent_has_advisory = False
+        parent_advisory_url: str | None = None
         if active_advisory:
             drivers = self._advisory_override_drivers(drivers)
+        else:
+            parent_has_advisory, parent_advisory_url = self._parent_advisory_signal(beach_id)
 
         return ForecastRecord(
             beach_id=beach_id,
@@ -654,6 +747,8 @@ class CuratedBeachRepository(BeachRepository):
             model_version="derived-persistence-v0",
             forecast_generated_at=datetime.now(UTC),
             official_advisory_active=active_advisory,
+            parent_has_active_advisory=parent_has_advisory,
+            parent_advisory_website=parent_advisory_url,
             forecast_label_mode=(
                 "official_advisory_override" if active_advisory else "derived_persistence"
             ),

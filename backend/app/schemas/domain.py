@@ -81,6 +81,14 @@ class BeachSummary(BaseModel):
     # shore. Optional because fixture payloads and legacy clients may not
     # populate it.
     shore_normal_deg: float | None = None
+    # Beach-wide advisory rollup: this station has no posting of its own, but
+    # at least one sibling under the same parent beach does. Carried here as
+    # well as on ForecastRecord because a station with NO forecast still needs
+    # the badge — measured on the 2026-09-09 snapshot, 6 of the 14 rolled-up
+    # stations have no forecast row at all, so a forecast-only signal would
+    # silently drop the warning on nearly half of them.
+    parent_has_active_advisory: bool = False
+    parent_advisory_website: str | None = None
 
 
 class ParentBeachSummary(BaseModel):

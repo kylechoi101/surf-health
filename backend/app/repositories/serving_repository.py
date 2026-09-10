@@ -192,10 +192,10 @@ class ServingSnapshotRepository(BeachRepository):
     # data.ca.gov advisories are sometimes left status='active' for years after
     # the actual posting was lifted (counties don't reliably log closure events).
     # Only treat an advisory as currently in effect if its start date is within
-    # this window. 14 days matches WHO/EPA acute-event guidance and the audit
-    # script's acute-pool boundary — any advisory not re-posted in two weeks
-    # is bureaucratic, not operational.
-    _ACTIVE_ADVISORY_WINDOW_DAYS = 14
+    # this window. Keep in lockstep with
+    # `curated_repository.ADVISORY_MAX_AGE_DAYS` — that docstring carries the
+    # rationale for the 7-day figure and the measured cost of it.
+    _ACTIVE_ADVISORY_WINDOW_DAYS = 7
 
     def _snapshot_generated_at(self) -> datetime | None:
         """When this serving snapshot was baked, from the metadata row the
@@ -236,9 +236,18 @@ class ServingSnapshotRepository(BeachRepository):
         cutoff = reference - timedelta(days=self._ACTIVE_ADVISORY_WINDOW_DAYS)
         # started_at is stored as ISO-8601 text; compare lexicographically.
         cutoff_iso = cutoff.astimezone(UTC).replace(tzinfo=None).isoformat(timespec="seconds")
+        reference_iso = reference.astimezone(UTC).replace(tzinfo=None).isoformat(timespec="seconds")
+        # An explicit lift always wins, closures included: once the county tells
+        # us `ended_at` has passed we stop showing the advisory immediately
+        # rather than holding it for the rest of the age window. `ended_at` is
+        # NULL on the overwhelming majority of rows (never lifted), and NULL
+        # must survive the filter — hence the explicit `is null` arm rather
+        # than a bare `ended_at > ?`, which SQL would evaluate to NULL (falsy)
+        # and silently drop every un-lifted advisory in the product.
         return (
-            "(lower(coalesce(advisory_type, '')) like '%closure%' or started_at >= ?)",
-            (cutoff_iso,),
+            "(ended_at is null or ended_at = '' or ended_at > ?) "
+            "and (lower(coalesce(advisory_type, '')) like '%closure%' or started_at >= ?)",
+            (reference_iso, cutoff_iso),
         )
 
     def _active_advisory_beach_ids(self) -> set[str]:
@@ -296,21 +305,40 @@ class ServingSnapshotRepository(BeachRepository):
                 result[bid] = members
         return result
 
-    def _parent_advisory_signal(self, beach_id: str, active_set: set[str], website_map: dict[str, str | None]) -> tuple[bool, str | None]:
+    @cache
+    def _beach_wide_advisory_map(self) -> dict[str, str | None]:
+        """station beach_id -> the posted sibling's advisory URL, for every
+        station that is NOT itself posted but shares a parent with one.
+
+        The county and the city sometimes sample different points of one beach
+        and disagree, so a clean reading at one station is not evidence the
+        beach is clean; these stations carry a beach-wide advisory badge.
+
+        Cached and built in one pass because /beaches renders ~850 stations —
+        resolving this per row would re-run the two advisory queries 1700
+        times per request.
+        """
+        active = self._active_advisory_beach_ids()
+        if not active:
+            return {}
+        websites = self._active_advisory_websites()
+        result: dict[str, str | None] = {}
+        for beach_id, members in self._station_to_parent_members().items():
+            if beach_id in active:
+                continue  # already renders its own advisory
+            for sibling_id in members:
+                if sibling_id != beach_id and sibling_id in active:
+                    result[beach_id] = websites.get(sibling_id)
+                    break
+        return result
+
+    def _parent_advisory_signal(self, beach_id: str) -> tuple[bool, str | None]:
         """Return (parent_has_active_advisory, parent_advisory_website) for
-        a station that does NOT have its own active advisory. Looks at
-        every sibling under the same parent; if any sibling is under an
-        active advisory, return True + that sibling's URL (so the UI can
-        link to the same county source the parent card uses)."""
-        siblings = self._station_to_parent_members().get(beach_id, ())
-        if not siblings:
+        a station that does NOT have its own active advisory."""
+        rollup = self._beach_wide_advisory_map()
+        if beach_id not in rollup:
             return False, None
-        for sibling_id in siblings:
-            if sibling_id == beach_id:
-                continue
-            if sibling_id in active_set:
-                return True, website_map.get(sibling_id)
-        return False, None
+        return True, rollup[beach_id]
 
     def _beach_geometry_population(self) -> list[tuple[str, float, float]]:
         """Flat list of (beach_id, lat, lon) for shore-normal SVD search.
@@ -363,6 +391,7 @@ class ServingSnapshotRepository(BeachRepository):
             beach_name = cleaned or None
         station_code_raw = _row_get(row, "station_code")
         station_code = str(station_code_raw).strip() or None if station_code_raw is not None else None
+        parent_has_advisory, parent_advisory_url = self._parent_advisory_signal(beach_id)
         return BeachSummary(
             id=beach_id,
             name=parent_name or friendly,
@@ -379,6 +408,8 @@ class ServingSnapshotRepository(BeachRepository):
                 longitude=float(row["longitude"]),
             ),
             shore_normal_deg=self._shore_normal_for(beach_id, row),
+            parent_has_active_advisory=parent_has_advisory,
+            parent_advisory_website=parent_advisory_url,
         )
 
     def _shore_normal_for(self, beach_id: str, row: sqlite3.Row) -> float | None:
@@ -640,9 +671,7 @@ class ServingSnapshotRepository(BeachRepository):
             advisory_website = website_map.get(beach_id)
         else:
             drivers = base_drivers
-            parent_has_advisory, parent_advisory_url = self._parent_advisory_signal(
-                beach_id, active_set, website_map
-            )
+            parent_has_advisory, parent_advisory_url = self._parent_advisory_signal(beach_id)
 
         return ForecastRecord(
             beach_id=beach_id,

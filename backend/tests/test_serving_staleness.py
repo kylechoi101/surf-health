@@ -234,7 +234,12 @@ def test_advisory_window_is_judged_as_of_snapshot_generated_at(tmp_path):
         curated_dir,
         forecast_date=today.isoformat(),
         generated_at=now.isoformat(),
-        advisory_started_at=(naive_now - timedelta(days=20)).isoformat(),
+        # 13 days before "now", against a snapshot baked 10 days ago: the
+        # posting was 3 days old at bake time (inside the window) but reads 13
+        # days old against a request-time clock (outside it). That gap is the
+        # whole point of the test — the numbers track ADVISORY_MAX_AGE_DAYS (7)
+        # and must keep straddling it if that constant ever moves.
+        advisory_started_at=(naive_now - timedelta(days=13)).isoformat(),
         # Recent last_seen_at keeps the bake-time zombie auto-expire from
         # demoting the row; the serve-time window is what's under test.
         advisory_last_seen_at=(naive_now - timedelta(days=2)).isoformat(),
@@ -255,7 +260,7 @@ def test_advisory_window_is_judged_as_of_snapshot_generated_at(tmp_path):
 
 def test_advisory_outside_window_as_of_snapshot_time_stays_aged_out(tmp_path):
     """Contrast case: judged as-of a fresh snapshot's bake time, a 20-day-old
-    posting is legitimately outside the 14-day acute window."""
+    posting is legitimately outside the acute window."""
     now = datetime.now(UTC)
     today = now.date()
     naive_now = now.replace(tzinfo=None)

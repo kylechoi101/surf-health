@@ -71,7 +71,10 @@ def advisory_floored_probability(
 
 
 OFFICIAL_ADVISORY_DRIVER = "Official health advisory is active for this station."
-ACTIVE_WINDOW_DAYS = 14  # Match serving_repository's 14-day acute window
+# Keep in lockstep with `curated_repository.ADVISORY_MAX_AGE_DAYS` and
+# `serving_repository._ACTIVE_ADVISORY_WINDOW_DAYS`; that docstring carries the
+# rationale. `test_bake_conditions_map` pins this against the map baker's copy.
+ACTIVE_WINDOW_DAYS = 7
 
 
 def _safe(value):
@@ -119,19 +122,28 @@ def _finite_or_none(value) -> float | None:
 def _active_advisory_set(advisories: pd.DataFrame) -> tuple[set[str], dict[str, str]]:
     """Return (set of beach_ids with currently-active advisory, beach_id->website map).
 
-    Mirrors `serving_repository._active_advisory_beach_ids` semantics: status='active'
-    AND started_at within the last 14 days. Counties don't reliably log closures,
-    so the 14-day window prevents zombie advisories from hanging forever.
+    Mirrors `serving_repository._active_advisory_beach_ids` semantics:
+    status='active', not explicitly lifted, AND started_at within
+    ACTIVE_WINDOW_DAYS. Counties don't reliably log closures, so the age
+    window prevents zombie advisories from hanging forever.
     """
     if advisories.empty:
         return set(), {}
     a = advisories.copy()
     a["started_at"] = pd.to_datetime(a["started_at"], errors="coerce")
-    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=ACTIVE_WINDOW_DAYS)
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    cutoff = now - timedelta(days=ACTIVE_WINDOW_DAYS)
     is_active = a["status"] == "active"
-    # Closures bypass the 14d acute window — they describe ongoing hazards
+    # An explicit lift wins over everything, closures included: when the county
+    # logs `ended_at` we drop the advisory immediately instead of holding it
+    # for the rest of the age window. NaT means "never lifted" and must
+    # survive, so test for lifted-ness and negate it.
+    if "ended_at" in a.columns:
+        ended = pd.to_datetime(a["ended_at"], errors="coerce")
+        is_active = is_active & ~(ended.notna() & (ended <= now))
+    # Closures bypass the acute age window — they describe ongoing hazards
     # (Tijuana Slough since Oct 2025, etc.) and persist until the scraper
-    # stops seeing them. Postings still get the 14d gate.
+    # stops seeing them. Postings still get the age gate.
     advisory_type = a.get("advisory_type", pd.Series("", index=a.index))
     is_closure = advisory_type.fillna("").str.contains("closure", case=False, na=False)
     active = a[is_active & (is_closure | (a["started_at"] >= cutoff))]
@@ -146,9 +158,54 @@ def _active_advisory_set(advisories: pd.DataFrame) -> tuple[set[str], dict[str, 
     return ids, websites
 
 
-def _build_forecast_block(fc_row: pd.Series, has_active_advisory: bool) -> dict:
+def _member_ids(raw) -> list[str]:
+    """Normalize the parquet member_beach_ids cell (numpy array / list /
+    JSON string) to a list of str."""
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (ValueError, TypeError):
+            return [raw]
+    try:
+        return [str(x) for x in list(raw)]
+    except TypeError:
+        return []
+
+
+def _sibling_map(parent_df: pd.DataFrame) -> dict[str, list[str]]:
+    """station beach_id -> every member beach_id under the same parent.
+
+    Drives the beach-wide advisory badge: a station with no posting of its own
+    still shows "Advisory (beach-wide)" when a sibling under the same parent is
+    posted, because the county and the city sometimes sample different points
+    of one beach and disagree. Membership comes from parent_beaches.parquet,
+    the exact grouping the API uses, so the badge cannot drift from the parent
+    card's own has_active_advisory rollup.
+    """
+    siblings: dict[str, list[str]] = {}
+    if parent_df.empty or "member_beach_ids" not in parent_df.columns:
+        return siblings
+    for _, pr in parent_df.iterrows():
+        members = _member_ids(pr.get("member_beach_ids"))
+        for mid in members:
+            siblings[mid] = members
+    return siblings
+
+
+def _build_forecast_block(
+    fc_row: pd.Series,
+    has_active_advisory: bool,
+    parent_has_active_advisory: bool = False,
+    parent_advisory_website: str | None = None,
+) -> dict:
     """Mirror curated_repository.get_forecast's override logic."""
     row = {k: _safe(v) for k, v in fc_row.items()}
+    # Carried on the forecast block as well as the station row because the web
+    # reads the advisory badge off `forecast`, matching the API's ForecastRecord.
+    row["parent_has_active_advisory"] = parent_has_active_advisory
+    row["parent_advisory_website"] = parent_advisory_website
     # Prefer the genuine raw model probability whenever it is present and a
     # finite number — INCLUDING exactly 0.0 (isotonic's lowest bin can emit it).
     # A truthiness `or` would drop a real 0.0 through to p_exceed, which is the
@@ -202,6 +259,12 @@ def bake(curated: Path, out: Path) -> None:
 
     active_bids, website_map = _active_advisory_set(advisories)
 
+    # Loaded here rather than in the parent section below because the per-station
+    # rows are dumped to beaches.json first and need the sibling rollup.
+    parents_path = curated / "parent_beaches.parquet"
+    parent_df = pd.read_parquet(parents_path) if parents_path.exists() else pd.DataFrame()
+    siblings_by_station = _sibling_map(parent_df)
+
     out.mkdir(parents=True, exist_ok=True)
 
     # beaches.json — per-station entries
@@ -209,10 +272,24 @@ def bake(curated: Path, out: Path) -> None:
     for _, b in beaches.iterrows():
         bid = str(b["beach_id"])
         has_adv = bid in active_bids
+        # Beach-wide rollup, only meaningful when this station is NOT itself
+        # posted (a posted station already shows its own advisory). Mirrors
+        # `serving_repository._parent_advisory_signal`.
+        parent_has_adv = False
+        parent_adv_url = None
+        if not has_adv:
+            for sibling_id in siblings_by_station.get(bid, ()):
+                if sibling_id != bid and sibling_id in active_bids:
+                    parent_has_adv = True
+                    parent_adv_url = parent_adv_url or website_map.get(sibling_id)
+                    if parent_adv_url:
+                        break
         forecast_block = None
         env_block = None
         if bid in fc_by_bid:
-            forecast_block = _build_forecast_block(fc_by_bid[bid], has_adv)
+            forecast_block = _build_forecast_block(
+                fc_by_bid[bid], has_adv, parent_has_adv, parent_adv_url
+            )
         if bid in env_by_bid:
             env_block = {k: _safe(v) for k, v in env_by_bid[bid].items() if k != "beach_id"}
 
@@ -246,6 +323,8 @@ def bake(curated: Path, out: Path) -> None:
             "latest_official_sample_at": _safe(latest_sample.get(bid)) if not latest_sample.empty else None,
             "has_active_advisory": has_adv,
             "advisory_website": website_map.get(bid),
+            "parent_has_active_advisory": parent_has_adv,
+            "parent_advisory_website": parent_adv_url,
             "forecast": forecast_block,
             "env": env_block,
         })
@@ -277,25 +356,8 @@ def bake(curated: Path, out: Path) -> None:
     # only so a stale row baked by an older pipeline still sorts sanely.
     order = {"Low": 1, "Moderate": 2, "High": 3, "Very High": 4, "Advisory": 5}
 
-    def _member_ids(raw) -> list[str]:
-        """Normalize the parquet member_beach_ids cell (numpy array / list /
-        JSON string) to a list of str."""
-        if raw is None:
-            return []
-        if isinstance(raw, str):
-            try:
-                raw = json.loads(raw)
-            except (ValueError, TypeError):
-                return [raw]
-        try:
-            return [str(x) for x in list(raw)]
-        except TypeError:
-            return []
-
     parent_rows = []
-    parents_path = curated / "parent_beaches.parquet"
     if parents_path.exists():
-        parent_df = pd.read_parquet(parents_path)
         for _, pr in parent_df.iterrows():
             member_ids = _member_ids(pr.get("member_beach_ids"))
             members = [beach_by_id[mid] for mid in member_ids if mid in beach_by_id]

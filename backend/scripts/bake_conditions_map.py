@@ -39,7 +39,10 @@ def _f(v) -> float | None:
         return None
 
 
-ACTIVE_WINDOW_DAYS = 14  # Match serving_repository's 14-day acute window
+# Keep in lockstep with `curated_repository.ADVISORY_MAX_AGE_DAYS`; that
+# docstring carries the rationale. Pinned against the web baker's copy by
+# `test_bake_conditions_map.test_window_constant_matches_the_web_baker`.
+ACTIVE_WINDOW_DAYS = 7
 
 
 def _active_advisory_set(advisories: pd.DataFrame) -> set[str]:
@@ -51,16 +54,23 @@ def _active_advisory_set(advisories: pd.DataFrame) -> set[str]:
     duplicated on purpose — `test_bake_conditions_map.py` pins this copy against
     that one so they cannot drift.
 
-    status='active' AND started_at within 14 days. Closures bypass the window:
-    they describe ongoing hazards that persist until the scraper stops seeing
-    them. Postings still get the 14-day gate.
+    status='active', not explicitly lifted, AND started_at within
+    ACTIVE_WINDOW_DAYS. Closures bypass the age window: they describe ongoing
+    hazards that persist until the scraper stops seeing them. Postings still
+    get the age gate. An explicit lift (`ended_at` in the past) drops the
+    advisory immediately, closures included.
     """
     if advisories.empty or "status" not in advisories.columns:
         return set()
     a = advisories.copy()
     a["started_at"] = pd.to_datetime(a["started_at"], errors="coerce")
-    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=ACTIVE_WINDOW_DAYS)
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    cutoff = now - timedelta(days=ACTIVE_WINDOW_DAYS)
     is_active = a["status"] == "active"
+    # NaT means "never lifted" and must survive, so negate lifted-ness.
+    if "ended_at" in a.columns:
+        ended = pd.to_datetime(a["ended_at"], errors="coerce")
+        is_active = is_active & ~(ended.notna() & (ended <= now))
     advisory_type = a.get("advisory_type", pd.Series("", index=a.index))
     is_closure = advisory_type.fillna("").str.contains("closure", case=False, na=False)
     active = a[is_active & (is_closure | (a["started_at"] >= cutoff))]

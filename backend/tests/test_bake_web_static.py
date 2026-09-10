@@ -12,6 +12,7 @@ the canonical cutpoints and forgets the copy. These tests fail CI on drift
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -109,7 +110,11 @@ def test_no_advisory_clears_model_band():
     assert block["model_risk_band"] is None
 
 
-def _write_min_curated(curated: Path, parent_beaches: pd.DataFrame) -> None:
+def _write_min_curated(
+    curated: Path,
+    parent_beaches: pd.DataFrame,
+    advisories: pd.DataFrame | None = None,
+) -> None:
     """Write the minimal curated parquets bake() reads, plus a caller-supplied
     parent_beaches frame."""
     beaches = pd.DataFrame(
@@ -133,9 +138,11 @@ def _write_min_curated(curated: Path, parent_beaches: pd.DataFrame) -> None:
         [{"beach_id": "ca999-north-a", "p_exceed_raw": 0.05, "p_exceed": 0.05,
           "risk_band": "Low", "top_drivers": []}]
     ).to_parquet(curated / "forecasts.parquet", index=False)
-    pd.DataFrame(
-        columns=["beach_id", "status", "started_at", "advisory_type", "advisory_website"]
-    ).to_parquet(curated / "advisories.parquet", index=False)
+    if advisories is None:
+        advisories = pd.DataFrame(
+            columns=["beach_id", "status", "started_at", "advisory_type", "advisory_website"]
+        )
+    advisories.to_parquet(curated / "advisories.parquet", index=False)
     parent_beaches.to_parquet(curated / "parent_beaches.parquet", index=False)
 
 
@@ -287,3 +294,108 @@ def test_display_and_feature_advisory_gates_are_different_questions():
         block = bake._build_forecast_block(row, has_active_advisory=True)
         assert block["risk_band"] not in ("Low", "Moderate")
         assert block["p_exceed"] >= 0.30
+
+
+def test_bake_emits_the_beach_wide_advisory_rollup(tmp_path):
+    """A station with no posting of its own must still carry the beach-wide
+    advisory signal when a SIBLING under the same parent is posted.
+
+    The web reads its static export, not the API, so if the bake omits these
+    fields the site silently loses the badge the API serves — the exact
+    card-vs-detail split this rollup exists to close. `ca999-north-a` and
+    `ca999-south-b` share one parent; only `south-b` is posted.
+    """
+    curated = tmp_path / "curated"
+    curated.mkdir()
+    out = tmp_path / "out"
+    parents = pd.DataFrame(
+        [
+            {
+                "parent_beach_id": "parent-ca999", "usepa_id": "ca999",
+                "name": "Big Beach", "county": "Test", "region": "RB1",
+                "support_status": "production", "latitude": 34.0, "longitude": -119.0,
+                "station_count": 2,
+                "member_beach_ids": ["ca999-north-a", "ca999-south-b"],
+                "latest_official_sample_at": None,
+            },
+        ]
+    )
+    posted_at = (datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=2)).isoformat()
+    advisories = pd.DataFrame(
+        [
+            {
+                "beach_id": "ca999-south-b", "status": "active",
+                "started_at": posted_at, "ended_at": None, "advisory_type": "Posting",
+                "advisory_website": "https://county.example/posting",
+            }
+        ]
+    )
+    _write_min_curated(curated, parents, advisories)
+
+    bake.bake(curated, out)
+    stations = {b["id"]: b for b in json.loads((out / "beaches.json").read_text())}
+
+    posted = stations["ca999-south-b"]
+    clean = stations["ca999-north-a"]
+
+    # The posted station carries its own advisory, not the rollup.
+    assert posted["has_active_advisory"] is True
+    assert posted["parent_has_active_advisory"] is False
+
+    # The clean sibling inherits the beach-wide badge and the county link.
+    assert clean["has_active_advisory"] is False
+    assert clean["parent_has_active_advisory"] is True
+    assert clean["parent_advisory_website"] == "https://county.example/posting"
+
+    # Badge only: the clean station keeps its own modelled band untouched.
+    assert clean["forecast"]["risk_band"] == "Low"
+    assert clean["forecast"]["official_advisory_active"] is False
+    # ...and the same signal rides on the forecast block, matching the API's
+    # ForecastRecord, because that is where the web reads it from.
+    assert clean["forecast"]["parent_has_active_advisory"] is True
+    assert clean["forecast"]["parent_advisory_website"] == "https://county.example/posting"
+
+    # The parent card agrees with the station badge about the same beach.
+    parent = json.loads((out / "parent_beaches.json").read_text())[0]
+    assert parent["has_active_advisory"] is True
+
+
+def test_bake_rollup_does_not_leak_across_parents(tmp_path):
+    """A posting must not flag a station that shares no parent with it."""
+    curated = tmp_path / "curated"
+    curated.mkdir()
+    out = tmp_path / "out"
+    parents = pd.DataFrame(
+        [
+            {
+                "parent_beach_id": "parent-north", "usepa_id": "ca999",
+                "name": "North", "county": "Test", "region": "RB1",
+                "support_status": "production", "latitude": 34.0, "longitude": -119.0,
+                "station_count": 1, "member_beach_ids": ["ca999-north-a"],
+                "latest_official_sample_at": None,
+            },
+            {
+                "parent_beach_id": "parent-south", "usepa_id": "ca999",
+                "name": "South", "county": "Test", "region": "RB1",
+                "support_status": "beta", "latitude": 33.9, "longitude": -119.0,
+                "station_count": 1, "member_beach_ids": ["ca999-south-b"],
+                "latest_official_sample_at": None,
+            },
+        ]
+    )
+    posted_at = (datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=2)).isoformat()
+    advisories = pd.DataFrame(
+        [
+            {
+                "beach_id": "ca999-south-b", "status": "active",
+                "started_at": posted_at, "ended_at": None, "advisory_type": "Posting",
+                "advisory_website": "https://county.example/posting",
+            }
+        ]
+    )
+    _write_min_curated(curated, parents, advisories)
+
+    bake.bake(curated, out)
+    stations = {b["id"]: b for b in json.loads((out / "beaches.json").read_text())}
+    assert stations["ca999-north-a"]["parent_has_active_advisory"] is False
+    assert stations["ca999-north-a"]["parent_advisory_website"] is None
