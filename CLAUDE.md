@@ -205,6 +205,66 @@ problems, fixed separately:
   previous run's committed `county_advisories_report.json` — a volume-independent schema-drift
   signal the ratio only approximated). `--strict-gate` restores exit-on-soft for local debugging.
 
+### Beach-wide advisory rollup + the 7-day window (2026-09-10)
+
+**The gap this closes:** a parent beach groups several sampling stations, and the county
+and the city sometimes sample different points of the SAME beach and disagree. The parent
+CARD already OR'd `has_active_advisory` across its members, but the station DETAIL did not:
+a clean sibling of a posted station rendered its own `Low` band with only a soft paragraph
+beside it ("Another sampling station at this beach is..."), which reads as reassurance.
+Measured on the 2026-09-09 snapshot: 23 parents had ≥1 posted station, **8 of them only
+partially** — Long Beach 9-of-11, Santa Monica State Beach 2-of-8, Avalon Beach 1-of-7.
+
+- **The rollup is a BADGE, not a band override** (deliberate product decision). A sibling
+  of a posted station shows "Advisory · beach-wide" + the county link, and **keeps its own
+  modelled band and probability**. Nothing is floored, so the station-specific result stays
+  visible and honest. This is the one thing to preserve if the code is refactored — pinned
+  by `test_the_rollup_badge_does_not_touch_the_band`.
+- **It rides on `BeachSummary` as well as `ForecastRecord`, and that is load-bearing.** The
+  forecast endpoint 404s ("latest sample is not fresh") for stations with no forecast row,
+  and **6 of the 14** rolled-up stations on the shipped snapshot are exactly those (both
+  Long Beach stations, Colorado Lagoon, three Coronado). A forecast-only signal silently
+  dropped the warning on nearly half the stations the feature exists for. The web/mobile
+  helper reads forecast-first then falls back to the beach record, with `??` not `||` so a
+  genuine `false` from the live API beats a stale baked row (otherwise a lifted advisory
+  could never clear).
+- **`_beach_wide_advisory_map` is memoised on purpose.** `/beaches` renders ~850 stations;
+  resolving the rollup per row re-ran the two advisory queries ~1700 times per request.
+  One pass, cached: 850 rows in 0.02s.
+
+**Window: 14 → 7 days, and an explicit lift now always wins.**
+
+- `curated_repository.ADVISORY_MAX_AGE_DAYS = 7`. An advisory is presumed in effect for one
+  week from its posting; counties sample on a ~7-day cadence, so a posting not re-issued
+  within a week has normally been superseded by a fresh result.
+- **A lift beats the window, closures included.** A row whose `ended_at` has passed clears
+  immediately rather than being held for the rest of the week. Closures are exempt from the
+  AGE gate, **not** from a lift. A pre-declared FUTURE `ended_at` is not a lift.
+- ⚠️ **The null trap — this is the sharp edge.** `ended_at` is NULL on essentially every row
+  (0 of 40 active rows had one when this shipped). Both `ended_at > ?` in SQL and a naive
+  pandas comparison are falsy/NULL for those, so a naive filter **silently expires the
+  entire advisory layer** rather than failing loudly. Both paths test for lifted-ness and
+  negate it (`~(ended.notna() & (ended <= now))`, and an explicit `is null` arm in SQL).
+  Pinned by `test_a_null_ended_at_never_drops_the_advisory` and
+  `test_a_missing_ended_at_column_does_not_drop_every_advisory`.
+- ⚠️ **Measured cost of narrowing, and it is not free.** 7 of the 40 active advisories sat
+  in the 7–14 day band. Six have a clean follow-up sample and are genuinely stale postings
+  the 14-day window was over-holding — but **Tourmaline Surfing Park** (posted 09-01) was
+  still reading **2366 copies** on 09-02. So this window CAN drop a beach that is still
+  dirty when a county is slow to re-post. Accepted trade; widening it back is a one-line
+  change (plus the two vendored baker copies).
+- **The constant is duplicated in FOUR places** and must stay in lockstep:
+  `curated_repository.ADVISORY_MAX_AGE_DAYS`, `serving_repository._ACTIVE_ADVISORY_WINDOW_DAYS`,
+  `bake_web_static.ACTIVE_WINDOW_DAYS`, `bake_conditions_map.ACTIVE_WINDOW_DAYS`. The two
+  bakers are **curl'd standalone by shorelife-web's deploy and cannot import the app
+  package**, so the duplication is deliberate and pre-existing;
+  `test_bake_conditions_map` pins both against each other AND against the canonical
+  repository constant.
+- **`filter_currently_active` is the DISPLAY authority only.** The MODEL feature
+  (`advisory_active_recent_for_floor`, gated at 365d) is untouched, so no training input
+  changes. `training.py` uses `filter_currently_active` solely to keep `forecasts.parquet`
+  consistent with what the serve layer shows.
+
 ### Pipeline robustness guards (2026-06-11)
 
 - **CEDEN negative-value guard** (`pipeline/ceden.py`): the CEDEN/SafeToSwim normalizer now nulls
