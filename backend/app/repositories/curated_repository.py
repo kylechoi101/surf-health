@@ -220,6 +220,7 @@ class CuratedBeachRepository(BeachRepository):
         self._per_beach_read_lock = RLock()
         self._obs_cache: dict[str, pd.DataFrame] = {}
         self._beach_day_cache: dict[str, pd.DataFrame] = {}
+        self._cached_beach_wide_advisories: dict[str, str | None] | None = None
 
     def _cached_filtered_parquet(
         self,
@@ -425,6 +426,7 @@ class CuratedBeachRepository(BeachRepository):
                 forecast_models[row["beach_id"]] = str(row.get("model_version", "unknown"))
 
         population = self._beach_geometry_population()
+        rollup = self._beach_wide_advisory_map()
         beaches: list[BeachSummary] = []
         for _, row in self.beaches_frame.iterrows():
             bid = row["beach_id"]
@@ -447,6 +449,8 @@ class CuratedBeachRepository(BeachRepository):
                     ),
                     geometry=Point(latitude=float(row["latitude"]), longitude=float(row["longitude"])),
                     shore_normal_deg=compute_shore_normal_deg(str(bid), population),
+                    parent_has_active_advisory=str(bid) in rollup,
+                    parent_advisory_website=rollup.get(str(bid)),
                 )
             )
         return beaches
@@ -465,6 +469,7 @@ class CuratedBeachRepository(BeachRepository):
 
         support = row["support_status"] if model_v else "unsupported"
 
+        parent_has_advisory, parent_advisory_url = self._parent_advisory_signal(str(row["beach_id"]))
         return BeachSummary(
             id=row["beach_id"],
             name=_derive_friendly_name(row),
@@ -480,6 +485,8 @@ class CuratedBeachRepository(BeachRepository):
                 else None
             ),
             geometry=Point(latitude=float(row["latitude"]), longitude=float(row["longitude"])),
+            parent_has_active_advisory=parent_has_advisory,
+            parent_advisory_website=parent_advisory_url,
             shore_normal_deg=compute_shore_normal_deg(
                 str(row["beach_id"]),
                 self._beach_geometry_population(),
@@ -615,6 +622,38 @@ class CuratedBeachRepository(BeachRepository):
     def _has_active_advisory(self, beach_id: str) -> bool:
         return beach_id in self._active_advisory_beach_ids()
 
+    def _beach_wide_advisory_map(self) -> dict[str, str | None]:
+        """station beach_id -> the posted sibling's advisory URL, for every
+        station that is NOT itself posted but shares a parent with one.
+
+        Built in one pass and memoised on the instance: list_beaches renders
+        the whole roster, and resolving this per row would rescan the parent
+        frame once per station.
+        """
+        if self._cached_beach_wide_advisories is not None:
+            return self._cached_beach_wide_advisories
+        result: dict[str, str | None] = {}
+        active = self._active_advisory_beach_ids()
+        if active and not self.parent_beaches_frame.empty:
+            for _, row in self.parent_beaches_frame.iterrows():
+                members = [str(member) for member in list(row["member_beach_ids"])]
+                posted = [member for member in members if member in active]
+                if not posted:
+                    continue
+                website = next(
+                    (
+                        url
+                        for url in (self._active_advisory_website(member) for member in posted)
+                        if url
+                    ),
+                    None,
+                )
+                for member in members:
+                    if member not in active:
+                        result[member] = website
+        self._cached_beach_wide_advisories = result
+        return result
+
     def _parent_advisory_signal(self, beach_id: str) -> tuple[bool, str | None]:
         """Return (parent_has_active_advisory, parent_advisory_website).
 
@@ -624,25 +663,14 @@ class CuratedBeachRepository(BeachRepository):
         sample different points of one beach and disagree, so a clean reading
         at this exact station is not evidence the beach is clean.
 
-        Parity twin of `serving_repository._parent_advisory_signal`; pinned by
-        `test_repository_parity`. The band is deliberately NOT touched here —
-        only the badge rolls up, so the station keeps showing its own honest
-        modelled result.
+        Parity twin of `serving_repository._parent_advisory_signal`. The band is
+        deliberately NOT touched here — only the badge rolls up, so the station
+        keeps showing its own honest modelled result.
         """
-        if self.parent_beaches_frame.empty:
+        rollup = self._beach_wide_advisory_map()
+        if beach_id not in rollup:
             return False, None
-        active = self._active_advisory_beach_ids()
-        if not active:
-            return False, None
-        for _, row in self.parent_beaches_frame.iterrows():
-            members = [str(member) for member in list(row["member_beach_ids"])]
-            if beach_id not in members:
-                continue
-            for sibling_id in members:
-                if sibling_id != beach_id and sibling_id in active:
-                    return True, self._active_advisory_website(sibling_id)
-            return False, None
-        return False, None
+        return True, rollup[beach_id]
 
     def _active_advisory_website(self, beach_id: str) -> str | None:
         active = filter_currently_active(self.advisories_frame)

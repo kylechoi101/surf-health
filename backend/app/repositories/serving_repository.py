@@ -305,21 +305,40 @@ class ServingSnapshotRepository(BeachRepository):
                 result[bid] = members
         return result
 
-    def _parent_advisory_signal(self, beach_id: str, active_set: set[str], website_map: dict[str, str | None]) -> tuple[bool, str | None]:
+    @cache
+    def _beach_wide_advisory_map(self) -> dict[str, str | None]:
+        """station beach_id -> the posted sibling's advisory URL, for every
+        station that is NOT itself posted but shares a parent with one.
+
+        The county and the city sometimes sample different points of one beach
+        and disagree, so a clean reading at one station is not evidence the
+        beach is clean; these stations carry a beach-wide advisory badge.
+
+        Cached and built in one pass because /beaches renders ~850 stations —
+        resolving this per row would re-run the two advisory queries 1700
+        times per request.
+        """
+        active = self._active_advisory_beach_ids()
+        if not active:
+            return {}
+        websites = self._active_advisory_websites()
+        result: dict[str, str | None] = {}
+        for beach_id, members in self._station_to_parent_members().items():
+            if beach_id in active:
+                continue  # already renders its own advisory
+            for sibling_id in members:
+                if sibling_id != beach_id and sibling_id in active:
+                    result[beach_id] = websites.get(sibling_id)
+                    break
+        return result
+
+    def _parent_advisory_signal(self, beach_id: str) -> tuple[bool, str | None]:
         """Return (parent_has_active_advisory, parent_advisory_website) for
-        a station that does NOT have its own active advisory. Looks at
-        every sibling under the same parent; if any sibling is under an
-        active advisory, return True + that sibling's URL (so the UI can
-        link to the same county source the parent card uses)."""
-        siblings = self._station_to_parent_members().get(beach_id, ())
-        if not siblings:
+        a station that does NOT have its own active advisory."""
+        rollup = self._beach_wide_advisory_map()
+        if beach_id not in rollup:
             return False, None
-        for sibling_id in siblings:
-            if sibling_id == beach_id:
-                continue
-            if sibling_id in active_set:
-                return True, website_map.get(sibling_id)
-        return False, None
+        return True, rollup[beach_id]
 
     def _beach_geometry_population(self) -> list[tuple[str, float, float]]:
         """Flat list of (beach_id, lat, lon) for shore-normal SVD search.
@@ -372,6 +391,7 @@ class ServingSnapshotRepository(BeachRepository):
             beach_name = cleaned or None
         station_code_raw = _row_get(row, "station_code")
         station_code = str(station_code_raw).strip() or None if station_code_raw is not None else None
+        parent_has_advisory, parent_advisory_url = self._parent_advisory_signal(beach_id)
         return BeachSummary(
             id=beach_id,
             name=parent_name or friendly,
@@ -388,6 +408,8 @@ class ServingSnapshotRepository(BeachRepository):
                 longitude=float(row["longitude"]),
             ),
             shore_normal_deg=self._shore_normal_for(beach_id, row),
+            parent_has_active_advisory=parent_has_advisory,
+            parent_advisory_website=parent_advisory_url,
         )
 
     def _shore_normal_for(self, beach_id: str, row: sqlite3.Row) -> float | None:
@@ -649,9 +671,7 @@ class ServingSnapshotRepository(BeachRepository):
             advisory_website = website_map.get(beach_id)
         else:
             drivers = base_drivers
-            parent_has_advisory, parent_advisory_url = self._parent_advisory_signal(
-                beach_id, active_set, website_map
-            )
+            parent_has_advisory, parent_advisory_url = self._parent_advisory_signal(beach_id)
 
         return ForecastRecord(
             beach_id=beach_id,

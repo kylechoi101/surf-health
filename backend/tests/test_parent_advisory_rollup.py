@@ -205,6 +205,44 @@ class TestBeachWideRollup:
         assert repo.get_forecast(OTHER, date_of(FORECAST_DATE)).parent_has_active_advisory is False
 
 
+class TestRollupOnTheBeachRoster:
+    """The badge must also ride on BeachSummary, not only on ForecastRecord.
+
+    Measured on the 2026-09-09 snapshot, 6 of the 14 rolled-up stations have no
+    forecast row at all (the forecast endpoint 404s for them), so a
+    forecast-only signal would silently drop the warning on nearly half of the
+    stations this feature exists to warn about.
+    """
+
+    def test_clean_sibling_carries_the_rollup_on_the_beach_record(self, repo_factory):
+        repo = repo_factory([_advisory(POSTED, days_ago=2)])
+        beach = repo.get_beach(CLEAN)
+        assert beach.parent_has_active_advisory is True
+        assert beach.parent_advisory_website == "https://sdbeachinfo.com"
+
+    def test_posted_and_unrelated_stations_do_not_carry_it(self, repo_factory):
+        repo = repo_factory([_advisory(POSTED, days_ago=2)])
+        assert repo.get_beach(POSTED).parent_has_active_advisory is False
+        assert repo.get_beach(OTHER).parent_has_active_advisory is False
+
+    def test_list_beaches_agrees_with_get_beach(self, repo_factory):
+        """list_beaches builds the rollup from a memoised one-pass map while
+        get_beach resolves a single station; they must not diverge."""
+        repo = repo_factory([_advisory(POSTED, days_ago=2)])
+        listed = {b.id: b for b in repo.list_beaches()}
+        for bid in (POSTED, CLEAN, OTHER):
+            assert (
+                listed[bid].parent_has_active_advisory
+                == repo.get_beach(bid).parent_has_active_advisory
+            ), bid
+        assert listed[CLEAN].parent_has_active_advisory is True
+
+    def test_a_lifted_posting_clears_the_roster_rollup(self, repo_factory):
+        lifted = (datetime.now(UTC).replace(tzinfo=None) - timedelta(hours=6)).isoformat()
+        repo = repo_factory([_advisory(POSTED, days_ago=2, ended_at=lifted)])
+        assert repo.get_beach(CLEAN).parent_has_active_advisory is False
+
+
 class TestAdvisoryWindow:
     def test_window_is_one_week(self):
         assert ADVISORY_MAX_AGE_DAYS == 7
