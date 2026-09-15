@@ -8,15 +8,18 @@ UX (e.g., spec I: naming the specific flagged station on the map chip).
 Tracks three classes of silent failure surfaced in the 2026-05-21 debate:
   (G.1) Name-resolution drops      → `unresolved_advisories.parquet` non-empty
   (G.2) Zombie active advisories  → audit script finds rows with age > 30d
-  (G.4) Workflow execution failure → daily-forecast didn't succeed today
+  (G.4) Workflow execution failure → the daily-forecast run that triggered
+        this check did not succeed, or a UTC day passed with no check at all
 
 If ANY alarm trips, `consecutive_clean_days` resets to 0. Otherwise it
 increments. When it reaches 14, `ready_for_station_naming_spec_i = true`
 and the safety gate for the next UX iteration is satisfied.
 
-This script is intended to run from a scheduled GHA workflow
-(.github/workflows/scraper-health.yml) one hour after the daily-forecast
-cron, then commit the updated JSON back to main.
+This script runs from .github/workflows/scraper-health.yml when a
+daily-forecast run COMPLETES (workflow_run), receives that run's conclusion via
+--forecast-conclusion, then commits the updated JSON back to main. It used to
+run on a fixed cron, which fired while the (late-starting) forecast was still
+running and graded the previous day's data.
 
 Exit code is always 0 so the workflow itself never fails — alarms are
 SIGNALED via the JSON file (and downstream pre-flight checks before any
@@ -28,7 +31,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 try:
@@ -46,10 +49,6 @@ ZOMBIE_AGE_DAYS_MAX = 30
 
 def _today_utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
-
-def _now_utc_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def check_unresolved(curated_dir: Path) -> tuple[bool, str | None]:
@@ -146,21 +145,51 @@ def check_daily_forecast_freshness(curated_dir: Path) -> tuple[bool, str | None]
     return True, None
 
 
-def main() -> int:
-    p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--curated", type=Path, default=Path("data/curated"),
-                   help="path to data/curated/ dir")
-    p.add_argument("--out", type=Path, default=None,
-                   help="output path (default: <curated>/scraper_health.json)")
-    args = p.parse_args()
+def check_forecast_conclusion(conclusion: str | None) -> tuple[bool, str | None]:
+    """G.4 — the daily-forecast run that triggered this check succeeded.
 
-    curated_dir: Path = args.curated.resolve()
-    if not curated_dir.exists():
-        print(f"error: curated dir not found: {curated_dir}", file=sys.stderr)
-        return 2
-    out_path: Path = args.out or (curated_dir / "scraper_health.json")
+    The freshness proxy above cannot see a same-day failure: a failed run leaves
+    yesterday's ~24h-old stamp, well inside 36h. Now that this check runs after
+    EVERY completed forecast, a failed day would otherwise grade whatever data is
+    on main and count as clean. Empty/None means a manual dispatch with no
+    triggering forecast, so there is nothing to grade.
+    """
+    if not conclusion or conclusion == "success":
+        return True, None
+    return False, f"triggering daily-forecast run conclusion={conclusion}"
 
-    # Run all three checks; collect alarms.
+
+def check_missed_days(prior_last_check_date: str, today: str) -> tuple[bool, str | None]:
+    """A UTC day with no check breaks the streak.
+
+    The check only runs when a forecast completes, so a day the forecast never
+    fired produces no check at all; without this the counter would silently
+    bridge the gap and still call itself "consecutive".
+    """
+    if not prior_last_check_date:
+        return True, None
+    try:
+        gap = (date.fromisoformat(today) - date.fromisoformat(prior_last_check_date)).days
+    except ValueError:
+        return True, None
+    if gap > 1:
+        return False, f"last check {prior_last_check_date}, {gap - 1} UTC day(s) with no check"
+    return True, None
+
+
+def evaluate(
+    curated_dir: Path,
+    prior: dict,
+    *,
+    forecast_conclusion: str | None,
+    now: datetime,
+) -> dict:
+    """Run every check against ``curated_dir`` and return the next streak state."""
+    now_utc = now.astimezone(timezone.utc)
+    today = now_utc.strftime("%Y-%m-%d")
+    now_iso = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    prior_last_check_date = (prior.get("last_checked_utc") or "")[:10]
+
     alarms: list[str] = []
     for label, fn in [
         ("unresolved_drops", check_unresolved),
@@ -170,21 +199,17 @@ def main() -> int:
         ok, reason = fn(curated_dir)
         if not ok and reason:
             alarms.append(f"{label}: {reason}")
+    for label, (ok, reason) in [
+        ("daily_forecast", check_forecast_conclusion(forecast_conclusion)),
+        ("missed_check", check_missed_days(prior_last_check_date, today)),
+    ]:
+        if not ok and reason:
+            alarms.append(f"{label}: {reason}")
 
-    # Load prior state to compute streak.
-    prior = {}
-    if out_path.exists():
-        try:
-            prior = json.loads(out_path.read_text())
-        except Exception:  # noqa: BLE001
-            prior = {}
     prior_streak = int(prior.get("consecutive_clean_days", 0) or 0)
-    today = _today_utc()
-    prior_last_check_date = (prior.get("last_checked_utc") or "")[:10]
-
     if alarms:
         new_streak = 0
-        last_alarm_at = _now_utc_iso()
+        last_alarm_at = now_iso
     else:
         # Only increment once per UTC day, so re-running the script same day
         # doesn't double-count.
@@ -194,8 +219,8 @@ def main() -> int:
             new_streak = prior_streak + 1
         last_alarm_at = prior.get("last_alarm_at")
 
-    state = {
-        "last_checked_utc": _now_utc_iso(),
+    return {
+        "last_checked_utc": now_iso,
         "alarms_today": alarms,
         "consecutive_clean_days": new_streak,
         "streak_target_days": STREAK_TARGET_DAYS,
@@ -209,6 +234,38 @@ def main() -> int:
             "specific UX (spec I: name the flagged station on map chips)."
         ),
     }
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--curated", type=Path, default=Path("data/curated"),
+                   help="path to data/curated/ dir")
+    p.add_argument("--out", type=Path, default=None,
+                   help="output path (default: <curated>/scraper_health.json)")
+    p.add_argument("--forecast-conclusion", default=None,
+                   help="conclusion of the daily-forecast run that triggered this check "
+                        "(success/failure/cancelled/...); omit or pass empty for a manual run")
+    args = p.parse_args()
+
+    curated_dir: Path = args.curated.resolve()
+    if not curated_dir.exists():
+        print(f"error: curated dir not found: {curated_dir}", file=sys.stderr)
+        return 2
+    out_path: Path = args.out or (curated_dir / "scraper_health.json")
+
+    prior = {}
+    if out_path.exists():
+        try:
+            prior = json.loads(out_path.read_text())
+        except Exception:  # noqa: BLE001
+            prior = {}
+
+    state = evaluate(
+        curated_dir,
+        prior,
+        forecast_conclusion=args.forecast_conclusion,
+        now=datetime.now(timezone.utc),
+    )
     out_path.write_text(json.dumps(state, indent=2) + "\n")
     print(json.dumps(state, indent=2))
     return 0
