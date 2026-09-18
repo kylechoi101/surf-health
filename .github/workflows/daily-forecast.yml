@@ -401,6 +401,56 @@ jobs:
         run: python scripts/verify_deploy.py --curated ../data/curated/
         working-directory: backend
 
+      - name: Publish the web bake (repository_dispatch to shorelife-web)
+        # The public site is a STATIC EXPORT: shorelife-web bakes
+        # forecast_generated_at into the HTML at build time, and
+        # components/ForecastFreshness.tsx ages that stamp in the BROWSER
+        # against a 24 h threshold (lib/freshness.ts FRESH_MAX_AGE_HOURS). So
+        # the site's "updated" stamp only moves when that repo rebuilds — and it
+        # used to rebuild on a bare `0 19 * * *` cron, independent of this job.
+        #
+        # A 24 h threshold on a 24 h bake cadence leaves ZERO margin, and both
+        # crons drift hard under GitHub's scheduler (2026-09-18: this workflow
+        # fired 2 h 50 m late, the web deploy 2 h 34 m late). So the site crossed
+        # 24 h and showed the amber "Forecast may be outdated — updated 25 hours
+        # ago" banner EVERY day, for 41 min to 2 h 35 m, in the gap between this
+        # job stamping the data and the web cron getting around to baking it.
+        # Nothing was failing — the bake was late by construction.
+        #
+        # Firing it from here removes the drift: the web rebuilds when the data
+        # actually lands. shorelife-web keeps its cron as a fallback, and its own
+        # "Wait for today's backend data" gate still blocks on the committed
+        # pipeline_freshness, so a spurious dispatch can never publish a stale
+        # bake — this only ever makes the bake EARLIER, never less correct.
+        #
+        # Placed AFTER the Render verify so the static bake and the API it calls
+        # ship the same snapshot, and BEFORE the scraper gate so a soft trip
+        # still reaches users (same reasoning as the Render step above).
+        #
+        # Needs a PAT: the daily data commit is pushed with GITHUB_TOKEN, which
+        # by design triggers no workflows, and this targets a DIFFERENT (private)
+        # repo that GITHUB_TOKEN cannot reach at all. Absent secret = warn and
+        # fall back to the cron, never fail the run (mirrors RENDER_DEPLOY_HOOK).
+        if: success()
+        env:
+          WEB_DEPLOY_DISPATCH_TOKEN: ${{ secrets.WEB_DEPLOY_DISPATCH_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${WEB_DEPLOY_DISPATCH_TOKEN:-}" ]; then
+            echo "::warning::WEB_DEPLOY_DISPATCH_TOKEN not set - skipping web bake dispatch. shorelife-web will fall back to its daily cron, so the site may show a >24h stamp until then."
+            exit 0
+          fi
+          FRESH="$(python3 -c 'import json; print(json.load(open("data/curated/system_health.json"))["pipeline_freshness"])')"
+          PAYLOAD="$(FRESH="$FRESH" python3 -c 'import json, os; print(json.dumps({"event_type": "backend-data-published", "client_payload": {"pipeline_freshness": os.environ["FRESH"], "commit": os.environ.get("GITHUB_SHA", "")}}))')"
+          echo "Dispatching web bake for pipeline_freshness=$FRESH"
+          curl -fsSL -X POST \
+            -H 'Accept: application/vnd.github+json' \
+            -H "Authorization: Bearer $WEB_DEPLOY_DISPATCH_TOKEN" \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            https://api.github.com/repos/kylechoi101/shorelife-web/dispatches \
+            -d "$PAYLOAD"
+          echo "Web bake dispatched."
+
       - name: Verify scraper observability gate (fail the job if advisories were dropped)
         # LAST step in the job, and that placement is load-bearing. Like the
         # release gate, this must run after the commit/push so the verdict and

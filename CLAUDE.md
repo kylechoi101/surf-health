@@ -858,6 +858,40 @@ single-point-of-failure that `data/curated/` is baked into the image at build ti
   also re-confirms the ~1-2 min healthy-build figure the 5-minute stall window is calibrated
   against.
 
+**A "N hours ago" on the website is the WEB BAKE, not the backend (2026-09-18).** Reported as
+"I think it ran, but website says 25 hours ago" on a day when *everything* was green: daily run
+#295 committed `f65bb3d` with `pipeline_freshness 2026-09-18T20:08:20Z`, and `verify_deploy`
+confirmed Render serving it **90 s later**. The backend was fine. The stamp users see is baked
+into shorelife-web's **static export** (`lib/curated.ts::latestForecastGeneratedAt`, explicitly a
+build-time signal) and then aged **in the browser** by `components/ForecastFreshness.tsx` against
+`lib/freshness.ts::FRESH_MAX_AGE_HOURS = 24`. So it only moves when the *web* rebuilds.
+
+- **A 24 h threshold on a 24 h bake cadence has zero margin, so the amber "Forecast may be
+  outdated" banner fired EVERY day** in the gap between the backend stamping the data (~20:30 UTC)
+  and the web cron baking it (~21:30–22:30 UTC). Measured from the run history: **09-13 2 h 01,
+  09-14 2 h 35, 09-15 0 h 41, 09-16 1 h 22, 09-17 1 h 24, 09-18 1 h 00**. The reported "25 hours"
+  is exactly `2026-09-17T20:36:43Z` + 24.9 h — yesterday's stamp, one hour before that day's bake.
+- **Both crons drift hard under GitHub's scheduler**, which is what widens the window: on 2026-09-18
+  daily-forecast's `0 16 * * *` fired at **18:50 (2 h 50 m late)** and the web's `0 19 * * *` at
+  **21:34 (2 h 34 m late)**. Padding either cron cannot fix this — the same lesson as the
+  `'30 17 * * *'` race the web gate already exists for.
+- **Fix: the backend now fires the bake** — a `repository_dispatch` (`backend-data-published`) to
+  shorelife-web from daily-forecast, placed after the Render verify (so the static bake and the API
+  it calls ship the same snapshot) and before the scraper gate (so a soft trip still reaches users).
+  The web cron stays as a **fallback**, and shorelife-web's "Wait for today's backend data" gate
+  still blocks on the committed `pipeline_freshness`, so a spurious dispatch can only make the bake
+  **earlier, never staler**.
+- ⚠️ **Needs `WEB_DEPLOY_DISPATCH_TOKEN`** (a PAT with dispatch/actions write on the PRIVATE
+  shorelife-web) as a repo secret on surf-health. `GITHUB_TOKEN` cannot do this twice over: the
+  daily data commit is pushed with it and **pushes made with `GITHUB_TOKEN` trigger no workflows**,
+  and it has no access to a different repo at all. **Absent secret = `::warning::` + exit 0**, and
+  the cron fallback still publishes — the daily run never fails over this.
+- **This is a cosmetic-banner bug, not a data bug.** The bands and probabilities on the page were
+  yesterday's, which is what a once-daily bake means; nothing was stale beyond its own cadence.
+  Before chasing Render or the pipeline for a "N hours ago" report, check the **gh-pages bake time**
+  (`git show origin/gh-pages:data/beaches.json`) against `pipeline_freshness` — they are different
+  clocks with different failure modes.
+
 **Daily spatial backtest folds — 6 counties / 15 beaches** (`--spatial-county-limit 6
 --spatial-beach-limit 15`, commit `153f1368a`, 2026-06-10). The full 12-county / 50-beach
 sweep at 1095d (~84k rows, ~60 retrains) overran the ML budget and timed the whole job out
