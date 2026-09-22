@@ -2,7 +2,7 @@
 task: lookup-baseline
 worker: gemini
 created: 2026-09-22
-status: open
+status: done
 ---
 
 ## Goal
@@ -128,3 +128,40 @@ pass.
 ## Corrections
 
 (appended by the PM; newest last; each entry dated)
+
+### 2026-09-22 (phase 50, PM spec error)
+The `advisory_active` rule in scope is wrong for this data: 207 rows with
+`status == "historical"` have a null `ended_at`, so "ended_at null ⇒ still
+open" marks 139 beaches Posted on 2026-09-22 when `advisories.parquet` has
+only 24 rows with `status == "active"` (23 beaches). Replace the rule with:
+
+  active on D  ⇔  started_at <= D  AND  (
+                    (ended_at not null AND ended_at >= D)
+                    OR (ended_at null AND status == "active") )
+
+Apply the same rule in both forecast mode and backtest mode. Update the
+test for `advisory_active` so a row with null `ended_at` and
+`status == "historical"` is NOT active, and one with null `ended_at` and
+`status == "active"` IS. Expected on 2026-09-22: `advisory_active` true for
+about 23 beaches. Also add `n_365d` (sample count in the window) to the
+forecast parquet; it is needed to read `rate_365d` honestly.
+
+### 2026-09-22 (phase 75, per-beach section misleads)
+`backtest.md`'s "Per-Beach Evaluation Summary" declares "ML wins 111 / Lookup
+wins 52" by per-beach AUROC. That comparison is not meaningful: within one
+beach the lookup is nearly constant by construction (a 365-day rate barely
+moves day to day), so its per-beach AUROC measures window drift, not skill.
+Replace that section with:
+
+1. A sentence stating that the lookup makes NO within-beach claim; it only
+   ranks beaches against each other.
+2. The ML's within-beach AUROC on its own: mean and median across the
+   qualifying beaches, and the count of beaches with AUROC > 0.5 vs ≤ 0.5.
+   (Expected: mean near 0.45–0.50, i.e. the ML's day-to-day movement within
+   a beach carries no information on this window.)
+3. As the within-beach baseline, use PERSISTENCE (`last_sample_exceeds` as
+   the score) — same mean/median/count — not the lookup.
+4. Keep `backtest_by_beach.csv` but rename its columns so nothing is called
+   "winner": `auroc_ml`, `auroc_persistence`, `n`, `positives`.
+Also, in `comparison_<D>.md`, label the last-sample column "Last Sample
+Value (MPN or copies/100ml)" — ddPCR beaches report copies, not MPN.
