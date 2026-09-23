@@ -32,3 +32,9 @@ near-constant predictor within-beach; replaced with ML vs persistence.
 **Corrections.** In serve-lookup phase 25 the worker exited mid-suite with no report; it was retried with foreground-only tests. In web phase 75 the PM fixed two phrases, and at 100 reworded two lines outside the allowed files.
 
 **Tokens (Gemini).** serve-lookup 3094614, web-lookup-copy 4228994.
+
+## 2026-09-22 (late) — lookup live; advisory-floor ordering fix (PR 39)
+
+**Live.** Daily run 35803491578 committed and deployed the lookup: 380 beaches, all `lookup-365d-v1`. The Render deploy was verified. Web Pages was re-deployed (run 35809353797): all 380 baked beaches carry lab-test drivers and no ML drivers. The mobile OTA was published by the CEO from `465cf9b`.
+
+**Bug found after going live.** The lookup step ran before G.2 zombie-advisory expiry. It floored 81 beaches to High, but only 18 were still posted after G.2. Users were unaffected, because the API and the bake re-derive the band from `p_exceed_raw` and live advisories (8 of 8 sampled correct). The stored `risk_band` and today's history rows were inflated. PR 39 re-runs the idempotent lookup after G.2, and a test pins the order. Its merge started daily run 35809660033, which re-issues today's forecast.
