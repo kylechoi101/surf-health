@@ -554,8 +554,7 @@ deployment eval (known beaches, future dates, anchor censored to serving age) se
   holdout artifacts now carry `beach_id`+`lag`. Within-beach AUROC (not global AUCPR) is the
   primary metric — global AUCPR is blind to daily skill (it stayed ~0.65 while served within-beach
   was ~0.50).
-- **Status: LIVE.** Merged in `00612cae` and serving since ~2026-07-22. The daily Action needed no
-  YAML change (already `--winner-only`).
+- **Status: SUPERSEDED.** Merged in `00612cae` and served 2026-07-22..2026-09-22; superseded by the per-beach lookup below. The ML models still train and run as before.
   - **⚠️ The "fresh 0 / blended 0 / stale 297" once written here was wrong — the offset model does
     NOT serve every beach.** No shipped run reproduces it. The 2026-07-30 daily run reports
     **fresh 183 / blended 8 / stale 329**. Read the live `system_health.json`, never this prose.
@@ -592,6 +591,12 @@ deployment eval (known beaches, future dates, anchor censored to serving age) se
   positive), and the outer bagging loop around XGBoost is worth only ~+0.02 AUCPR (most of the
   benefit is the class rebalancing, not the averaging). Scripts left in the session scratchpad, not
   committed. Do not re-litigate without a daily-cadence evaluation (below).
+
+### Served estimate: per-beach lookup (2026-09-22)
+
+The probability the product serves is the per-beach empirical lookup estimate (`backend/app/ml/lookup_serving.py`), overwriting the ML predictions right after training. Over trailing window `D-365d <= sample_date < D`, `p_lookup = (pos + 5*g) / (n + 5)` where `g` is the pooled statewide exceedance mean, with a persistence floor `max(p_lookup, 0.20)` if the last sample exceeded, a Beta(pos + 5*g, n - pos + 5*(1-g)) credible interval, and an export-time advisory floor to 0.30 for active postings (`started_at <= D`).
+
+The ML pipeline still trains and runs as before; its probability is preserved as `p_exceed_ml` (in `forecasts.parquet` and `forecast_history.parquet`) and its band as `risk_band_ml` (`forecasts.parquet` only). Pre-2026-09-22 history rows have `p_exceed_ml == p_exceed` because the ML was what served. The change was made because the lookup beat the served ML on forward 1–3 day lab outcomes on the served log (90d AUROC 0.878 vs 0.824, AUCPR 0.580 vs 0.395, Brier 0.060 vs 0.071) and produces four well-separated bands at existing cutpoints (realized Low 0.033 / Moderate 0.114 / High 0.354 / Very High 0.818).
 
 ### The measurement gap: daily product, weekly labels (2026-07-28)
 

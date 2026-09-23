@@ -63,8 +63,9 @@ _HISTORY_COLUMNS = [
     # even on rows the offset model produced.
     "served_offset_weight",
     "forecast_generated_at",
+    "p_exceed_ml",
 ]
-_PROBABILITY_COLUMNS = ("p_exceed", "p_exceed_raw", "p_exceed_precal")
+_PROBABILITY_COLUMNS = ("p_exceed", "p_exceed_raw", "p_exceed_precal", "p_exceed_ml")
 
 # Lab results trail the forecast by days. A forecast row is matched to its
 # same-day result when one exists, else the first result in D+1..D+3 — near

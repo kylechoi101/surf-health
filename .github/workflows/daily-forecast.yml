@@ -202,7 +202,11 @@ jobs:
           # forecasts.parquet so the last-validated forecast keeps serving. The
           # blockers still land in system_health.json; the verify_release_gate.py
           # step (after the commit) then fails the job to fire the alert.
-          python -m app.ml.training --curated --forecast-date "$FORECAST_DATE" $WINNER_FLAG $BACKTEST_FLAGS --training-window-days 1095 --forecast-min-recency-days 45 --enforce-release-gate
+          python -m app.ml.training --curated --forecast-date "$FORECAST_DATE" $WINNER_FLAG $BACKTEST_FLAGS --training-window-days 1095 --forecast-min-recency-days 30 --enforce-release-gate
+        working-directory: backend
+
+      - name: Serve the lookup estimate
+        run: python -m app.ml.lookup_serving --curated ../data/curated/
         working-directory: backend
 
       - name: Honor release gate for hourly forecast
