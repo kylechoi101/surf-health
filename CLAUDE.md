@@ -757,8 +757,11 @@ gate's calibration + inner-validation split.
   wind plume transport, point-source proximity) — now actually fed to the model (2026-06-01 fix;
   they were previously computed-but-dropped) and **spatially confirmed** to help (2026-06-02).
   Remaining headroom: per-station models.
-- **Production classifier**: `xgb_undersample_ensemble` — balanced-undersample XGBoost soft-ensemble.
-  Trained on the **1095-day window** (2026-06-08) where it beats hist_gbm on held-out counties and
+- **Served estimate (since 2026-09-22)**: the per-beach 365-day lookup (`app/ml/lookup_serving.py`), see
+  "Served estimate: per-beach lookup" above. The ML below still trains daily as a challenger and is kept
+  as `p_exceed_ml`; it does not set the served number.
+- **ML challenger (was the production classifier until 2026-09-22)**: `xgb_undersample_ensemble` —
+  balanced-undersample XGBoost soft-ensemble. Trained on the **1095-day window** (2026-06-08) where it beats hist_gbm on held-out counties and
   beaches. **Shipped held-out metrics are REGENERATED EVERY DAILY RUN — read
   `data/curated/system_health.json` for the live values; the figures below are a dated snapshot that
   WILL drift** (6-county / 15-beach folds → noisy pooled AUCPR). **Snapshot, daily run `c64a0b5da`
