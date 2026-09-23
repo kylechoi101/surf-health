@@ -3,7 +3,7 @@ task: serve-lookup
 repo: /Users/kylechoi/surf_health-lookup
 worker: gemini
 created: 2026-09-22
-status: open
+status: done
 ---
 
 ## Goal
@@ -175,3 +175,11 @@ Acceptance commands pass.
 ## Corrections
 
 (appended by the PM; newest last; each entry dated)
+
+### 2026-09-22 (phase 25, blocked: exit 2, no report)
+The session ended while the FULL backend test suite ran as a background task,
+so no report was written. For phases 25–75 run ONLY
+`tests/test_lookup_serving.py` (foreground). Run the full suite only in
+phase 100, in the foreground, with `-x -q`. Always write `reports/<phase>.md`
+before finishing. Keep the existing `lookup_serving.py` and test file; verify
+and continue from them.

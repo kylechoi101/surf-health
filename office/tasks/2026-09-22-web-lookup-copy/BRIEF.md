@@ -3,7 +3,7 @@ task: web-lookup-copy
 repo: /Users/kylechoi/shorelife-web-lookup
 worker: gemini
 created: 2026-09-22
-status: open
+status: done
 ---
 
 ## Goal
