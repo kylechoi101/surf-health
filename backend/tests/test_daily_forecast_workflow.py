@@ -34,3 +34,22 @@ def test_scraper_gate_is_verified_after_the_commit_and_the_deploy():
     assert verify_index != -1, "the daily workflow must verify the scraper gate"
     assert commit_index < verify_index
     assert deploy_index < verify_index
+
+
+def test_lookup_estimate_is_reapplied_after_advisory_expiry_and_before_the_snapshot():
+    """The served advisory floor must reflect advisories AFTER G.2 demotes zombies.
+
+    On 2026-09-22 the only lookup step ran before G.2, flooring 81 beaches to High
+    of which only 18 were still posted once G.2 ran. The last lookup invocation
+    must sit after G.2 and before the serving snapshot and the commit.
+    """
+    text = WORKFLOW.read_text()
+
+    expire_index = text.find("scripts/auto_expire_advisories.py")
+    last_lookup_index = text.rfind("app.ml.lookup_serving")
+    snapshot_index = text.find("app.data.pipeline.serving_snapshot")
+    commit_index = text.find("chore: daily forecast refresh")
+
+    assert expire_index != -1 and last_lookup_index != -1
+    assert snapshot_index != -1 and commit_index != -1
+    assert expire_index < last_lookup_index < snapshot_index < commit_index

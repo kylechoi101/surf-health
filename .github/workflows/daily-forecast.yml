@@ -257,6 +257,16 @@ jobs:
             --advisories ../data/curated/advisories.parquet
         working-directory: backend
 
+      - name: Re-apply the lookup estimate after advisory expiry
+        # The lookup step above runs before G.2, so it floors beaches whose
+        # "active" postings G.2 then demotes as zombies (2026-09-22: 81 floored,
+        # only 18 still posted after G.2). lookup_serving is idempotent and keeps
+        # p_exceed_ml, so re-running it here only corrects the advisory floor in
+        # forecasts.parquet and today's forecast_history rows. The API and web
+        # bake already re-derive the band from live advisory state.
+        run: python -m app.ml.lookup_serving --curated ../data/curated/
+        working-directory: backend
+
       - name: Audit forecasts vs advisories
         run: |
           python scripts/audit_forecasts_vs_advisories.py \
