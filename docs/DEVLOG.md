@@ -58,4 +58,4 @@ The tests for each were mutation-checked. Backend suite: 709 passed.
 
 **Caveat.** At the Low cutoff it misses about as many exceedances as the lookup, with ~23% fewer false alarms. It is slightly overconfident at the extremes on forward days.
 
-**Not in this change.** Mobile copy was not checked: the app (`465cf9b`, feat/dual-mode) is not in this session's repositories. Its lab-track-record wording likely needs the same edit as web, which described the rating as not reacting to rain.
+**Apps.** Web copy: kylechoi101/shorelife-web#14. Mobile copy: kylechoi101/shorelife-mobile#1, against `feat/dual-mode`, which is where `465cf9b` and the live OTA are. Both change the band rates to the served model's 4 / 19 / 37 / 87%, and both should merge after this backend change has served a day.
