@@ -38,3 +38,24 @@ near-constant predictor within-beach; replaced with ML vs persistence.
 **Live.** Daily run 35803491578 committed and deployed the lookup: 380 beaches, all `lookup-365d-v1`. The Render deploy was verified. Web Pages was re-deployed (run 35809353797): all 380 baked beaches carry lab-test drivers and no ML drivers. The mobile OTA was published by the CEO from `465cf9b`.
 
 **Bug found after going live.** The lookup step ran before G.2 zombie-advisory expiry. It floored 81 beaches to High, but only 18 were still posted after G.2. Users were unaffected, because the API and the bake re-derive the band from `p_exceed_raw` and live advisories (8 of 8 sampled correct). The stored `risk_band` and today's history rows were inflated. PR 39 re-runs the idempotent lookup after G.2, and a test pins the order. Its merge started daily run 35809660033, which re-issues today's forecast.
+
+## 2026-09-28 — serve the logistic model on top of the lookup
+
+**Shipped (branch `claude/gifted-faraday-w20l4z`, not yet merged).** Yesterday's shadow challenger (`e238b21`, `app/ml/logit_challenger.py`) now sets the served number. `lookup_serving` computes the lookup, fits `logit(p) = logit(lookup) + b0 + b1·R + b2·R·F + b3·W + b4·S` on 4 years of sample-days before D, and serves it through the same persistence and advisory floors. The lookup is kept as `p_exceed_lookup` in `forecasts.parquet` and `forecast_history.parquet`. Model version: `logit-lookup-offset-v1`.
+
+**Safety.** If the model cannot be served (missing artifact or ratio column, under 20k training rows, a coefficient outside ±3, rain rows for D on under 90% of beaches, or the model's lookup term drifting from `compute_lookup`), the step serves the plain lookup and records why. `scripts/verify_served_estimate.py` then fails the job after the commit and deploy, so the fallback ships and still raises a `pipeline-failure` issue. Rollback without a code change: set the repository variable `SHORELIFE_SERVED_ESTIMATE=lookup`.
+
+**Evidence.** Walk-forward backtest, forward D+1..3 (2025-09..2026-09): AUROC 0.827 → 0.851, AUCPR 0.548 → 0.591, Brier 0.0803 → 0.0766, within-beach AUROC 0.45 → 0.64. The beach-cluster bootstrap CIs exclude 0. Dry run on the 2026-09-27 data: 374 beaches, 116,613 training rows, 100% rain coverage, about 9 s per run, idempotent across both runs. `validate_forecast` passes, anomaly checks included. Mean p went 0.135 → 0.097. Bands vs the served lookup: 24 Moderate→Low, 12 High→Moderate, 3 High→Low, 2 Very High→High, none up (a dry day).
+
+**Review corrections.**
+- Drivers were computed before the floors: 8 posted beaches at the High floor read "below this beach's 12-month record". They are now computed on the served number, and the line is dropped on posted beaches.
+- A dead rain feed would have scored every beach as dry. It now falls back to the lookup.
+- "Recent" was applied to old exceedances.
+- A fallback to the lookup was silent.
+- The interval was shifted from the floored bound instead of the Beta quantile.
+
+The tests for each were mutation-checked. Backend suite: 709 passed.
+
+**Caveat.** At the Low cutoff it misses about as many exceedances as the lookup, with ~23% fewer false alarms. It is slightly overconfident at the extremes on forward days.
+
+**Apps.** Web copy: kylechoi101/shorelife-web#14. Mobile copy: kylechoi101/shorelife-mobile#1, against `feat/dual-mode`, which is where `465cf9b` and the live OTA are. Both change the band rates to the served model's 4 / 19 / 37 / 87%, and both should merge after this backend change has served a day.

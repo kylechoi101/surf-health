@@ -205,7 +205,15 @@ jobs:
           python -m app.ml.training --curated --forecast-date "$FORECAST_DATE" $WINNER_FLAG $BACKTEST_FLAGS --training-window-days 1095 --forecast-min-recency-days 30 --enforce-release-gate
         working-directory: backend
 
-      - name: Serve the lookup estimate
+      - name: Serve the per-beach estimate
+        # Since 2026-09-28 the served probability is the logistic model on top of
+        # the per-beach lookup (app/ml/logit_challenger.py); lookup_serving falls
+        # back to the plain lookup on its own if the model cannot be fit, and
+        # records why in system_health.json["serving_method"]. Rollback without a
+        # code change: set the repository variable SHORELIFE_SERVED_ESTIMATE to
+        # "lookup".
+        env:
+          SHORELIFE_SERVED_ESTIMATE: ${{ vars.SHORELIFE_SERVED_ESTIMATE || 'logit' }}
         run: python -m app.ml.lookup_serving --curated ../data/curated/
         working-directory: backend
 
@@ -257,13 +265,15 @@ jobs:
             --advisories ../data/curated/advisories.parquet
         working-directory: backend
 
-      - name: Re-apply the lookup estimate after advisory expiry
-        # The lookup step above runs before G.2, so it floors beaches whose
+      - name: Re-apply the per-beach estimate after advisory expiry
+        # The serving step above runs before G.2, so it floors beaches whose
         # "active" postings G.2 then demotes as zombies (2026-09-22: 81 floored,
         # only 18 still posted after G.2). lookup_serving is idempotent and keeps
         # p_exceed_ml, so re-running it here only corrects the advisory floor in
         # forecasts.parquet and today's forecast_history rows. The API and web
         # bake already re-derive the band from live advisory state.
+        env:
+          SHORELIFE_SERVED_ESTIMATE: ${{ vars.SHORELIFE_SERVED_ESTIMATE || 'logit' }}
         run: python -m app.ml.lookup_serving --curated ../data/curated/
         working-directory: backend
 
@@ -413,6 +423,18 @@ jobs:
         env:
           RENDER_DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
         run: python scripts/verify_deploy.py --curated ../data/curated/
+        working-directory: backend
+
+      - name: Verify the served estimate did not silently fall back
+        # lookup_serving serves the plain lookup if the logistic model fails,
+        # so the day's forecast is never lost. That is right for users and wrong
+        # to leave silent; this fails the job (-> pipeline-failure issue) when
+        # "logit" was requested and the lookup served. After the commit and the
+        # deploy for the same reason as the scraper gate below: the fallback
+        # forecast is valid and must ship first. `if: always()` so it still
+        # reports when an earlier step failed.
+        if: always()
+        run: python scripts/verify_served_estimate.py --curated ../data/curated/
         working-directory: backend
 
       - name: Verify scraper observability gate (fail the job if advisories were dropped)

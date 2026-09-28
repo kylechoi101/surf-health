@@ -64,8 +64,12 @@ _HISTORY_COLUMNS = [
     "served_offset_weight",
     "forecast_generated_at",
     "p_exceed_ml",
+    # The plain per-beach lookup, logged beside whatever served (since
+    # 2026-09-28 the logistic model on top of it), so the two stay comparable
+    # on forward outcomes. Null on rows logged before the column existed.
+    "p_exceed_lookup",
 ]
-_PROBABILITY_COLUMNS = ("p_exceed", "p_exceed_raw", "p_exceed_precal", "p_exceed_ml")
+_PROBABILITY_COLUMNS = ("p_exceed", "p_exceed_raw", "p_exceed_precal", "p_exceed_ml", "p_exceed_lookup")
 
 # Lab results trail the forecast by days. A forecast row is matched to its
 # same-day result when one exists, else the first result in D+1..D+3 — near

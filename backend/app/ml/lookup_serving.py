@@ -5,6 +5,7 @@ from datetime import UTC, date, datetime
 import json
 import os
 from pathlib import Path
+import sys
 from typing import Any
 import argparse
 
@@ -13,9 +14,86 @@ import pandas as pd
 from scipy.stats import beta
 
 from app.core.json_safe import dumps_strict
+from app.ml import logit_challenger
 from app.ml.calibration import _LOW_THRESHOLD, advisory_floored_probability, risk_band
 
 LOOKUP_MODEL_VERSION = "lookup-365d-v1"
+
+# What the served number is computed with. "logit" (default since 2026-09-28) is
+# the logistic model on top of the lookup (``logit_challenger``); "lookup" is the
+# plain lookup. The env var is the rollback switch: set it (e.g. as a repository
+# variable the workflow passes through) to "lookup" and the next run serves the
+# lookup with no code change.
+SERVED_ESTIMATE_METHODS = ("logit", "lookup")
+SERVED_ESTIMATE_ENV = "SHORELIFE_SERVED_ESTIMATE"
+# Every version this module writes. A forecasts.parquet already carrying one of
+# these was written by a previous run of this module, so its p_exceed is NOT the
+# ML's and must not be copied into p_exceed_ml (the step runs twice per workflow).
+SERVED_ESTIMATE_VERSIONS = frozenset(
+    {LOOKUP_MODEL_VERSION, logit_challenger.LOGIT_CHALLENGER_VERSION}
+)
+
+# Drivers: the served number is compared with the beach's 12-month record (the
+# lookup) and the difference is called out once it is at least this large on the
+# logit scale (0.2 is ~a 22% change in the odds). A term is named as a reason only
+# when it is that large AND pushes the same way as the net difference, so a driver
+# can never say "raises" beside a number that went down.
+_DRIVER_MIN_LOGIT = 0.2
+_DRIVER_MIN_RAIN_INCHES = 0.1
+
+
+def _departure_driver(
+    shift: float, lab_logit: float, rain_logit: float, season_logit: float,
+    last_log10_ratio: float, rain_inches: float, last_exceeds: bool | None,
+    has_rain_row: bool,
+) -> str | None:
+    """One line saying which way today's estimate sits from the 12-month record, and why.
+
+    Upward reasons are the terms that pushed it up. Downward reasons are
+    conditions, not terms: the model's baseline is a dry day with an ordinary
+    clean result, and the 12-month record averages over rainy and dirty weeks
+    too, so on a dry day after a clean test most beaches sit below their record
+    for exactly that reason and no single coefficient is "the" cause.
+    """
+    if abs(shift) < _DRIVER_MIN_LOGIT:
+        return None
+    reasons: list[str] = []
+    if shift > 0:
+        if lab_logit >= _DRIVER_MIN_LOGIT:
+            if np.isfinite(last_log10_ratio) and last_log10_ratio >= 0:
+                reasons.append("last test above the limit")
+            else:
+                reasons.append("last test close to the limit")
+        if rain_inches >= _DRIVER_MIN_RAIN_INCHES and rain_logit >= _DRIVER_MIN_LOGIT:
+            reasons.append(f"{rain_inches:.1f} in of rain in the past 3 days")
+        if season_logit >= _DRIVER_MIN_LOGIT:
+            reasons.append("the wet season")
+        head = "Today's estimate is above this beach's 12-month record"
+    else:
+        if last_exceeds is False:
+            reasons.append("last test within the limit")
+        if has_rain_row and rain_inches < _DRIVER_MIN_RAIN_INCHES:
+            reasons.append("no rain in the past 3 days")
+        if season_logit <= -_DRIVER_MIN_LOGIT:
+            reasons.append("the dry season")
+        head = "Today's estimate is below this beach's 12-month record"
+    return f"{head}: {', '.join(reasons)}" if reasons else head
+
+
+def _logit(p: float) -> float:
+    p = min(max(p, 1e-6), 1 - 1e-6)
+    return float(np.log(p / (1 - p)))
+
+
+def _expit(x: float) -> float:
+    return float(1.0 / (1.0 + np.exp(-x)))
+
+
+def _resolve_method(method: str | None) -> str:
+    chosen = (method or os.environ.get(SERVED_ESTIMATE_ENV) or "logit").strip().lower()
+    if chosen not in SERVED_ESTIMATE_METHODS:
+        raise ValueError(f"unknown served-estimate method {chosen!r}; expected one of {SERVED_ESTIMATE_METHODS}")
+    return chosen
 
 
 def compute_lookup(
@@ -93,10 +171,10 @@ def compute_lookup(
         if b_param <= 0.0:
             b_param = 1e-6
 
-        p_exceed_lower = float(beta.ppf(0.05, a=a_param, b=b_param))
-        p_exceed_upper = float(beta.ppf(0.95, a=a_param, b=b_param))
-        p_exceed_upper = max(p_exceed_upper, base)
-        p_exceed_lower = min(p_exceed_lower, base)
+        beta_lower = float(beta.ppf(0.05, a=a_param, b=b_param))
+        beta_upper = float(beta.ppf(0.95, a=a_param, b=b_param))
+        p_exceed_upper = max(beta_upper, base)
+        p_exceed_lower = min(beta_lower, base)
 
         rows.append(
             {
@@ -112,14 +190,89 @@ def compute_lookup(
                 "persistence_floor_applied": persistence_floor_applied,
                 "p_exceed_lower": p_exceed_lower,
                 "p_exceed_upper": p_exceed_upper,
+                # The Beta quantiles before they are widened to contain the
+                # (persistence-floored) base; the logistic path shifts these.
+                "beta_lower": beta_lower,
+                "beta_upper": beta_upper,
             }
         )
 
     return pd.DataFrame(rows)
 
 
-def apply_lookup_to_served(curated_dir: Path | str) -> dict[str, Any]:
-    """Apply lookup baseline to served forecast and update downstream artifacts."""
+def posted_beach_ids_for(curated_dir: Path | str, forecast_date) -> set[str]:
+    """Beaches whose advisory floor applies on forecast_date.
+
+    Advisory floor (export time, same rule as today): a beach is posted if
+    advisories.parquet has a row for it with status == "active" and
+    started_at <= D.
+    """
+    advisories_path = Path(curated_dir) / "advisories.parquet"
+    posted_beach_ids: set[str] = set()
+    if advisories_path.exists():
+        advisories = pd.read_parquet(advisories_path)
+        if (
+            not advisories.empty
+            and "status" in advisories.columns
+            and "beach_id" in advisories.columns
+        ):
+            active_adv = advisories[advisories["status"] == "active"]
+            if not active_adv.empty:
+                if "started_at" in active_adv.columns:
+                    started = pd.to_datetime(active_adv["started_at"], errors="coerce")
+                    if started.dt.tz is not None:
+                        started = started.dt.tz_localize(None)
+                    f_date_norm = pd.to_datetime(forecast_date).tz_localize(None).normalize()
+                    active_adv = active_adv[started.dt.normalize() <= f_date_norm]
+                posted_beach_ids = set(active_adv["beach_id"].dropna().unique())
+    return posted_beach_ids
+
+
+def _logit_estimate(
+    curated_path: Path, forecast_date, beach_ids: list[str], lookup_df: pd.DataFrame
+) -> tuple[pd.DataFrame | None, dict[str, Any]]:
+    """The logistic estimate indexed by beach_id, or (None, reason) to serve the lookup.
+
+    Any failure here — a missing artifact, a guard in ``estimate_for_serving``, or
+    the model's lookup term disagreeing with ``compute_lookup`` — falls back to the
+    plain lookup rather than failing the daily run: the lookup is the incumbent and
+    is always computable, so a broken challenger must never cost the day's forecast.
+    """
+    try:
+        est = logit_challenger.estimate_for_serving(curated_path, forecast_date, beach_ids)
+    except Exception as exc:  # noqa: BLE001 — any failure means "serve the lookup"
+        return None, {"fallback_reason": f"{type(exc).__name__}: {exc}"}
+    frame = est.frame.set_index("beach_id")
+    # The model's offset must BE the served lookup, or its departures are measured
+    # from the wrong baseline. Both are computed from the same rows by the same
+    # rule; a disagreement means one of them changed without the other.
+    ours = frame["lookup"].reindex(lookup_df["beach_id"]).to_numpy(float)
+    theirs = lookup_df["p_lookup"].to_numpy(float)
+    if not np.allclose(ours, theirs, rtol=0.0, atol=1e-9):
+        worst = float(np.nanmax(np.abs(ours - theirs)))
+        return None, {"fallback_reason": f"lookup term diverged from compute_lookup (max |diff| {worst:.3g})"}
+    meta = {
+        "coefficients": est.coefficients,
+        "train_rows": est.train_rows,
+        "rain_coverage": est.rain_coverage,
+    }
+    if est.rain_coverage < 0.5:
+        print(
+            f"lookup_serving: WARNING only {est.rain_coverage:.0%} of beaches have a rain row for "
+            f"{forecast_date}; the rest are scored as dry",
+            file=sys.stderr,
+        )
+    return frame, meta
+
+
+def apply_lookup_to_served(curated_dir: Path | str, method: str | None = None) -> dict[str, Any]:
+    """Serve the per-beach estimate: the logistic model on the lookup, else the lookup.
+
+    ``method`` is "logit" or "lookup"; None reads ``SHORELIFE_SERVED_ESTIMATE``
+    and defaults to "logit". The lookup is always computed: it is the logistic
+    model's offset, the fallback, and is kept as ``p_exceed_lookup``.
+    """
+    method = _resolve_method(method)
     curated_path = Path(curated_dir)
     forecasts_path = curated_path / "forecasts.parquet"
     if not forecasts_path.exists():
@@ -129,18 +282,16 @@ def apply_lookup_to_served(curated_dir: Path | str) -> dict[str, Any]:
     if forecasts.empty:
         raise ValueError(f"Empty forecasts file: {forecasts_path}")
 
-    # a. reads forecasts.parquet; if its model_version is NOT already
-    # LOOKUP_MODEL_VERSION, copies p_exceed->p_exceed_ml and
-    # risk_band->risk_band_ml (idempotent: a second run must not
-    # overwrite the ML copies with lookup values)
-    is_already_lookup = (
+    # a. reads forecasts.parquet; unless a previous run of this module already
+    # wrote it, copies p_exceed->p_exceed_ml and risk_band->risk_band_ml
+    # (idempotent: a second run must not overwrite the ML copies with served
+    # values — the workflow runs this step twice, and either run may have served
+    # either method)
+    is_already_served = (
         "model_version" in forecasts.columns
-        and (forecasts["model_version"] == LOOKUP_MODEL_VERSION).all()
+        and forecasts["model_version"].isin(SERVED_ESTIMATE_VERSIONS).all()
     )
-    if not is_already_lookup:
-        forecasts["p_exceed_ml"] = forecasts["p_exceed"].copy()
-        forecasts["risk_band_ml"] = forecasts["risk_band"].copy()
-    elif "p_exceed_ml" not in forecasts.columns:
+    if not is_already_served or "p_exceed_ml" not in forecasts.columns:
         forecasts["p_exceed_ml"] = forecasts["p_exceed"].copy()
         forecasts["risk_band_ml"] = forecasts["risk_band"].copy()
 
@@ -162,30 +313,27 @@ def apply_lookup_to_served(curated_dir: Path | str) -> dict[str, Any]:
     )
     lookup_records = lookup_df.set_index("beach_id").to_dict("index")
 
-    # Advisory floor (export time, same rule as today): a beach is posted if
-    # advisories.parquet has a row for it with status == "active" and
-    # started_at <= D.
-    advisories_path = curated_path / "advisories.parquet"
-    posted_beach_ids: set[str] = set()
-    if advisories_path.exists():
-        advisories = pd.read_parquet(advisories_path)
-        if (
-            not advisories.empty
-            and "status" in advisories.columns
-            and "beach_id" in advisories.columns
-        ):
-            active_adv = advisories[advisories["status"] == "active"]
-            if not active_adv.empty:
-                if "started_at" in active_adv.columns:
-                    started = pd.to_datetime(active_adv["started_at"], errors="coerce")
-                    if started.dt.tz is not None:
-                        started = started.dt.tz_localize(None)
-                    f_date_norm = pd.to_datetime(forecast_date).tz_localize(None).normalize()
-                    active_adv = active_adv[started.dt.normalize() <= f_date_norm]
-                posted_beach_ids = set(active_adv["beach_id"].dropna().unique())
+    logit_frame: pd.DataFrame | None = None
+    logit_meta: dict[str, Any] = {}
+    if method == "logit":
+        logit_frame, logit_meta = _logit_estimate(
+            curated_path, forecast_date, [str(b) for b in beach_ids], lookup_df
+        )
+        if logit_frame is None:
+            print(
+                f"lookup_serving: logistic estimate unavailable, serving the lookup "
+                f"({logit_meta['fallback_reason']})",
+                file=sys.stderr,
+            )
+    served_version = (
+        logit_challenger.LOGIT_CHALLENGER_VERSION if logit_frame is not None else LOOKUP_MODEL_VERSION
+    )
+
+    posted_beach_ids = posted_beach_ids_for(curated_path, forecast_date)
 
     p_exceed_list: list[float] = []
     p_exceed_raw_list: list[float] = []
+    p_exceed_lookup_list: list[float] = []
     p_exceed_lower_list: list[float] = []
     p_exceed_upper_list: list[float] = []
     risk_band_list: list[str] = []
@@ -195,11 +343,47 @@ def apply_lookup_to_served(curated_dir: Path | str) -> dict[str, Any]:
 
     for bid in beach_ids:
         lk = lookup_records[bid]
-        base = float(lk["base"])
-        p_raw = base
+        last_date = lk["last_sample_date"]
+        last_exc = lk["last_exceeds"]
         p_lower = float(lk["p_exceed_lower"])
         p_upper = float(lk["p_exceed_upper"])
-        p_floor = bool(lk["persistence_floor_applied"])
+        terms: dict[str, Any] | None = None
+
+        if logit_frame is None:
+            base = float(lk["base"])
+            p_floor = bool(lk["persistence_floor_applied"])
+        else:
+            row = logit_frame.loc[str(bid)]
+            p_model = float(row["p_model"])
+            # Same product rule as the lookup: a beach whose last test exceeded
+            # is never Low.
+            base = float(
+                logit_challenger.apply_persistence_floor(
+                    np.array([p_model]), np.array([1.0 if last_exc is True else 0.0])
+                )[0]
+            )
+            p_floor = base > p_model
+            # The lookup's Beta interval, carried through the model's departure
+            # from the lookup on the logit scale. It still describes uncertainty
+            # in the beach's rate (n tests), not in the four coefficients, which
+            # are fit on ~117k rows and move by a few hundredths between refits.
+            # Shift the raw quantiles, not the bounds compute_lookup already
+            # widened to contain its own persistence floor.
+            shift = _logit(p_model) - _logit(float(lk["p_lookup"]))
+            p_lower = _expit(_logit(float(lk["beta_lower"])) + shift)
+            p_upper = _expit(_logit(float(lk["beta_upper"])) + shift)
+            terms = {
+                "lab_logit": float(row["lab_logit"]),
+                "rain_logit": float(row["rain_logit"]),
+                "season_logit": float(row["season_logit"]),
+                "last_log10_ratio": float(row["last_log10_ratio"]),
+                "rain_inches": float(row["rain_inches_72h"]),
+                "last_exceeds": last_exc,
+                "has_rain_row": bool(row["has_rain_row"]),
+            }
+        p_upper = max(p_upper, base)
+        p_lower = min(p_lower, base)
+        p_raw = base
 
         is_posted = bid in posted_beach_ids
         if is_posted:
@@ -209,6 +393,15 @@ def apply_lookup_to_served(curated_dir: Path | str) -> dict[str, Any]:
             adv_floor_applied = False
 
         r_band = risk_band(p_exceed)
+
+        # Explain the number users see, so compare AFTER the floors: a posted
+        # beach is explained by its advisory, not by the model, and a floored
+        # beach must never read "below its record" beside a floored number.
+        departure: str | None = None
+        if terms is not None and not adv_floor_applied:
+            departure = _departure_driver(
+                _logit(base) - _logit(float(lk["base"])), **terms
+            )
 
         n = int(lk["n"])
         pos = int(lk["pos"])
@@ -220,18 +413,20 @@ def apply_lookup_to_served(curated_dir: Path | str) -> dict[str, Any]:
                 f"Above the safety limit in {pos} of {n} lab tests over the past 12 months"
             )
 
-        last_date = lk["last_sample_date"]
-        last_exc = lk["last_exceeds"]
         if pd.notna(last_date) and last_exc is not None:
             last_dt = pd.to_datetime(last_date)
             status_str = "above the limit" if last_exc else "within the limit"
             drivers.append(f"Last test {last_dt.strftime('%b')} {last_dt.day}: {status_str}")
+
+        if departure is not None:
+            drivers.append(departure)
 
         if 0 < n < 10:
             drivers.append("Few recent tests — estimate leans on the statewide average")
 
         p_exceed_list.append(p_exceed)
         p_exceed_raw_list.append(p_raw)
+        p_exceed_lookup_list.append(float(lk["base"]))
         p_exceed_lower_list.append(p_lower)
         p_exceed_upper_list.append(p_upper)
         risk_band_list.append(r_band)
@@ -241,12 +436,15 @@ def apply_lookup_to_served(curated_dir: Path | str) -> dict[str, Any]:
 
     forecasts["p_exceed"] = p_exceed_list
     forecasts["p_exceed_raw"] = p_exceed_raw_list
+    # The plain lookup (persistence-floored, no advisory floor) on every row,
+    # whichever method served, so the two can be compared on the served log.
+    forecasts["p_exceed_lookup"] = p_exceed_lookup_list
     forecasts["p_exceed_lower"] = p_exceed_lower_list
     forecasts["p_exceed_upper"] = p_exceed_upper_list
     forecasts["risk_band"] = risk_band_list
     forecasts["persistence_floor_applied"] = persistence_floor_applied_list
     forecasts["advisory_floor_applied"] = advisory_floor_applied_list
-    forecasts["model_version"] = LOOKUP_MODEL_VERSION
+    forecasts["model_version"] = served_version
     forecasts["served_offset_weight"] = np.nan
     forecasts["predicted_log_enterococcus"] = np.nan
     forecasts["lower_prediction_interval"] = np.nan
@@ -267,6 +465,8 @@ def apply_lookup_to_served(curated_dir: Path | str) -> dict[str, Any]:
         if not history.empty:
             if "p_exceed_ml" not in history.columns:
                 history["p_exceed_ml"] = np.nan
+            if "p_exceed_lookup" not in history.columns:
+                history["p_exceed_lookup"] = np.nan
 
             fc_keys = (
                 forecasts["beach_id"].astype(str)
@@ -290,18 +490,19 @@ def apply_lookup_to_served(curated_dir: Path | str) -> dict[str, Any]:
             if history_updated_count > 0:
                 prior_p_ml = history.loc[matched_mask, "p_exceed_ml"]
                 prior_v = history.loc[matched_mask, "model_version"]
-                needs_p_ml = prior_p_ml.isna() | (prior_v != LOOKUP_MODEL_VERSION)
+                needs_p_ml = prior_p_ml.isna() | ~prior_v.isin(SERVED_ESTIMATE_VERSIONS)
 
                 for col in [
                     "p_exceed",
                     "p_exceed_raw",
+                    "p_exceed_lookup",
                     "risk_band",
                     "model_version",
                     "persistence_floor_applied",
                     "served_offset_weight",
                 ]:
                     mapped = hist_keys[matched_mask].map(fc_lookup[col])
-                    if col in ("p_exceed", "p_exceed_raw", "served_offset_weight"):
+                    if col in ("p_exceed", "p_exceed_raw", "p_exceed_lookup", "served_offset_weight"):
                         history.loc[matched_mask, col] = pd.to_numeric(
                             mapped, errors="coerce"
                         )
@@ -320,12 +521,13 @@ def apply_lookup_to_served(curated_dir: Path | str) -> dict[str, Any]:
                         ml_mapped, errors="coerce"
                     )
 
-            # For all OTHER history rows where p_exceed_ml is null and model_version != LOOKUP_MODEL_VERSION,
-            # backfill p_exceed_ml = p_exceed (those rows served the ML)
+            # For all OTHER history rows where p_exceed_ml is null and this module
+            # did not write the row, backfill p_exceed_ml = p_exceed (those rows
+            # served the ML)
             other_mask = (
                 (~matched_mask)
                 & history["p_exceed_ml"].isna()
-                & (history["model_version"] != LOOKUP_MODEL_VERSION)
+                & ~history["model_version"].isin(SERVED_ESTIMATE_VERSIONS)
             )
             history.loc[other_mask, "p_exceed_ml"] = pd.to_numeric(
                 history.loc[other_mask, "p_exceed"], errors="coerce"
@@ -350,7 +552,11 @@ def apply_lookup_to_served(curated_dir: Path | str) -> dict[str, Any]:
     applied_at = datetime.now(UTC).isoformat()
 
     health["serving_method"] = {
-        "name": LOOKUP_MODEL_VERSION,
+        "name": served_version,
+        "method_requested": method,
+        # Set only when "logit" was requested and the lookup served instead.
+        "fallback_reason": logit_meta.get("fallback_reason"),
+        "lookup": {"name": LOOKUP_MODEL_VERSION, "window_days": 365, "prior_strength": 5},
         "window_days": 365,
         "prior_strength": 5,
         "forecast_date": str(forecast_date),
@@ -359,13 +565,30 @@ def apply_lookup_to_served(curated_dir: Path | str) -> dict[str, Any]:
         "persistence_floored": m,
         "applied_at": applied_at,
     }
+    if logit_frame is not None:
+        health["serving_method"]["logit"] = {
+            "features": list(logit_challenger.FEATURE_COLUMNS),
+            **logit_meta,
+            # How far the served number moved from the lookup today, so a
+            # drifting fit shows up in the health file before anyone reads a map.
+            "mean_p_exceed_raw": float(np.mean(p_exceed_raw_list)),
+            "mean_p_exceed_lookup": float(np.mean(p_exceed_lookup_list)),
+            "band_changes_vs_lookup": int(
+                sum(
+                    risk_band(p) != risk_band(q)
+                    for p, q in zip(p_exceed_raw_list, p_exceed_lookup_list)
+                )
+            ),
+        }
 
     tmp_health = health_path.with_suffix(".json.tmp")
     tmp_health.write_text(dumps_strict(health))
     os.replace(tmp_health, health_path)
 
     summary = {
-        "serving_method": LOOKUP_MODEL_VERSION,
+        "serving_method": served_version,
+        "method_requested": method,
+        "fallback_reason": logit_meta.get("fallback_reason"),
         "forecast_date": str(forecast_date),
         "rows": n_rows,
         "posted": k,
@@ -378,10 +601,16 @@ def apply_lookup_to_served(curated_dir: Path | str) -> dict[str, Any]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Serve lookup estimate")
+    parser = argparse.ArgumentParser(description="Serve the per-beach estimate")
     parser.add_argument("--curated", type=Path, required=True, help="Path to curated data directory")
+    parser.add_argument(
+        "--method",
+        choices=SERVED_ESTIMATE_METHODS,
+        default=None,
+        help=f"logit (default) or lookup; overrides ${SERVED_ESTIMATE_ENV}",
+    )
     args = parser.parse_args()
-    summary = apply_lookup_to_served(args.curated)
+    summary = apply_lookup_to_served(args.curated, method=args.method)
     print(dumps_strict(summary))
 
 
