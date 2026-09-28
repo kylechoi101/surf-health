@@ -405,3 +405,19 @@ def test_a_dead_rain_feed_serves_the_lookup_instead_of_scoring_everyone_dry(tmp_
     summary = apply_lookup_to_served(tmp_path)
     assert summary["serving_method"] == LOOKUP_MODEL_VERSION
     assert "rain rows" in summary["fallback_reason"]
+
+
+def test_health_carries_live_and_backtest_results_for_the_served_method(tmp_path, small_fit):
+    _write_curated(tmp_path)
+    pd.DataFrame(
+        {"beach_id": ["a"], "sample_date": [pd.Timestamp("2026-01-10")], "exceeds_stv": [False]}
+    ).to_parquet(tmp_path / "observations.parquet", index=False)
+    pd.DataFrame(
+        {"beach_id": ["a"], "forecast_date": [FORECAST_DATE], "forecast_generated_at": ["2026-01-20T08:00:00"],
+         "p_exceed": [0.1], "p_exceed_precal": [0.1], "model_version": ["ml-v1"], "risk_band": ["Low"]}
+    ).to_parquet(tmp_path / "forecast_history.parquet", index=False)
+    apply_lookup_to_served(tmp_path)
+    health = json.loads((tmp_path / "system_health.json").read_text())["serving_method"]
+    assert health["live"]["versions"] == [LOGIT_CHALLENGER_VERSION]
+    assert health["live"]["first_served"] == FORECAST_DATE  # today's row was just relabelled
+    assert "backtest" not in health  # tmp_path has no ../experiments

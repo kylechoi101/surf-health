@@ -338,6 +338,54 @@ def served_performance(
     return payload
 
 
+# Below these a live score is noise; the same bar the serving isotonic uses.
+LIVE_MIN_PAIRS = _MIN_FIT_PAIRS
+LIVE_MIN_POSITIVES = _MIN_FIT_POSITIVES
+
+
+def served_performance_for_versions(
+    curated_dir: Path, versions: set[str] | frozenset[str], compare_column: str | None = None
+) -> dict | None:
+    """Forward-outcome score of ONLY the rows a given serving method produced.
+
+    ``served_performance`` pools its whole window, which straddles every serving
+    change (ML -> lookup -> logistic), so it cannot say how the current method is
+    doing. This restricts the same final-per-beach-day pairs to ``model_version``
+    in ``versions`` and, when ``compare_column`` is given (e.g. ``p_exceed_lookup``,
+    logged on the same rows), scores that column on the identical pairs as a
+    head-to-head. ``reportable`` is False until the pairs clear the same
+    500-pair / 25-positive bar the serving calibration uses.
+    """
+    loaded = _matched_from_disk(curated_dir)
+    if loaded is None:
+        return None
+    matched, _, _ = loaded
+    if "model_version" not in matched.columns:
+        return None
+    rows = matched[matched["model_version"].isin(versions)]
+    payload: dict[str, object] = {
+        "versions": sorted(versions),
+        "served_days": int(rows["date"].nunique()),
+        "first_served": str(rows["date"].min().date()) if len(rows) else None,
+    }
+    forward_key = f"forward_1_{FORWARD_MATCH_DAYS}d"
+    for outcome, key in (("outcome_forward", forward_key), ("outcome_same_day", "same_day")):
+        scored = _score(rows, outcome)
+        if scored is None:
+            continue
+        scored["reportable"] = bool(
+            scored["n_pairs"] >= LIVE_MIN_PAIRS and scored["n_positive"] >= LIVE_MIN_POSITIVES
+        )
+        if compare_column and compare_column in rows.columns:
+            other = rows.dropna(subset=["p_exceed", outcome, compare_column]).copy()
+            other["p_exceed"] = pd.to_numeric(other[compare_column], errors="coerce")
+            compared = _score(other, outcome)
+            if compared is not None:
+                scored[f"compare_{compare_column}"] = compared
+        payload[key] = scored
+    return payload
+
+
 def _drop_pin_era_rows(pairs: pd.DataFrame) -> pd.DataFrame:
     """Drop served rows whose ``p_fit`` is the old positive-persistence PIN, not a
     model output.
