@@ -16,6 +16,7 @@ from scipy.stats import beta
 from app.core.json_safe import dumps_strict
 from app.ml import logit_challenger
 from app.ml.calibration import _LOW_THRESHOLD, advisory_floored_probability, risk_band
+from app.ml.served_metrics import served_performance_for_versions
 
 LOOKUP_MODEL_VERSION = "lookup-365d-v1"
 
@@ -263,6 +264,31 @@ def _logit_estimate(
             file=sys.stderr,
         )
     return frame, meta
+
+
+# The committed walk-forward backtest (scripts/compare_logit_challenger.py).
+# Its path is fixed relative to data/curated in both the repo and CI.
+_BACKTEST_RESULTS = Path("..") / "experiments" / "logit_challenger" / "results.json"
+
+
+def _backtest_summary(curated_path: Path) -> dict[str, Any] | None:
+    """Headline forward-outcome numbers from the committed backtest, or None."""
+    path = curated_path / _BACKTEST_RESULTS
+    try:
+        results = json.loads(path.read_text())
+        overall = results["outcomes"]["forward_1_3d"]["all"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    keys = ("auroc", "aucpr", "brier", "within_beach_auroc")
+    return {
+        "source": "scripts/compare_logit_challenger.py (walk-forward, monthly refit)",
+        "window": results.get("window"),
+        "outcome": "first lab result 1-3 days after each forecast",
+        "n": overall.get("n"),
+        "base_rate": overall.get("base_rate"),
+        "logit": {k: overall.get("challenger", {}).get(k) for k in keys},
+        "lookup": {k: overall.get("lookup", {}).get(k) for k in keys},
+    }
 
 
 def apply_lookup_to_served(curated_dir: Path | str, method: str | None = None) -> dict[str, Any]:
@@ -580,6 +606,25 @@ def apply_lookup_to_served(curated_dir: Path | str, method: str | None = None) -
                 )
             ),
         }
+
+    # How the logistic model has done on the forecasts it actually served, and
+    # the walk-forward backtest that justified serving it — both on the record
+    # the web's research page reads, so the served method shows results, not
+    # just a name.
+    try:
+        live = served_performance_for_versions(
+            curated_path,
+            frozenset({logit_challenger.LOGIT_CHALLENGER_VERSION}),
+            compare_column="p_exceed_lookup",
+        )
+    except Exception as exc:  # noqa: BLE001 — a scoring failure must not cost the forecast
+        print(f"lookup_serving: live scoring failed ({type(exc).__name__}: {exc})", file=sys.stderr)
+        live = None
+    if live is not None:
+        health["serving_method"]["live"] = live
+    backtest = _backtest_summary(curated_path)
+    if backtest is not None:
+        health["serving_method"]["backtest"] = backtest
 
     tmp_health = health_path.with_suffix(".json.tmp")
     tmp_health.write_text(dumps_strict(health))
