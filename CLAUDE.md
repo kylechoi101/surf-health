@@ -598,6 +598,31 @@ The probability the product serves is the per-beach empirical lookup estimate (`
 
 The ML pipeline still trains and runs as before; its probability is preserved as `p_exceed_ml` (in `forecasts.parquet` and `forecast_history.parquet`) and its band as `risk_band_ml` (`forecasts.parquet` only). Pre-2026-09-22 history rows have `p_exceed_ml == p_exceed` because the ML was what served. The change was made because the lookup beat the served ML on forward 1–3 day lab outcomes on the served log (90d AUROC 0.878 vs 0.824, AUCPR 0.580 vs 0.395, Brier 0.060 vs 0.071) and produces four well-separated bands at existing cutpoints (realized Low 0.033 / Moderate 0.114 / High 0.354 / Very High 0.818).
 
+### Logistic challenger to the lookup (2026-09-28, shadow only — NOT serving)
+
+`app/ml/logit_challenger.py` keeps the lookup as a fixed offset and learns only departures from
+it: `logit(p) = logit(lookup) + b0 + b1·R + b2·R·F + b3·W + b4·S`, where R = log10(last result ÷
+its own limit, via `enterococcus_action_ratio`), F = exp(−(age_days−1)/3), W = log2(1 + 4·inches of
+72h rain), S = cos(season). All inputs are the daily workflow's own artifacts (`load_inputs`); the
+lookup term is exactly `compute_lookup`'s `p_lookup`, rain uses the pipeline's pour-point →
+nearest-station rule (matches `beach_day.precip_mm_72h` on 167,430/167,430 sample-days), and the
+posted set is `lookup_serving.posted_beach_ids_for` (extracted, behavior unchanged).
+`python -m app.ml.logit_challenger --curated ../data/curated/` writes a shadow
+`challenger_forecasts.parquet`; it is not in the workflow yet.
+
+- **Walk-forward backtest** (`scripts/compare_logit_challenger.py`, monthly refit, 2025-09-01 ..
+  2026-09-21, results in `data/experiments/logit_challenger/`): forward D+1..3 AUROC 0.827 → 0.851,
+  AUCPR 0.548 → 0.591, Brier 0.0803 → 0.0766, within-beach AUROC 0.45 → 0.64; outside San Diego
+  AUCPR 0.267 → 0.353. Beach-cluster bootstrap 95% CIs exclude 0 on every headline delta.
+  Coefficients stable across 13 refits (R 0.37–0.41, R·F 0.65–0.78, W 0.68–0.71, S 0.20–0.31).
+- ⚠️ **At the Low cutoff it does NOT miss fewer exceedances** — it misses about the same (forward:
+  3,299 vs 3,236 shown Low) and raises ~23% fewer false alarms. Lowering misses is a cutoff decision.
+- ⚠️ Slightly overconfident at the extremes on forward days (0–0.05 bin predicts 0.021, realizes
+  0.029; 0.7–1.0 predicts 0.894, realizes 0.814) — it is fit on sample-days.
+- ⚠️ pandas can return `datetime64[s]` from `to_numpy(dtype="datetime64[D]")`; the first run
+  silently computed sample age in SECONDS (freshness term = 0). Pinned by
+  `test_features_are_strictly_prior_and_age_is_in_days`.
+
 ### The measurement gap: daily product, weekly labels (2026-07-28)
 
 **Every metric in this file is computed on days a lab result exists.** The product publishes a

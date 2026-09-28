@@ -118,6 +118,34 @@ def compute_lookup(
     return pd.DataFrame(rows)
 
 
+def posted_beach_ids_for(curated_dir: Path | str, forecast_date) -> set[str]:
+    """Beaches whose advisory floor applies on forecast_date.
+
+    Advisory floor (export time, same rule as today): a beach is posted if
+    advisories.parquet has a row for it with status == "active" and
+    started_at <= D.
+    """
+    advisories_path = Path(curated_dir) / "advisories.parquet"
+    posted_beach_ids: set[str] = set()
+    if advisories_path.exists():
+        advisories = pd.read_parquet(advisories_path)
+        if (
+            not advisories.empty
+            and "status" in advisories.columns
+            and "beach_id" in advisories.columns
+        ):
+            active_adv = advisories[advisories["status"] == "active"]
+            if not active_adv.empty:
+                if "started_at" in active_adv.columns:
+                    started = pd.to_datetime(active_adv["started_at"], errors="coerce")
+                    if started.dt.tz is not None:
+                        started = started.dt.tz_localize(None)
+                    f_date_norm = pd.to_datetime(forecast_date).tz_localize(None).normalize()
+                    active_adv = active_adv[started.dt.normalize() <= f_date_norm]
+                posted_beach_ids = set(active_adv["beach_id"].dropna().unique())
+    return posted_beach_ids
+
+
 def apply_lookup_to_served(curated_dir: Path | str) -> dict[str, Any]:
     """Apply lookup baseline to served forecast and update downstream artifacts."""
     curated_path = Path(curated_dir)
@@ -162,27 +190,7 @@ def apply_lookup_to_served(curated_dir: Path | str) -> dict[str, Any]:
     )
     lookup_records = lookup_df.set_index("beach_id").to_dict("index")
 
-    # Advisory floor (export time, same rule as today): a beach is posted if
-    # advisories.parquet has a row for it with status == "active" and
-    # started_at <= D.
-    advisories_path = curated_path / "advisories.parquet"
-    posted_beach_ids: set[str] = set()
-    if advisories_path.exists():
-        advisories = pd.read_parquet(advisories_path)
-        if (
-            not advisories.empty
-            and "status" in advisories.columns
-            and "beach_id" in advisories.columns
-        ):
-            active_adv = advisories[advisories["status"] == "active"]
-            if not active_adv.empty:
-                if "started_at" in active_adv.columns:
-                    started = pd.to_datetime(active_adv["started_at"], errors="coerce")
-                    if started.dt.tz is not None:
-                        started = started.dt.tz_localize(None)
-                    f_date_norm = pd.to_datetime(forecast_date).tz_localize(None).normalize()
-                    active_adv = active_adv[started.dt.normalize() <= f_date_norm]
-                posted_beach_ids = set(active_adv["beach_id"].dropna().unique())
+    posted_beach_ids = posted_beach_ids_for(curated_path, forecast_date)
 
     p_exceed_list: list[float] = []
     p_exceed_raw_list: list[float] = []
