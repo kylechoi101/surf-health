@@ -592,29 +592,66 @@ deployment eval (known beaches, future dates, anchor censored to serving age) se
   benefit is the class rebalancing, not the averaging). Scripts left in the session scratchpad, not
   committed. Do not re-litigate without a daily-cadence evaluation (below).
 
-### Served estimate: per-beach lookup (2026-09-22)
+### Served estimate: per-beach lookup (2026-09-22; since 2026-09-28 the OFFSET of the logistic model below, and its fallback)
 
-The probability the product serves is the per-beach empirical lookup estimate (`backend/app/ml/lookup_serving.py`), overwriting the ML predictions right after training. Over trailing window `D-365d <= sample_date < D`, `p_lookup = (pos + 5*g) / (n + 5)` where `g` is the pooled statewide exceedance mean, with a persistence floor `max(p_lookup, 0.20)` if the last sample exceeded, a Beta(pos + 5*g, n - pos + 5*(1-g)) credible interval, and an export-time advisory floor to 0.30 for active postings (`started_at <= D`).
+From 2026-09-22 to 2026-09-27 the probability the product served was the per-beach empirical lookup estimate (`backend/app/ml/lookup_serving.py`), overwriting the ML predictions right after training. Over trailing window `D-365d <= sample_date < D`, `p_lookup = (pos + 5*g) / (n + 5)` where `g` is the pooled statewide exceedance mean, with a persistence floor `max(p_lookup, 0.20)` if the last sample exceeded, a Beta(pos + 5*g, n - pos + 5*(1-g)) credible interval, and an export-time advisory floor to 0.30 for active postings (`started_at <= D`).
 
 The ML pipeline still trains and runs as before; its probability is preserved as `p_exceed_ml` (in `forecasts.parquet` and `forecast_history.parquet`) and its band as `risk_band_ml` (`forecasts.parquet` only). Pre-2026-09-22 history rows have `p_exceed_ml == p_exceed` because the ML was what served. The change was made because the lookup beat the served ML on forward 1–3 day lab outcomes on the served log (90d AUROC 0.878 vs 0.824, AUCPR 0.580 vs 0.395, Brier 0.060 vs 0.071) and produces four well-separated bands at existing cutpoints (realized Low 0.033 / Moderate 0.114 / High 0.354 / Very High 0.818).
 
-### Logistic challenger to the lookup (2026-09-28, shadow only — NOT serving)
+### Served estimate: logistic model on top of the lookup (2026-09-28 — SERVING)
 
-`app/ml/logit_challenger.py` keeps the lookup as a fixed offset and learns only departures from
-it: `logit(p) = logit(lookup) + b0 + b1·R + b2·R·F + b3·W + b4·S`, where R = log10(last result ÷
-its own limit, via `enterococcus_action_ratio`), F = exp(−(age_days−1)/3), W = log2(1 + 4·inches of
-72h rain), S = cos(season). All inputs are the daily workflow's own artifacts (`load_inputs`); the
-lookup term is exactly `compute_lookup`'s `p_lookup`, rain uses the pipeline's pour-point →
-nearest-station rule (matches `beach_day.precip_mm_72h` on 167,430/167,430 sample-days), and the
-posted set is `lookup_serving.posted_beach_ids_for` (extracted, behavior unchanged).
-`python -m app.ml.logit_challenger --curated ../data/curated/` writes a shadow
-`challenger_forecasts.parquet`; it is not in the workflow yet.
+Since 2026-09-28 the served probability is `app/ml/logit_challenger.py`, called from the same
+`lookup_serving` step (it runs twice per workflow, before and after G.2). It keeps the lookup as a
+fixed offset and learns only departures from it:
+`logit(p) = logit(lookup) + b0 + b1·R + b2·R·F + b3·W + b4·S`, where R = log10(last result ÷ its
+own limit, via `enterococcus_action_ratio`, so culture and ddPCR share a scale), F =
+exp(−(age_days−1)/3), W = log2(1 + 4·inches of 72h rain to 5 AM on D), S = cos(season). Refit every
+run on the 4 years of sample-days before D (~117k rows, ~9 s). All inputs are the daily workflow's
+own artifacts (`load_inputs`); rain uses the pipeline's pour-point → nearest-station rule (matches
+`beach_day.precip_mm_72h` on 167,430/167,430 sample-days).
 
+- **Product rules unchanged:** the persistence floor (last test exceeded → ≥ 0.20, never Low) and
+  the advisory floor (active posting → ≥ 0.30) apply to the model's number exactly as they did to
+  the lookup's. The lookup's Beta interval is carried through the model's departure on the logit
+  scale (the raw quantiles `beta_lower/beta_upper` are shifted, not the floored bounds).
+- **Both numbers are logged:** `p_exceed` / `p_exceed_raw` are the model's; `p_exceed_lookup` (the
+  persistence-floored lookup) sits beside them in `forecasts.parquet` and
+  `forecast_history.parquet` on every row from 2026-09-28, whichever method served, so the two stay
+  comparable on forward outcomes. `p_exceed_ml` is unchanged (the XGB ensemble).
+  `model_version` is `logit-lookup-offset-v1` (or `lookup-365d-v1` on a fallback).
+- **Automatic fallback to the lookup** (never loses the day's forecast): a missing artifact, no
+  `enterococcus_action_ratio` column, < 20k training rows, a coefficient outside ±3 (13 refits sat
+  in [−0.15, 0.79]), rain rows for D on < 90% of beaches (a dead feed would otherwise score every
+  beach dry), or the model's lookup term disagreeing with `compute_lookup` by > 1e-9. The reason
+  lands in `system_health.json["serving_method"]["fallback_reason"]`, and
+  `scripts/verify_served_estimate.py` (after the commit + deploy, `if: always()`) **fails the job
+  → `pipeline-failure` issue** so a fallback is never silent.
+- **Rollback switch:** repository variable `SHORELIFE_SERVED_ESTIMATE=lookup` (passed into both
+  serving steps) serves the plain lookup with no code change; the verify step treats a requested
+  lookup as OK. CLI: `python -m app.ml.lookup_serving --curated DIR [--method logit|lookup]`.
+- **Health:** `serving_method.logit` records coefficients, training rows, rain coverage, mean
+  served vs lookup probability and the count of band changes vs the lookup.
+- **Drivers:** the track-record and last-test lines are unchanged; one line is added saying
+  whether today's estimate sits above or below the beach's 12-month record, computed on the
+  SERVED number after both floors (omitted on advisory-floored beaches). Upward reasons are terms
+  that pushed it up (last test above/close to the limit, rain, wet season); downward reasons are
+  conditions (last test within the limit, no rain — only claimed when the beach has a rain row,
+  dry season), because the model's baseline is a dry day after a clean test and the record
+  averages over wet and dirty weeks. ⚠️ An earlier per-term "raises/lowers" wording contradicted
+  the served number on real data (a "raises" beside a number that fell) — don't reintroduce it.
 - **Walk-forward backtest** (`scripts/compare_logit_challenger.py`, monthly refit, 2025-09-01 ..
   2026-09-21, results in `data/experiments/logit_challenger/`): forward D+1..3 AUROC 0.827 → 0.851,
   AUCPR 0.548 → 0.591, Brier 0.0803 → 0.0766, within-beach AUROC 0.45 → 0.64; outside San Diego
   AUCPR 0.267 → 0.353. Beach-cluster bootstrap 95% CIs exclude 0 on every headline delta.
   Coefficients stable across 13 refits (R 0.37–0.41, R·F 0.65–0.78, W 0.68–0.71, S 0.20–0.31).
+  On the served-log overlap (2026-04-23..09-21, forward, n=19,668) it scored AUROC 0.864 / AUCPR
+  0.576 / Brier 0.0562, vs the plain lookup 0.863 / 0.550 / 0.0603 and the ML that actually served
+  0.804 / 0.328 / 0.0748 — on that window the gain over the lookup is calibration and AUCPR, not
+  AUROC.
+- **Deploy-day dry run** (2026-09-27 data, 374 beaches): mean p 0.135 → 0.097; vs the served
+  lookup 24 Moderate→Low, 12 High→Moderate, 3 High→Low, 2 Very High→High, **none up** — a dry
+  late-September day, when the model sits below most beaches' record. `validate_forecast` (anomaly
+  checks vs the previous forecast) passes. Expect the reverse after rain.
 - ⚠️ **At the Low cutoff it does NOT miss fewer exceedances** — it misses about the same (forward:
   3,299 vs 3,236 shown Low) and raises ~23% fewer false alarms. Lowering misses is a cutoff decision.
 - ⚠️ Slightly overconfident at the extremes on forward days (0–0.05 bin predicts 0.021, realizes
@@ -622,6 +659,10 @@ posted set is `lookup_serving.posted_beach_ids_for` (extracted, behavior unchang
 - ⚠️ pandas can return `datetime64[s]` from `to_numpy(dtype="datetime64[D]")`; the first run
   silently computed sample age in SECONDS (freshness term = 0). Pinned by
   `test_features_are_strictly_prior_and_age_is_in_days`.
+- ⚠️ **The lookup is computed twice** — `compute_lookup` (served/fallback) and
+  `lab_history_features` (the model's offset, also used for training rows) — and the serving step
+  refuses to serve the model if they disagree. Change both together or the model silently turns
+  itself off (loudly, via the verify step).
 
 ### The measurement gap: daily product, weekly labels (2026-07-28)
 
@@ -782,9 +823,11 @@ gate's calibration + inner-validation split.
   wind plume transport, point-source proximity) — now actually fed to the model (2026-06-01 fix;
   they were previously computed-but-dropped) and **spatially confirmed** to help (2026-06-02).
   Remaining headroom: per-station models.
-- **Served estimate (since 2026-09-22)**: the per-beach 365-day lookup (`app/ml/lookup_serving.py`), see
-  "Served estimate: per-beach lookup" above. The ML below still trains daily as a challenger and is kept
-  as `p_exceed_ml`; it does not set the served number.
+- **Served estimate (since 2026-09-28)**: the logistic model on top of the per-beach 365-day lookup
+  (`app/ml/logit_challenger.py`, served by `app/ml/lookup_serving.py`), see "Served estimate: logistic
+  model on top of the lookup" above; the plain lookup (served 2026-09-22..27) is its offset, its automatic
+  fallback, and is logged as `p_exceed_lookup`. The ML below still trains daily as a challenger and is
+  kept as `p_exceed_ml`; it does not set the served number.
 - **ML challenger (was the production classifier until 2026-09-22)**: `xgb_undersample_ensemble` —
   balanced-undersample XGBoost soft-ensemble. Trained on the **1095-day window** (2026-06-08) where it beats hist_gbm on held-out counties and
   beaches. **Shipped held-out metrics are REGENERATED EVERY DAILY RUN — read
