@@ -1,6 +1,6 @@
-"""Logistic challenger to the per-beach lookup (``lookup_serving``).
+"""Logistic model on top of the per-beach lookup (``lookup_serving``) — the served estimate.
 
-The served lookup knows WHICH beaches are dirty but has no day-to-day skill: its
+The lookup knows WHICH beaches are dirty but has no day-to-day skill: its
 within-beach AUROC is ~0.48. This model keeps the lookup as a fixed offset and
 learns only the departures from it, from four terms known by 5 AM on day D:
 
@@ -18,26 +18,22 @@ learns only the departures from it, from four terms known by 5 AM on day D:
 
 Every feature is computed as of D from rows strictly before D, the same rule as
 ``compute_lookup``, and every input is a curated artifact the daily-forecast
-workflow already writes (``load_inputs``). Nothing here is wired into serving:
-``python -m app.ml.logit_challenger --curated ../data/curated/`` writes a shadow
-``challenger_forecasts.parquet`` beside ``forecasts.parquet``, and
-``scripts/compare_logit_challenger.py`` scores it against the lookup.
+workflow already writes (``load_inputs``). ``lookup_serving.apply_lookup_to_served``
+calls ``estimate_for_serving`` and serves its probability, falling back to the
+plain lookup if any guard here raises. ``scripts/compare_logit_challenger.py`` is
+the walk-forward backtest that justified serving it.
 """
 from __future__ import annotations
 
-import argparse
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-import os
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 from app.core.geo import haversine_km
-from app.core.json_safe import dumps_strict
-from app.ml.calibration import _LOW_THRESHOLD, advisory_floored_probability, risk_band
-from app.ml.lookup_serving import posted_beach_ids_for
+from app.ml.calibration import _LOW_THRESHOLD
 
 LOGIT_CHALLENGER_VERSION = "logit-lookup-offset-v1"
 FEATURE_COLUMNS: tuple[str, ...] = ("R", "RF", "W", "S")
@@ -49,6 +45,13 @@ R_CLIP = 0.01  # results at <=1% of the limit all read as "very clean"
 # No in-window result: a typical clean result (~a tenth of the limit, the median
 # non-exceeding ratio), with F = 0 so it carries no freshness weight.
 R_MISSING = -1.0
+
+# Serving guards. The 13 monthly walk-forward refits kept every coefficient
+# inside [-0.15, 0.79] on ~117k training rows; a coefficient past COEF_LIMIT or a
+# fit on under MIN_TRAIN_ROWS means the data, not the beach, changed — serve the
+# plain lookup instead of publishing it.
+COEF_LIMIT = 3.0
+MIN_TRAIN_ROWS = 20_000
 
 
 @dataclass(frozen=True)
@@ -107,10 +110,11 @@ def lab_history_features(
     obs = beach_day.loc[beach_day["exceeds_stv"].notna()].copy()
     obs["_d"] = _dates(obs["sample_date"])
     obs["_y"] = obs["exceeds_stv"].astype(bool).astype(float)
-    if "enterococcus_action_ratio" in obs.columns:
-        ratio = pd.to_numeric(obs["enterococcus_action_ratio"], errors="coerce")
-    else:
-        ratio = pd.Series(np.nan, index=obs.index)
+    if "enterococcus_action_ratio" not in obs.columns:
+        # Without it every R reads as R_MISSING while F still reads fresh, i.e.
+        # every beach would look freshly clean. Refuse rather than serve that.
+        raise ValueError("beach_day has no enterococcus_action_ratio column")
+    ratio = pd.to_numeric(obs["enterococcus_action_ratio"], errors="coerce")
     obs["_r"] = np.log10(ratio.clip(lower=R_CLIP))
     # Same-day duplicates: the worst sample is the day's label (beach_day already
     # collapses to one row per beach-day; this keeps the order deterministic).
@@ -159,7 +163,12 @@ def lab_history_features(
     lookup = (pos + prior_strength * g) / (n + prior_strength)
     lookup_c = np.clip(lookup, 1e-4, 1 - 1e-4)
     freshness = np.where(np.isnan(age), 0.0, np.exp(-(np.nan_to_num(age, nan=1.0) - 1.0) / FRESHNESS_TAU_DAYS))
-    r_feat = np.where(np.isnan(last_r), R_MISSING, last_r)
+    # A last result with no ratio (18 of ~496k labelled rows, none exceeding) must
+    # not read as a typical clean result when its label says it exceeded: place
+    # it at the limit instead (R = 0).
+    r_feat = np.where(
+        np.isnan(last_r), np.where(last_y == 1, 0.0, R_MISSING), last_r
+    )
 
     return pd.DataFrame(
         {
@@ -298,55 +307,73 @@ def fit_on_history(
     return fit_coefficients(feats, rows["exceeds_stv"].astype(int).to_numpy()), len(rows)
 
 
-def score_forecast_date(curated_dir: Path | str) -> dict:
-    """Shadow-score every beach in forecasts.parquet for its forecast date.
+@dataclass(frozen=True)
+class ServingEstimate:
+    """One forecast date's logistic estimate for every requested beach.
 
-    Writes ``challenger_forecasts.parquet``; never touches the served artifacts.
+    ``frame`` is one row per beach, in request order: the model probability
+    ``p_model`` (no product floors applied), the lookup it sits on, the four
+    feature values, and each term's contribution on the logit scale for the
+    plain-English drivers.
     """
-    curated = Path(curated_dir)
-    forecasts = pd.read_parquet(curated / "forecasts.parquet")
-    d = pd.Timestamp(forecasts["forecast_date"].iloc[0]).normalize()
-    inputs = load_inputs(curated)
+
+    frame: pd.DataFrame
+    coefficients: dict[str, float]
+    train_rows: int
+    rain_coverage: float
+
+
+def check_coefficients(coefs: Mapping[str, float], train_rows: int, min_train_rows: int) -> None:
+    """Raise if this fit should not be served (see COEF_LIMIT / MIN_TRAIN_ROWS)."""
+    if train_rows < min_train_rows:
+        raise ValueError(f"only {train_rows} training rows (need {min_train_rows})")
+    bad = {k: v for k, v in coefs.items() if not np.isfinite(v) or abs(v) > COEF_LIMIT}
+    if bad:
+        raise ValueError(f"coefficients outside +/-{COEF_LIMIT}: {bad}")
+
+
+def estimate_for_serving(
+    curated_dir: Path | str,
+    forecast_date: str | pd.Timestamp,
+    beach_ids: Sequence[str],
+    min_train_rows: int | None = None,
+) -> ServingEstimate:
+    """Fit on history strictly before the forecast date and score every beach for it.
+
+    Raises on anything that should send serving back to the plain lookup: a
+    missing artifact, a missing ratio column, too few training rows, or a
+    coefficient outside the sanity box.
+    """
+    d = pd.Timestamp(forecast_date).normalize()
+    inputs = load_inputs(curated_dir)
     coefs, n_train = fit_on_history(inputs, d)
-    beach_ids = forecasts["beach_id"].astype(str).tolist()
+    check_coefficients(coefs, n_train, MIN_TRAIN_ROWS if min_train_rows is None else min_train_rows)
+
+    beach_ids = [str(b) for b in beach_ids]
     feats = build_features(inputs, beach_ids, [d] * len(beach_ids))
-    p_raw = predict(feats, coefs)
-    p = apply_persistence_floor(p_raw, feats["last_exceeds"].to_numpy())
-    # Same posted-beach set the served lookup floors (lookup_serving), so the two
-    # differ only in the model, never in the product rules layered on top.
-    posted = posted_beach_ids_for(curated, d)
-    is_posted = np.array([b in posted for b in beach_ids])
-    p = np.array([advisory_floored_probability(x, bool(f))[0] for x, f in zip(p, is_posted)])
-    out = feats[["beach_id", "lookup", "R", "F", "W", "S", "age_days", "last_exceeds"]].copy()
-    out.insert(1, "forecast_date", d.date())
-    out["advisory_posted"] = is_posted
-    out["p_exceed_challenger_raw"] = p_raw
-    out["p_exceed_challenger"] = p
-    out["risk_band_challenger"] = [risk_band(x) for x in p]
-    out["p_exceed_served"] = forecasts["p_exceed"].to_numpy()
-    out["model_version"] = LOGIT_CHALLENGER_VERSION
-    path = curated / "challenger_forecasts.parquet"
-    tmp = path.with_suffix(".parquet.tmp")
-    out.to_parquet(tmp, index=False)
-    os.replace(tmp, path)
-    return {
-        "model": LOGIT_CHALLENGER_VERSION,
-        "forecast_date": str(d.date()),
-        "rows": len(out),
-        "train_rows": n_train,
-        "coefficients": coefs,
-        "rain_rows": int((out["W"] > 0).sum()),
-        "posted": int(is_posted.sum()),
-        "bands": out["risk_band_challenger"].value_counts().to_dict(),
-    }
+    feats["p_model"] = predict(feats, coefs)
 
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Shadow-score the logistic challenger")
-    parser.add_argument("--curated", type=Path, required=True, help="Path to curated data directory")
-    args = parser.parse_args()
-    print(dumps_strict(score_forecast_date(args.curated)))
-
-
-if __name__ == "__main__":
-    main()
+    # Rain known at 5 AM on D, in inches, for the drivers; and how many beaches
+    # actually had a rain row for D. A dead rain feed reads as "dry" for every
+    # beach (rain_feature's missing -> 0), which is a silent downward bias on a
+    # stormy day, so the caller publishes this coverage.
+    pr = inputs.precip_daily
+    on_d = pr.loc[
+        pd.to_datetime(pr["sample_date"]).dt.normalize().eq(d) & pr["precip_mm_72h"].notna(),
+        "station_id",
+    ].astype(str)
+    stations_on_d = set(on_d)
+    has_rain_row = np.array([inputs.station_map.get(b) in stations_on_d for b in beach_ids])
+    feats["rain_inches_72h"] = (2.0 ** feats["W"] - 1.0) / 4.0
+    # Contribution of the last lab result, relative to R_MISSING (a typical clean
+    # result with no freshness weight) so "no effect" means "reads like a normal
+    # clean week" rather than "reads like a result exactly at the limit".
+    feats["lab_logit"] = coefs["R"] * (feats["R"] - R_MISSING) + coefs["RF"] * feats["RF"]
+    feats["rain_logit"] = coefs["W"] * feats["W"]
+    feats["season_logit"] = coefs["S"] * feats["S"]
+    return ServingEstimate(
+        frame=feats,
+        coefficients=coefs,
+        train_rows=n_train,
+        rain_coverage=float(has_rain_row.mean()) if len(beach_ids) else 0.0,
+    )
