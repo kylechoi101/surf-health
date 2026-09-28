@@ -52,6 +52,11 @@ R_MISSING = -1.0
 # plain lookup instead of publishing it.
 COEF_LIMIT = 3.0
 MIN_TRAIN_ROWS = 20_000
+# A beach with no rain row for D is scored as dry (rain_feature: missing -> 0).
+# Every station has had a row every day since June 2026, so coverage under this
+# means the rain feed is broken, and "dry everywhere" would bias every estimate
+# down exactly on the stormy days that matter: serve the lookup instead.
+MIN_RAIN_COVERAGE = 0.9
 
 
 @dataclass(frozen=True)
@@ -208,7 +213,11 @@ def precip_station_map(
     if stations.empty:
         return {}
     points: dict[str, tuple[float, float]] = {}
-    if hydrologic_links is not None and not hydrologic_links.empty:
+    if (
+        hydrologic_links is not None
+        and not hydrologic_links.empty
+        and {"beach_id", "pour_point_latitude", "pour_point_longitude"}.issubset(hydrologic_links.columns)
+    ):
         pour = hydrologic_links.dropna(subset=["pour_point_latitude", "pour_point_longitude"])
         for row in pour.drop_duplicates("beach_id").itertuples(index=False):
             points[str(row.beach_id)] = (row.pour_point_latitude, row.pour_point_longitude)
@@ -341,8 +350,9 @@ def estimate_for_serving(
     """Fit on history strictly before the forecast date and score every beach for it.
 
     Raises on anything that should send serving back to the plain lookup: a
-    missing artifact, a missing ratio column, too few training rows, or a
-    coefficient outside the sanity box.
+    missing artifact, a missing ratio column, too few training rows, a
+    coefficient outside the sanity box, or rain rows for D on under
+    MIN_RAIN_COVERAGE of the beaches.
     """
     d = pd.Timestamp(forecast_date).normalize()
     inputs = load_inputs(curated_dir)
@@ -364,6 +374,13 @@ def estimate_for_serving(
     ].astype(str)
     stations_on_d = set(on_d)
     has_rain_row = np.array([inputs.station_map.get(b) in stations_on_d for b in beach_ids])
+    rain_coverage = float(has_rain_row.mean()) if len(beach_ids) else 0.0
+    if rain_coverage < MIN_RAIN_COVERAGE:
+        raise ValueError(
+            f"rain rows for {d.date()} cover {rain_coverage:.0%} of beaches "
+            f"(need {MIN_RAIN_COVERAGE:.0%}); refusing to score them all as dry"
+        )
+    feats["has_rain_row"] = has_rain_row
     feats["rain_inches_72h"] = (2.0 ** feats["W"] - 1.0) / 4.0
     # Contribution of the last lab result, relative to R_MISSING (a typical clean
     # result with no freshness weight) so "no effect" means "reads like a normal
@@ -375,5 +392,5 @@ def estimate_for_serving(
         frame=feats,
         coefficients=coefs,
         train_rows=n_train,
-        rain_coverage=float(has_rain_row.mean()) if len(beach_ids) else 0.0,
+        rain_coverage=rain_coverage,
     )

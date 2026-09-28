@@ -120,7 +120,7 @@ def main() -> None:
     args = ap.parse_args()
 
     # Same curated artifacts, same loader, same beach->rain-station rule as the
-    # daily workflow's `python -m app.ml.logit_challenger` step.
+    # daily workflow's serving step (lookup_serving -> estimate_for_serving).
     inputs = load_inputs(args.curated)
     pr = inputs.precip_daily
     bd = inputs.beach_day.copy()

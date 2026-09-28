@@ -425,6 +425,18 @@ jobs:
         run: python scripts/verify_deploy.py --curated ../data/curated/
         working-directory: backend
 
+      - name: Verify the served estimate did not silently fall back
+        # lookup_serving serves the plain lookup if the logistic model fails,
+        # so the day's forecast is never lost. That is right for users and wrong
+        # to leave silent; this fails the job (-> pipeline-failure issue) when
+        # "logit" was requested and the lookup served. After the commit and the
+        # deploy for the same reason as the scraper gate below: the fallback
+        # forecast is valid and must ship first. `if: always()` so it still
+        # reports when an earlier step failed.
+        if: always()
+        run: python scripts/verify_served_estimate.py --curated ../data/curated/
+        working-directory: backend
+
       - name: Verify scraper observability gate (fail the job if advisories were dropped)
         # LAST step in the job, and that placement is load-bearing. Like the
         # release gate, this must run after the commit/push so the verdict and

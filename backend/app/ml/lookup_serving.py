@@ -45,6 +45,7 @@ _DRIVER_MIN_RAIN_INCHES = 0.1
 def _departure_driver(
     shift: float, lab_logit: float, rain_logit: float, season_logit: float,
     last_log10_ratio: float, rain_inches: float, last_exceeds: bool | None,
+    has_rain_row: bool,
 ) -> str | None:
     """One line saying which way today's estimate sits from the 12-month record, and why.
 
@@ -60,9 +61,9 @@ def _departure_driver(
     if shift > 0:
         if lab_logit >= _DRIVER_MIN_LOGIT:
             if np.isfinite(last_log10_ratio) and last_log10_ratio >= 0:
-                reasons.append("a recent test above the limit")
+                reasons.append("last test above the limit")
             else:
-                reasons.append("a recent test close to the limit")
+                reasons.append("last test close to the limit")
         if rain_inches >= _DRIVER_MIN_RAIN_INCHES and rain_logit >= _DRIVER_MIN_LOGIT:
             reasons.append(f"{rain_inches:.1f} in of rain in the past 3 days")
         if season_logit >= _DRIVER_MIN_LOGIT:
@@ -71,7 +72,7 @@ def _departure_driver(
     else:
         if last_exceeds is False:
             reasons.append("last test within the limit")
-        if rain_inches < _DRIVER_MIN_RAIN_INCHES:
+        if has_rain_row and rain_inches < _DRIVER_MIN_RAIN_INCHES:
             reasons.append("no rain in the past 3 days")
         if season_logit <= -_DRIVER_MIN_LOGIT:
             reasons.append("the dry season")
@@ -170,10 +171,10 @@ def compute_lookup(
         if b_param <= 0.0:
             b_param = 1e-6
 
-        p_exceed_lower = float(beta.ppf(0.05, a=a_param, b=b_param))
-        p_exceed_upper = float(beta.ppf(0.95, a=a_param, b=b_param))
-        p_exceed_upper = max(p_exceed_upper, base)
-        p_exceed_lower = min(p_exceed_lower, base)
+        beta_lower = float(beta.ppf(0.05, a=a_param, b=b_param))
+        beta_upper = float(beta.ppf(0.95, a=a_param, b=b_param))
+        p_exceed_upper = max(beta_upper, base)
+        p_exceed_lower = min(beta_lower, base)
 
         rows.append(
             {
@@ -189,6 +190,10 @@ def compute_lookup(
                 "persistence_floor_applied": persistence_floor_applied,
                 "p_exceed_lower": p_exceed_lower,
                 "p_exceed_upper": p_exceed_upper,
+                # The Beta quantiles before they are widened to contain the
+                # (persistence-floored) base; the logistic path shifts these.
+                "beta_lower": beta_lower,
+                "beta_upper": beta_upper,
             }
         )
 
@@ -342,7 +347,7 @@ def apply_lookup_to_served(curated_dir: Path | str, method: str | None = None) -
         last_exc = lk["last_exceeds"]
         p_lower = float(lk["p_exceed_lower"])
         p_upper = float(lk["p_exceed_upper"])
-        departure: str | None = None
+        terms: dict[str, Any] | None = None
 
         if logit_frame is None:
             base = float(lk["base"])
@@ -352,28 +357,30 @@ def apply_lookup_to_served(curated_dir: Path | str, method: str | None = None) -
             p_model = float(row["p_model"])
             # Same product rule as the lookup: a beach whose last test exceeded
             # is never Low.
-            if last_exc is True:
-                base = max(p_model, float(_LOW_THRESHOLD))
-                p_floor = p_model < float(_LOW_THRESHOLD)
-            else:
-                base = p_model
-                p_floor = False
+            base = float(
+                logit_challenger.apply_persistence_floor(
+                    np.array([p_model]), np.array([1.0 if last_exc is True else 0.0])
+                )[0]
+            )
+            p_floor = base > p_model
             # The lookup's Beta interval, carried through the model's departure
             # from the lookup on the logit scale. It still describes uncertainty
             # in the beach's rate (n tests), not in the four coefficients, which
             # are fit on ~117k rows and move by a few hundredths between refits.
+            # Shift the raw quantiles, not the bounds compute_lookup already
+            # widened to contain its own persistence floor.
             shift = _logit(p_model) - _logit(float(lk["p_lookup"]))
-            p_lower = _expit(_logit(p_lower) + shift)
-            p_upper = _expit(_logit(p_upper) + shift)
-            departure = _departure_driver(
-                shift,
-                lab_logit=float(row["lab_logit"]),
-                rain_logit=float(row["rain_logit"]),
-                season_logit=float(row["season_logit"]),
-                last_log10_ratio=float(row["last_log10_ratio"]),
-                rain_inches=float(row["rain_inches_72h"]),
-                last_exceeds=last_exc,
-            )
+            p_lower = _expit(_logit(float(lk["beta_lower"])) + shift)
+            p_upper = _expit(_logit(float(lk["beta_upper"])) + shift)
+            terms = {
+                "lab_logit": float(row["lab_logit"]),
+                "rain_logit": float(row["rain_logit"]),
+                "season_logit": float(row["season_logit"]),
+                "last_log10_ratio": float(row["last_log10_ratio"]),
+                "rain_inches": float(row["rain_inches_72h"]),
+                "last_exceeds": last_exc,
+                "has_rain_row": bool(row["has_rain_row"]),
+            }
         p_upper = max(p_upper, base)
         p_lower = min(p_lower, base)
         p_raw = base
@@ -386,6 +393,15 @@ def apply_lookup_to_served(curated_dir: Path | str, method: str | None = None) -
             adv_floor_applied = False
 
         r_band = risk_band(p_exceed)
+
+        # Explain the number users see, so compare AFTER the floors: a posted
+        # beach is explained by its advisory, not by the model, and a floored
+        # beach must never read "below its record" beside a floored number.
+        departure: str | None = None
+        if terms is not None and not adv_floor_applied:
+            departure = _departure_driver(
+                _logit(base) - _logit(float(lk["base"])), **terms
+            )
 
         n = int(lk["n"])
         pos = int(lk["pos"])

@@ -237,12 +237,18 @@ def test_serving_publishes_the_logistic_estimate_with_product_floors(tmp_path, s
     assert health["logit"]["rain_coverage"] == 1.0
     # Every beach whose number moved materially says which way, and a named
     # reason never contradicts the direction of the number it explains.
+    # Checked against the SERVED number, floors included.
     for bid, row in f.iterrows():
         lines = [d for d in row["top_drivers"] if d.startswith("Today's estimate is")]
-        if row["p_exceed_raw"] > row["p_exceed_lookup"] * 1.3:
+        if row["advisory_floor_applied"]:
+            assert not lines, (bid, list(row["top_drivers"]))
+            continue
+        if row["p_exceed"] > row["p_exceed_lookup"] * 1.3:
             assert lines and "above" in lines[0], (bid, list(row["top_drivers"]))
-        if row["p_exceed_raw"] < row["p_exceed_lookup"] / 1.3 and not row["persistence_floor_applied"]:
+        if row["p_exceed"] < row["p_exceed_lookup"] / 1.3:
             assert lines and "below" in lines[0], (bid, list(row["top_drivers"]))
+        if row["p_exceed"] >= row["p_exceed_lookup"]:
+            assert not any("below" in line for line in lines), (bid, list(row["top_drivers"]))
         if lines and "below" in lines[0]:
             assert "in of rain" not in lines[0]
     assert any("in of rain in the past 3 days" in d for d in f.loc["c", "top_drivers"])
@@ -337,12 +343,24 @@ def test_history_logs_the_lookup_and_keeps_logistic_rows_out_of_p_exceed_ml(tmp_
 def test_serving_glue_floors_persistence_and_moves_the_interval_with_the_model(tmp_path, small_fit, monkeypatch):
     """Deterministic: a crafted model output, so the floors and interval are pinned exactly."""
     _write_curated(tmp_path)
+    # Give "a" a clean record whose LAST test exceeded, so its lookup sits below
+    # the persistence floor and both floor paths are actually exercised.
+    bd = pd.read_parquet(tmp_path / "beach_day.parquet")
+    a = bd["beach_id"] == "a"
+    last_a = bd.loc[a, "sample_date"].max()
+    bd.loc[a, ["exceeds_stv", "enterococcus_action_ratio"]] = [False, 0.1]
+    bd.loc[a & (bd["sample_date"] == last_a), ["exceeds_stv", "enterococcus_action_ratio"]] = [True, 2.0]
+    bd.to_parquet(tmp_path / "beach_day.parquet", index=False)
     real = logit_challenger.estimate_for_serving
 
     def crafted(*args, **kwargs):
         est = real(*args, **kwargs)
         frame = est.frame.copy()
         frame["p_model"] = 0.02  # far below every lookup and below the Low cutoff
+        # "a": above its own (tiny) lookup but still under the floor, so the
+        # interval shift is upward — the case where shifting the floored bound
+        # instead of the raw Beta quantile publishes a different interval.
+        frame.loc[frame["beach_id"] == "a", "p_model"] = 0.12
         return ServingEstimate(frame, est.coefficients, est.train_rows, est.rain_coverage)
 
     monkeypatch.setattr(logit_challenger, "estimate_for_serving", crafted)
@@ -350,14 +368,40 @@ def test_serving_glue_floors_persistence_and_moves_the_interval_with_the_model(t
     f = pd.read_parquet(tmp_path / "forecasts.parquet").set_index("beach_id")
     lookup = compute_lookup(pd.read_parquet(tmp_path / "beach_day.parquet"), FORECAST_DATE, list(f.index)).set_index("beach_id")
 
-    # "a" last exceeded: the model says 0.02, the product rule says never Low.
+    # "a" last exceeded: the model says 0.12, the product rule says never Low,
+    # and a floored number is never explained as "below its record".
     assert f.loc["a", "p_exceed_raw"] == pytest.approx(float(_LOW_THRESHOLD))
     assert bool(f.loc["a", "persistence_floor_applied"])
+    assert lookup.loc["a", "p_lookup"] < float(_LOW_THRESHOLD)
+    assert f.loc["a", "p_exceed_lookup"] == pytest.approx(f.loc["a", "p_exceed"])
+    assert not any(d.startswith("Today's estimate") for d in f.loc["a", "top_drivers"])
+    # "b" is posted: served at the High floor, explained by the advisory alone.
+    assert bool(f.loc["b", "advisory_floor_applied"])
+    assert not any(d.startswith("Today's estimate") for d in f.loc["b", "top_drivers"])
     # "c" is clean and unposted: served exactly the model, and its interval moved
     # down with it on the logit scale rather than staying the lookup's.
     assert f.loc["c", "p_exceed"] == pytest.approx(0.02)
     assert not bool(f.loc["c", "persistence_floor_applied"])
     assert f.loc["c", "p_exceed_upper"] < lookup.loc["c", "p_exceed_upper"]
     shift = np.log(0.02 / 0.98) - np.log(lookup.loc["c", "p_lookup"] / (1 - lookup.loc["c", "p_lookup"]))
-    up = lookup.loc["c", "p_exceed_upper"]
+    up = lookup.loc["c", "beta_upper"]
     assert f.loc["c", "p_exceed_upper"] == pytest.approx(1 / (1 + np.exp(-(np.log(up / (1 - up)) + shift))))
+    # "a": the interval moves from the raw Beta quantile, not from the 0.20 floor
+    # compute_lookup widened its bound to.
+    la = lookup.loc["a"]
+    shift_a = np.log(0.12 / 0.88) - np.log(la["p_lookup"] / (1 - la["p_lookup"]))
+    assert shift_a > 0.5
+    lo_a = 1 / (1 + np.exp(-(np.log(la["beta_lower"] / (1 - la["beta_lower"])) + shift_a)))
+    assert f.loc["a", "p_exceed_lower"] == pytest.approx(min(lo_a, float(_LOW_THRESHOLD)))
+    up_a = 1 / (1 + np.exp(-(np.log(la["beta_upper"] / (1 - la["beta_upper"])) + shift_a)))
+    assert f.loc["a", "p_exceed_upper"] == pytest.approx(max(up_a, float(_LOW_THRESHOLD)))
+
+
+def test_a_dead_rain_feed_serves_the_lookup_instead_of_scoring_everyone_dry(tmp_path, small_fit):
+    _write_curated(tmp_path)
+    precip = pd.read_parquet(tmp_path / "precip_daily.parquet")
+    precip = precip[precip["sample_date"] < pd.Timestamp(FORECAST_DATE)]  # feed stopped at D-1
+    precip.to_parquet(tmp_path / "precip_daily.parquet", index=False)
+    summary = apply_lookup_to_served(tmp_path)
+    assert summary["serving_method"] == LOOKUP_MODEL_VERSION
+    assert "rain rows" in summary["fallback_reason"]
