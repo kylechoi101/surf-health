@@ -1,7 +1,7 @@
 # Model Card: Shorelife `xgb-undersample-ensemble-curated-v0`
 
 ## Deployment Status
-- **Generated at**: 2026-09-29T21:16:35.140393+00:00
+- **Generated at**: 2026-09-30T21:50:09.038033+00:00
 - **Deployment stage**: candidate_ready
 - **Public release eligible**: true
 - **Promotion blocker (latest)**: None
@@ -9,10 +9,10 @@
 ## Headline Metrics (from `system_health.json`)
 
 ### Temporal (held-out time slice)
-- **AUCPR**: 0.786
-- **Brier**: 0.057
-- **Log loss**: 0.204
-- **Calibration slope**: 0.994
+- **AUCPR**: 0.791
+- **Brier**: 0.056
+- **Log loss**: 0.199
+- **Calibration slope**: 1.032
 
 ### Deployment (active stations only; recency-filtered roster)
 - **AUCPR**: —
@@ -20,11 +20,11 @@
 - **n_samples**: 0
 
 ### Validation (calibration/training-time slice; not a public headline)
-- **AUCPR**: 0.831
+- **AUCPR**: 0.835
 - **Brier**: 0.093
 
 ### Spatial (holdouts)
-- **Spatial county AUCPR**: 0.723
+- **Spatial county AUCPR**: 0.709
 - **Spatial county persistence AUCPR**: 0.498
 
 ## Operational Agreement Check
