@@ -1,16 +1,16 @@
 {
-  "generated_at": "2026-09-30T21:50:29.388755+00:00",
+  "generated_at": "2026-10-01T05:06:58.004344+00:00",
   "forecast_date": "2026-09-30",
   "model_version": "logit-lookup-offset-v1",
   "risk_threshold": 0.2,
   "total_beaches": 377,
   "active_advisories": 29,
-  "agreement_rate": 1.0,
+  "agreement_rate": 0.828,
   "pool_metrics": {
     "acute": {
       "advised_beaches": 24,
-      "model_flagged": 24,
-      "agreement_rate": 1.0
+      "model_flagged": 19,
+      "agreement_rate": 0.792
     },
     "closure": {
       "advised_beaches": 5,
@@ -34,40 +34,76 @@
     }
   },
   "false_negatives": {
-    "count": 0,
+    "count": 5,
     "description": "Active advisory but model says Low/Moderate",
     "by_pool": {
-      "acute": 0,
+      "acute": 5,
       "closure": 0,
       "chronic": 0,
       "stale": 0,
       "unknown_duration": 0
     },
-    "worst_acute": [],
+    "worst_acute": [
+      {
+        "beach_id": "ca549911-east-bay-parks-district-crown-beach-alameda-co-crown-sunset-rd",
+        "risk_band": "Low",
+        "p_exceed": 0.056,
+        "pool": "acute",
+        "advisory_age_days": 0
+      },
+      {
+        "beach_id": "ca549911-east-bay-parks-district-crown-beach-alameda-co-crown-bath-house",
+        "risk_band": "Low",
+        "p_exceed": 0.059,
+        "pool": "acute",
+        "advisory_age_days": 0
+      },
+      {
+        "beach_id": "ca549911-east-bay-parks-district-crown-beach-alameda-co-crown-windsurfer-corner",
+        "risk_band": "Low",
+        "p_exceed": 0.089,
+        "pool": "acute",
+        "advisory_age_days": 0
+      },
+      {
+        "beach_id": "ca549911-east-bay-parks-district-crown-beach-alameda-co-crown-2001-shoreline-dr",
+        "risk_band": "Low",
+        "p_exceed": 0.092,
+        "pool": "acute",
+        "advisory_age_days": 0
+      },
+      {
+        "beach_id": "ca549911-east-bay-parks-district-crown-beach-alameda-co-crown-bird-sanctuary",
+        "risk_band": "Low",
+        "p_exceed": 0.14,
+        "pool": "acute",
+        "advisory_age_days": 0
+      }
+    ],
     "worst_chronic": []
   },
   "false_positives": {
-    "count": 38,
+    "count": 42,
     "description": "Model says High/VeryHigh but no active advisory",
     "worst": [
       {
         "beach_id": "ca432983-san-diego-imperial-beach-pier-area-eh-030",
         "risk_band": "Very High",
-        "p_exceed": 0.978,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
-        "beach_id": "ca839312-san-diego-baja-california-mexico-bc-010",
-        "risk_band": "Very High",
-        "p_exceed": 0.855,
+        "p_exceed": 0.98,
         "pool": "none",
         "advisory_age_days": null
       },
       {
         "beach_id": "ca801475-san-diego-silver-strand-state-beach-ib-068",
         "risk_band": "Very High",
-        "p_exceed": 0.801,
+        "p_exceed": 0.889,
+        "pool": "none",
+        "advisory_age_days": null
+      },
+      {
+        "beach_id": "ca839312-san-diego-baja-california-mexico-bc-010",
+        "risk_band": "Very High",
+        "p_exceed": 0.854,
         "pool": "none",
         "advisory_age_days": null
       },
@@ -95,7 +131,7 @@
       {
         "beach_id": "ca204955-san-diego-coronado-city-beaches-ib-079",
         "risk_band": "High",
-        "p_exceed": 0.551,
+        "p_exceed": 0.573,
         "pool": "none",
         "advisory_age_days": null
       },
@@ -116,21 +152,21 @@
       {
         "beach_id": "ca809706-san-diego-border-field-state-park-ib-020",
         "risk_band": "High",
-        "p_exceed": 0.41,
+        "p_exceed": 0.411,
         "pool": "none",
         "advisory_age_days": null
       },
       {
-        "beach_id": "ca506450-san-diego-san-diego-bay-eh-070",
+        "beach_id": "ca218180-santa-barbara-east-beach-wp0000085",
         "risk_band": "High",
-        "p_exceed": 0.406,
+        "p_exceed": 0.409,
         "pool": "none",
         "advisory_age_days": null
       },
       {
-        "beach_id": "ca801475-san-diego-silver-strand-state-beach-ib-069",
+        "beach_id": "ca211999-san-diego-mission-bay-vacation-isle-mb-205",
         "risk_band": "High",
-        "p_exceed": 0.385,
+        "p_exceed": 0.376,
         "pool": "none",
         "advisory_age_days": null
       },
@@ -144,7 +180,14 @@
       {
         "beach_id": "ca104746-san-diego-tijuana-slough-national-wildlife-refuge-ib-040",
         "risk_band": "High",
-        "p_exceed": 0.366,
+        "p_exceed": 0.367,
+        "pool": "none",
+        "advisory_age_days": null
+      },
+      {
+        "beach_id": "ca506450-san-diego-san-diego-bay-eh-070",
+        "risk_band": "High",
+        "p_exceed": 0.361,
         "pool": "none",
         "advisory_age_days": null
       },
@@ -156,9 +199,16 @@
         "advisory_age_days": null
       },
       {
+        "beach_id": "ca801475-san-diego-silver-strand-state-beach-ib-069",
+        "risk_band": "High",
+        "p_exceed": 0.324,
+        "pool": "none",
+        "advisory_age_days": null
+      },
+      {
         "beach_id": "ca839312-san-diego-baja-california-mexico-bc-020",
         "risk_band": "High",
-        "p_exceed": 0.304,
+        "p_exceed": 0.303,
         "pool": "none",
         "advisory_age_days": null
       },
@@ -173,20 +223,6 @@
         "beach_id": "ca316627-san-diego-dog-beach-o-b-fm-010",
         "risk_band": "Moderate",
         "p_exceed": 0.287,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
-        "beach_id": "ca735620-los-angeles-santa-monica-state-beach-smb-3-3",
-        "risk_band": "Moderate",
-        "p_exceed": 0.266,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
-        "beach_id": "ca876094-san-diego-la-jolla-shores-beach-fm-080",
-        "risk_band": "Moderate",
-        "p_exceed": 0.257,
         "pool": "none",
         "advisory_age_days": null
       }
