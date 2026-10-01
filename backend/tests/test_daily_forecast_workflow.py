@@ -53,3 +53,30 @@ def test_lookup_estimate_is_reapplied_after_advisory_expiry_and_before_the_snaps
     assert expire_index != -1 and last_lookup_index != -1
     assert snapshot_index != -1 and commit_index != -1
     assert expire_index < last_lookup_index < snapshot_index < commit_index
+
+
+def test_web_deploy_is_dispatched_after_the_commit_and_cannot_block_the_render_deploy():
+    """The web bake must follow the data commit, not race it on its own cron.
+
+    After the commit (the bake reads data/curated/ from main, so dispatching
+    earlier would bake yesterday's data) and before the Render deploy, which is
+    `if: success()` -- so the dispatch must be continue-on-error, or a failed
+    call would leave the API on the stale snapshot.
+    """
+    text = WORKFLOW.read_text()
+
+    commit_index = text.find("chore: daily forecast refresh")
+    dispatch_index = text.find("repos/kylechoi101/shorelife-web/dispatches")
+    render_index = text.find("Trigger Render deploy")
+
+    assert dispatch_index != -1, "the daily workflow must dispatch the web deploy"
+    assert commit_index < dispatch_index < render_index
+    step = text[text.rfind("- name:", 0, dispatch_index):dispatch_index]
+    assert "continue-on-error: true" in step
+    # ...and it cannot hang into the job budget either.
+    assert "timeout-minutes:" in step
+    assert "--max-time" in text[dispatch_index - 600:dispatch_index]
+    assert "backend-data-published" in text[dispatch_index - 2000:dispatch_index]
+    # The token reaches the shell through env, never interpolated into the script.
+    assert "${{ secrets.WEB_DEPLOY_DISPATCH_TOKEN }}" in step
+    assert "secrets.WEB_DEPLOY_DISPATCH_TOKEN" not in text[text.find("run: |", text.rfind("- name:", 0, dispatch_index)):dispatch_index]
