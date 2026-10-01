@@ -288,6 +288,32 @@ def _backtest_summary(curated_path: Path) -> dict[str, Any] | None:
         "base_rate": overall.get("base_rate"),
         "logit": {k: overall.get("challenger", {}).get(k) for k in keys},
         "lookup": {k: overall.get("lookup", {}).get(k) for k in keys},
+        "same_rows": _same_rows_block(results),
+    }
+
+
+def _same_rows_block(results: dict[str, Any]) -> dict[str, Any] | None:
+    """Logistic, lookup AND the ML that actually served, on identical forward rows.
+
+    The backtest's "served-log overlap" slice: the forecast_history window where
+    the ML challenger's served probability exists, scored with the same forward
+    outcome. This is the only like-for-like ML comparison -- the ML's own
+    production_metrics are a temporal test split on sample-days, a different
+    population at a higher base rate, so its 0.79-ish AUCPR there is not
+    comparable to these.
+    """
+    try:
+        overlap = results["outcomes"]["forward_1_3d"]["served-log overlap"]
+    except (KeyError, TypeError):
+        return None
+    keys = ("auroc", "aucpr", "brier", "within_beach_auroc")
+    return {
+        "window": overlap.get("window"),
+        "n": overlap.get("n"),
+        "base_rate": overlap.get("base_rate"),
+        "logit": {k: overlap.get("challenger", {}).get(k) for k in keys},
+        "lookup": {k: overlap.get("lookup", {}).get(k) for k in keys},
+        "ml": {k: overlap.get("served_ml", {}).get(k) for k in keys},
     }
 
 
@@ -615,7 +641,7 @@ def apply_lookup_to_served(curated_dir: Path | str, method: str | None = None) -
         live = served_performance_for_versions(
             curated_path,
             frozenset({logit_challenger.LOGIT_CHALLENGER_VERSION}),
-            compare_column="p_exceed_lookup",
+            compare_columns=("p_exceed_lookup", "p_exceed_ml"),
         )
     except Exception as exc:  # noqa: BLE001 — a scoring failure must not cost the forecast
         print(f"lookup_serving: live scoring failed ({type(exc).__name__}: {exc})", file=sys.stderr)
