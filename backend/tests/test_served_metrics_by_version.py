@@ -22,7 +22,10 @@ def _write(tmp_path, n_days=60, beaches=30, seed=0):
             p = float(np.clip(0.1 + (0.4 if y else 0.0) + rng.normal(0, 0.05), 0.01, 0.99))
             rows.append({"beach_id": f"b{b}", "forecast_date": str(d.date()),
                          "forecast_generated_at": f"{d.date()}T08:00:00", "p_exceed": p,
-                         "p_exceed_precal": p, "p_exceed_lookup": 0.15, "model_version": version, "risk_band": "Low"})
+                         "p_exceed_precal": p, "p_exceed_lookup": 0.15,
+                         # the ML column is missing on one beach, so the common subset is smaller
+                         "p_exceed_ml": np.nan if b == 0 else float(np.clip(p + rng.normal(0, 0.3), 0.01, 0.99)),
+                         "model_version": version, "risk_band": "Low"})
             obs.append({"beach_id": f"b{b}", "sample_date": d + pd.Timedelta(days=1), "exceeds_stv": y})
     pd.DataFrame(rows).to_parquet(tmp_path / "forecast_history.parquet", index=False)
     pd.DataFrame(obs).to_parquet(tmp_path / "observations.parquet", index=False)
@@ -30,15 +33,21 @@ def _write(tmp_path, n_days=60, beaches=30, seed=0):
 
 def test_scores_only_the_requested_version_and_compares_on_the_same_rows(tmp_path):
     _write(tmp_path)
-    out = served_performance_for_versions(tmp_path, {LOGIT}, compare_column="p_exceed_lookup")
+    out = served_performance_for_versions(
+        tmp_path, {LOGIT}, compare_columns=("p_exceed_lookup", "p_exceed_ml")
+    )
     assert out["first_served"] == "2026-06-21"
     fwd = out["forward_1_3d"]
     # 40 logistic days x 30 beaches, every one with a next-day outcome
     assert fwd["n_pairs"] == 40 * 30
     assert fwd["reportable"] is True
-    cmp = fwd["compare_p_exceed_lookup"]
-    assert cmp["n_pairs"] == fwd["n_pairs"]
-    assert fwd["auroc"] > 0.9 and cmp.get("auroc", 0.5) == pytest.approx(0.5)
+    head = fwd["head_to_head"]
+    # every model is scored on the SAME rows: the 29 beaches with an ML value
+    assert head["n_pairs"] == 40 * 29
+    for name in ("served", "p_exceed_lookup", "p_exceed_ml"):
+        assert head[name]["n_pairs"] == head["n_pairs"]
+    assert head["served"]["auroc"] > head["p_exceed_ml"]["auroc"] > 0.5
+    assert head["p_exceed_lookup"].get("auroc", 0.5) == pytest.approx(0.5)
 
 
 def test_not_reportable_until_the_calibration_bar(tmp_path, monkeypatch):
@@ -78,6 +87,20 @@ def test_backtest_summary_reads_the_committed_results(tmp_path):
     }))
     out = _backtest_summary(curated)
     assert out["logit"]["auroc"] == 0.85 and out["lookup"]["within_beach_auroc"] == 0.45
+    assert out["same_rows"] is None  # this fixture has no served-log overlap slice
+
+
+def test_backtest_same_rows_carries_the_ml_that_served():
+    from pathlib import Path
+
+    from app.ml.lookup_serving import _backtest_summary
+
+    curated = Path(__file__).resolve().parents[2] / "data" / "curated"
+    same = _backtest_summary(curated)["same_rows"]
+    assert same["n"] > 10_000
+    # the like-for-like ML number the site must show instead of the sample-day 0.79
+    assert 0.2 < same["ml"]["aucpr"] < 0.5
+    assert same["logit"]["aucpr"] > same["ml"]["aucpr"]
 
 
 def test_the_committed_backtest_is_where_serving_looks_for_it():

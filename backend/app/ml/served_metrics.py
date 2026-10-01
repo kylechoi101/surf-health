@@ -344,17 +344,21 @@ LIVE_MIN_POSITIVES = _MIN_FIT_POSITIVES
 
 
 def served_performance_for_versions(
-    curated_dir: Path, versions: set[str] | frozenset[str], compare_column: str | None = None
+    curated_dir: Path,
+    versions: set[str] | frozenset[str],
+    compare_columns: tuple[str, ...] = (),
 ) -> dict | None:
     """Forward-outcome score of ONLY the rows a given serving method produced.
 
     ``served_performance`` pools its whole window, which straddles every serving
     change (ML -> lookup -> logistic), so it cannot say how the current method is
     doing. This restricts the same final-per-beach-day pairs to ``model_version``
-    in ``versions`` and, when ``compare_column`` is given (e.g. ``p_exceed_lookup``,
-    logged on the same rows), scores that column on the identical pairs as a
-    head-to-head. ``reportable`` is False until the pairs clear the same
-    500-pair / 25-positive bar the serving calibration uses.
+    in ``versions``. ``compare_columns`` (e.g. ``p_exceed_lookup``, ``p_exceed_ml``,
+    both logged on the same rows) are scored in ``head_to_head`` together with the
+    served probability on exactly the rows where every one of them is present, so
+    the comparison is never across different rows. ``reportable`` is False until
+    the pairs clear the same 500-pair / 25-positive bar the serving calibration
+    uses (``head_to_head`` carries its own flag on its own subset).
     """
     loaded = _matched_from_disk(curated_dir)
     if loaded is None:
@@ -376,12 +380,26 @@ def served_performance_for_versions(
         scored["reportable"] = bool(
             scored["n_pairs"] >= LIVE_MIN_PAIRS and scored["n_positive"] >= LIVE_MIN_POSITIVES
         )
-        if compare_column and compare_column in rows.columns:
-            other = rows.dropna(subset=["p_exceed", outcome, compare_column]).copy()
-            other["p_exceed"] = pd.to_numeric(other[compare_column], errors="coerce")
-            compared = _score(other, outcome)
-            if compared is not None:
-                scored[f"compare_{compare_column}"] = compared
+        present = [c for c in compare_columns if c in rows.columns]
+        if present:
+            common = rows.copy()
+            for column in ["p_exceed", *present]:
+                common[column] = pd.to_numeric(common[column], errors="coerce")
+            common = common.dropna(subset=["p_exceed", outcome, *present])
+            head: dict[str, object] = {}
+            served = _score(common, outcome)
+            if served is not None:
+                head["served"] = served
+                head["n_pairs"] = served["n_pairs"]
+                head["reportable"] = bool(
+                    served["n_pairs"] >= LIVE_MIN_PAIRS
+                    and served["n_positive"] >= LIVE_MIN_POSITIVES
+                )
+                for column in present:
+                    swapped = common.copy()
+                    swapped["p_exceed"] = swapped[column]
+                    head[column] = _score(swapped, outcome)
+                scored["head_to_head"] = head
         payload[key] = scored
     return payload
 
