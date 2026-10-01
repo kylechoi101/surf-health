@@ -73,6 +73,9 @@ def test_web_deploy_is_dispatched_after_the_commit_and_cannot_block_the_render_d
     assert commit_index < dispatch_index < render_index
     step = text[text.rfind("- name:", 0, dispatch_index):dispatch_index]
     assert "continue-on-error: true" in step
+    # ...and it cannot hang into the job budget either.
+    assert "timeout-minutes:" in step
+    assert "--max-time" in text[dispatch_index - 600:dispatch_index]
     assert "backend-data-published" in text[dispatch_index - 2000:dispatch_index]
     # The token reaches the shell through env, never interpolated into the script.
     assert "${{ secrets.WEB_DEPLOY_DISPATCH_TOKEN }}" in step
