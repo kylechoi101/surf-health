@@ -33,6 +33,14 @@ data/
   raw/cnrfc/       Open-Meteo cache (openmeteo/, openmeteo_solar_wind/ subdirs)
 ```
 
+## Next steps
+
+See `docs/NEXT_STEPS.md` (2026-10-02): a data-source inventory with measured coverage (Orange
+County dark in every state route since 2026-08-24 → 0 of 224 OC beaches served; Monterey 0 of
+15; 375 of 726 production beaches served) and five ordered steps — scoreboard before model,
+simple model on the critical path with XGB as a weekly challenger, county feeds primary with
+curated aliases, static-file serving instead of the Render API tier, and daily/weekly CI split.
+
 ## Data pipeline
 
 Run from `backend/` with `.venv/bin/python -m app.data.pipeline.cli`.
