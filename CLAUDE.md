@@ -40,6 +40,8 @@ County dark in every state route since 2026-08-24 → 0 of 224 OC beaches served
 15; 375 of 726 production beaches served) and five ordered steps — scoreboard before model,
 simple model on the critical path with XGB as a weekly challenger, county feeds primary with
 curated aliases, static-file serving instead of the Render API tier, and daily/weekly CI split.
+The runnable, phased version is `docs/UPDATE_PLAN.md`: fix data, compare every model on
+before/after snapshots, then change serving.
 
 ## Data pipeline
 
