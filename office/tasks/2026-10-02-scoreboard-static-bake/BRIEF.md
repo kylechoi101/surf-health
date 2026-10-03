@@ -111,3 +111,11 @@ Deliverable: parity tests and all Acceptance commands pass with output pasted.
 ## Corrections
 
 (appended by the PM; newest last; each entry dated)
+
+### 2026-10-02 23:10 — before phase 25 (PM)
+
+Repo is the worktree `/Users/kylechoi/surf_health-p3`, branch `feat/update-plan-phase3-static`
+(cut from `main` after PRs #45 and #46). `data/raw` there is a symlink — never commit it; do not
+modify `data/curated` there (use /tmp copies; a full fixture is
+`/Users/kylechoi/surf_health/data/snapshots/after-2026-10-02`). `lookup_serving.py` now also has
+the standalone path from PR #46 — keep it working (its tests must stay green).
