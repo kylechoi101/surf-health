@@ -794,3 +794,24 @@ def test_suggest_rows_count_toward_the_gate(layer_resolver: StationResolver):
     resolve_advisories(advs, layer_resolver, _rpt(), unresolved_sink=sink, heuristic_mode="suggest")
     verdict = evaluate_scraper_gate(sink, len(advs), [], {})
     assert verdict["passed"] is False
+
+
+def test_cli_heuristic_mode_defaults_to_suggest(monkeypatch, tmp_path):
+    """UPDATE_PLAN 1.3.4: after the alias review, a new heuristic hit must surface for a human
+    (unresolved + suggested_beach_id), not post silently."""
+    import fetch_county_advisories as f
+
+    captured = {}
+
+    def fake_parse(self, args=None, namespace=None):
+        ns = original(self, args=["--curated", str(tmp_path / "missing")], namespace=namespace)
+        captured["mode"] = ns.heuristic_mode
+        return ns
+
+    import argparse
+
+    original = argparse.ArgumentParser.parse_args
+    monkeypatch.setattr(argparse.ArgumentParser, "parse_args", fake_parse)
+    monkeypatch.setattr(sys, "argv", ["fetch_county_advisories.py"])
+    assert f.main() == 1  # curated dir missing → exits right after parsing
+    assert captured["mode"] == "suggest"
