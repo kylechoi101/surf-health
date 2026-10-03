@@ -468,3 +468,36 @@ def test_report_same_run_has_zero_deltas_and_verdicts(tmp_path):
     common = report.split("## Common pairs")[1].split("## Full pairs")[0]
     assert "Δ +0.000 [+0.000, +0.000]" in common
     assert "Δ +0.001" not in common and "Δ -0.0" not in common
+
+
+def test_build_report_common_pairs_with_changed_labels_and_slices(tmp_path):
+    """Regression (2026-10-02 real run): the data fix changes some labels and some beaches'
+    assay/county between snapshots. Common pairs must still pair the same rows (one slice
+    mask) and score each side against its own labels — this crashed with a shape mismatch."""
+    beaches = [f"b{i}" for i in range(8)]
+    before = _run_pairs(beaches, _dates(), seed=1)
+    after = before.copy()
+    flip = after.index[::7]
+    after.loc[flip, "y"] = 1 - after.loc[flip, "y"]          # corrected labels
+    moved = after["beach_id"].isin(["b1", "b2"])
+    after.loc[moved, "assay"] = "ddpcr"                       # slice membership changed
+    after.loc[moved, "county"] = "Orange"
+    for name, frame in (("before", before), ("after", after)):
+        (tmp_path / name).mkdir()
+        frame.to_parquet(tmp_path / name / "predictions.parquet")
+    report, verdicts = dc.build_report(tmp_path / "before", tmp_path / "after", reps=20)
+    assert "common" in verdicts and "full" in verdicts
+    assert "Common pairs" in report
+
+
+def test_bootstrap_delta_scores_each_side_against_its_own_labels():
+    rng = np.random.default_rng(3)
+    n = 400
+    beach = np.repeat(np.arange(20), n // 20)
+    y_old = rng.integers(0, 2, n)
+    p = rng.random(n)
+    y_new = y_old.copy()
+    # Same predictions, labels changed so p ranks the NEW labels perfectly: AUROC delta > 0.
+    y_new = (p > np.median(p)).astype(int)
+    ci = dc.bootstrap_delta(y_new, p, p, beach, reps=50, seed=0, y_old=y_old)
+    assert ci["auroc"][0] > 0

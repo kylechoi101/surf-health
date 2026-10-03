@@ -96,49 +96,54 @@ def bootstrap_delta(
     reps: int,
     seed: int = 0,
     metrics: Sequence[str] = METRICS,
+    y_old: np.ndarray | None = None,
 ) -> dict[str, list[float]]:
     """95% beach-cluster bootstrap CI of metric(p_new) - metric(p_old) on identical rows.
 
-    Rows where either probability is NaN are dropped. Identical predictions give exactly
-    [0, 0]. ``within_beach_auroc`` uses per-beach AUROCs computed once (a duplicated beach
-    has the same AUROC, only a larger count), so each replicate is a weighted mean.
+    ``y`` labels ``p_new``; ``y_old`` (default ``y``) labels ``p_old``. They differ on
+    before/after common pairs when the data fix corrected a label: each side is scored
+    against its own labels, while the resampled beaches are shared. Rows where either
+    probability is NaN are dropped. Identical predictions and labels give exactly [0, 0].
+    ``within_beach_auroc`` uses per-beach AUROCs computed once per side (a duplicated
+    beach has the same AUROC, only a larger count), so each replicate is a weighted mean.
     """
+    y_old = y if y_old is None else y_old
     nan_ci = {m: [float("nan"), float("nan")] for m in metrics}
     valid = ~np.isnan(p_new) & ~np.isnan(p_old)
-    y, p_new, p_old, beach = y[valid], p_new[valid], p_old[valid], beach[valid]
-    if len(y) == 0 or len(np.unique(y)) < 2 or reps <= 0:
+    y, y_old, p_new, p_old, beach = y[valid], y_old[valid], p_new[valid], p_old[valid], beach[valid]
+    if len(y) == 0 or len(np.unique(y)) < 2 or len(np.unique(y_old)) < 2 or reps <= 0:
         return nan_ci
-    if np.array_equal(p_new, p_old):
+    if np.array_equal(p_new, p_old) and np.array_equal(y, y_old):
         return {m: [0.0, 0.0] for m in metrics}
     p_new, p_old = np.clip(p_new, 1e-4, 1 - 1e-4), np.clip(p_old, 1e-4, 1 - 1e-4)
 
     rng = np.random.default_rng(seed)
     groups = list(pd.Series(np.arange(len(y))).groupby(beach).indices.values())
     n_g = len(groups)
-    w, a_new = _beach_auroc_stats(y, p_new, beach)
-    _, a_old = _beach_auroc_stats(y, p_old, beach)
+    w_new, a_new = _beach_auroc_stats(y, p_new, beach)
+    w_old, a_old = _beach_auroc_stats(y_old, p_old, beach)
     draws: dict[str, list[float]] = {m: [] for m in metrics}
     for _ in range(reps):
         pick = rng.choice(n_g, n_g, replace=True)
         counts = np.bincount(pick, minlength=n_g)
         idx = np.concatenate([groups[i] for i in pick])
-        yy = y[idx]
-        if yy.min() == yy.max():
+        yy, yo = y[idx], y_old[idx]
+        if yy.min() == yy.max() or yo.min() == yo.max():
             continue
         for m in metrics:
             if m == "within_beach_auroc":
-                den = float((counts * w).sum())
-                if den == 0:
+                den_new, den_old = float((counts * w_new).sum()), float((counts * w_old).sum())
+                if den_new == 0 or den_old == 0:
                     continue
-                val = float((counts * w * (a_new - a_old)).sum() / den)
+                val = float((counts * w_new * a_new).sum() / den_new - (counts * w_old * a_old).sum() / den_old)
             elif m == "auroc":
-                val = roc_auc_score(yy, p_new[idx]) - roc_auc_score(yy, p_old[idx])
+                val = roc_auc_score(yy, p_new[idx]) - roc_auc_score(yo, p_old[idx])
             elif m == "aucpr":
-                val = average_precision_score(yy, p_new[idx]) - average_precision_score(yy, p_old[idx])
+                val = average_precision_score(yy, p_new[idx]) - average_precision_score(yo, p_old[idx])
             elif m == "brier":
-                val = brier_score_loss(yy, p_new[idx]) - brier_score_loss(yy, p_old[idx])
+                val = brier_score_loss(yy, p_new[idx]) - brier_score_loss(yo, p_old[idx])
             else:
-                val = sensitivity_at_specificity(yy, p_new[idx]) - sensitivity_at_specificity(yy, p_old[idx])
+                val = sensitivity_at_specificity(yy, p_new[idx]) - sensitivity_at_specificity(yo, p_old[idx])
             draws[m].append(float(val))
     return {
         m: [float(np.percentile(v, 2.5)), float(np.percentile(v, 97.5))] if v else [float("nan"), float("nan")]
@@ -271,7 +276,10 @@ def _arm_arrays(df: pd.DataFrame, mask: np.ndarray, arm: str):
 def _metric_table(
     arms: Sequence[str], mask_name: str, way: str, b_df: pd.DataFrame, a_df: pd.DataFrame, reps: int
 ) -> list[str]:
-    bm, am = slice_mask(b_df, mask_name), slice_mask(a_df, mask_name)
+    am = slice_mask(a_df, mask_name)
+    # Common pairs are row-aligned: one mask for both sides, taken from the after run, so a
+    # slice whose membership the data fix changed (assay, county) still pairs the same rows.
+    bm = am if way == "common" else slice_mask(b_df, mask_name)
     lines = [
         "| arm | n before / after | " + " | ".join(METRICS) + " |",
         "|---|---|" + "---|" * len(METRICS),
@@ -283,7 +291,7 @@ def _metric_table(
         ma = metric_values(ya, pa, ba)
         ci = None
         if way == "common" and len(yb):
-            ci = bootstrap_delta(ya, pa, pb, ba, reps=reps, seed=0)
+            ci = bootstrap_delta(ya, pa, pb, ba, reps=reps, seed=0, y_old=yb)
         cells = []
         for m in METRICS:
             if way == "new_beaches":
