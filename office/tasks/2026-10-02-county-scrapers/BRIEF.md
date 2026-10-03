@@ -3,7 +3,7 @@ task: county-scrapers
 repo: /Users/kylechoi/surf_health-p1
 worker: gemini
 created: 2026-10-02
-status: open
+status: done
 ---
 
 ## Goal
@@ -209,3 +209,39 @@ beach"`. They inflate the scraper gate with non-postings. In the Ventura scraper
 with a lowercase letter, contain a sentence break (`". "`), or exceed 10 words; count rejects
 in a new `rpt.rejected_fragments` int (and the JSON report) instead of passing them to the
 resolver. Add a test with those three strings. Do this in phase 50.
+
+### 2026-10-02 19:55 — phase 50 blocked, retry (PM)
+
+The first phase-50 run died mid-way on a network error (`write: broken pipe` to the Gemini
+API, rc=3). Partial edits from that run are in the working tree (San Mateo fixtures
+`sm.kml`/`sm2.html` under `backend/tests/fixtures/county_scrapers/`, some changes in
+`fetch_county_advisories.py`). Inspect `git diff` first, keep what is correct, and complete
+phase 50.
+
+### 2026-10-02 20:05 — phase 50 moved to Cursor (PM)
+
+Gemini failed twice on network drops to Google (broken pipe; connection reset during the agent's
+eligibility check). Phase 50 now runs on Cursor. Partial phase-50 edits from the Gemini runs
+are in the working tree; inspect `git diff`, keep what is correct, and complete phase 50.
+
+### 2026-10-02 20:40 — before phase 75 (PM)
+
+1. **San Mateo must resolve through `StationResolver`, not an inline scanner.** `_sm_build_lookup`
+   / `_sm_lookup_beach_id` do an unguarded `key in norm` longest-key scan — the single-token
+   wrong-beach failure class the 2026-08-05 resolver hardening removed (CLAUDE.md, "Substring
+   rule was producing wrong-beach advisories"). It was carried over from the old page scraper,
+   but the KML now gives one clean site name per placemark. Remove both helpers; emit
+   `CountyAdvisory(county="San Mateo", area=<placemark name>, station_code=None, ...)` and let
+   the normal resolution path (`resolve_advisories` → `resolve_all_by_name`) resolve them, so
+   the alias CSV precedence, the anchoring guard and phase 100's per-layer accounting all
+   apply. Names it cannot resolve go to unresolved — the PM reviews them into the alias CSV.
+2. Trim `sm2.html` and `oc.html` fixtures to the minimum the tests need (the notices block /
+   the CLOSURES…ADVISORIES section plus enough markup to parse) — target < 30 KB each.
+3. Then do phase 75 as written.
+
+### 2026-10-02 21:05 — before phase 100 (PM)
+
+Answer to your open question: do the 20:40 correction (items 1 and 2: San Mateo through
+`StationResolver` with the inline scanner removed; fixtures trimmed < 30 KB each) **first** in
+phase 100, then the phase-100 work. Phase 100's acceptance includes both. Report the live San
+Mateo smoke after the change: how many of the 11 resolve and by which resolver kind.

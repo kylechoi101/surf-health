@@ -122,3 +122,25 @@ beach_day / history / forecasts (never a model input — pinned by test). PM-run
 suite 741 passed / 0 failed, ruff clean. Corrections: phase 25 (collapse lost 164 exceedances →
 same-source rule + rebind). Worker's phase 50/75 reports misstated the lost-exceedance count as
 0 (PM recompute 8). Tokens (Gemini): 25: 510k (two runs), 50: 425k, 75: 826k, 100: 272k.
+
+**county-scrapers task closed** (`office/tasks/2026-10-02-county-scrapers`). San Diego (OutSystems
+`GetEventsList`, runtime apiVersion discovery), Santa Barbara (ArcGIS layer), San Mateo (My Maps
+KML + notices, resolved through `StationResolver` — the old inline unguarded substring scanner is
+gone), OC advisory diagnostics, OC lab-result connector (`fetch_orange_county_samples`, 2,024
+station-days live; `"Orange"` in `INGEST_COUNTIES`), Monterey recorded as no-source, workflow
+`GITHUB_TOKEN` + `models: read`, Ventura prose fragments rejected, resolver layer kinds + per-county
+`heuristic_matches` + `--heuristic-mode {resolve,suggest}` (default still `resolve`; UPDATE_PLAN
+1.3.4 flips it after this alias review is merged). Gemini dropped twice on Google network resets
+in phase 50; Cursor failed on an `office-worker` bug (`--continue` with no prior Cursor chat when
+a task switches worker mid-way); phases 50–100 ran on the Claude Sonnet fallback.
+**PM fixes after acceptance:** `RetryingClient.post` had no `json=`, so San Diego failed in every
+real `main()` run while the worker's raw-httpx smoke and MockTransport tests passed; fixed, and
+the offline test now drives `RetryingClient` (fails without the fix). **1.3 review:** in the live
+10-02 scrape, 2 of the 5 substring-layer resolutions were wrong-beach — "Newport Bay - Bayside
+Drive Beach" → Newport Beach BGC (should be BNB33, literally "Bayside Drive Beach") and "Dana Point
+Harbor - All of Baby Beach" → Doheny DSB5U (should be BDP12–15). With the advisory floor, that
+put a Doheny station at High while the four Baby Beach stations showed their own band. 10 alias
+rows added (wrong ones corrected, Baby Beach fanned out, 3 correct picks confirmed) + Calera Creek
+unmapped. Result: `resolve` == `suggest` == 90 resolved, 0 heuristic (CI 10-02: 59).
+Full suite 773 passed / 0 failed. Tokens: Gemini 25: 538k; Claude fallback 50/75/100 ≈ 41k
+(reported by the CLI).
