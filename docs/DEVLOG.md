@@ -157,3 +157,42 @@ media library (uploads since 2020): median gap 20 / 36 / 21 days in 2023 / 2024 
 sample 1–4 days old at upload; at the 2024 cadence OC would be unserved ~20% of days under the
 30-day gate. Unfloored OC forecasts track the 12-month record at r = 0.967, same as the rest of
 the state.
+
+## 2026-10-02 (night) — UPDATE_PLAN phases 2–3 shipped
+
+**Merged (surf-health):** #45 Phase 1 data; #46 standalone serving + daily shadow (3.4); #47 live
+scoreboard + static `api/*` files + daily tides (3.1/3.2) + an API 500 fix (null-value
+observation, Julia Pfeiffer Burns) + 3 dead NOAA stations removed; #48 served logistic **v2**
+(assay term, promoted by `PROMOTION.md`); #49 heuristic default `suggest`, v2 backtest refresh,
+docs. **shorelife-web:** #21 deploy bakes `api/*` (`--with-details`); #22 research-page
+scoreboard + v2 formula (rendered locally against a real v2 health file before merging).
+**shorelife-mobile:** static-first reader (`deef880`, `012793f`), OTA published 2026-10-02 to
+production (update groups `cfdf8b6b` iOS / `821374cf` Android — same runtime versions as the
+last three OTAs, so it reaches installed builds). Before shipping, the live static files were
+compared with the live Render API: 850/850 beaches, forecasts / observations / explain equal on
+sampled beaches; only float last-digit (`shore_normal_deg`) and `+00:00` vs `Z` differ.
+
+**Production's first run on the Phase-1 code** (run 37096635650) published correctly — 371
+served (the 4 neighbour-fed beaches gone), advisories resolved 59 → 89, 0 unexpected
+unresolved, scraper and release gates pass — but its final "served estimate fell back" check
+failed. **False alarm:** the run served v1 correctly; its commit step's `git pull --rebase` pulled
+PR #48's v2 verify script mid-run. Lesson: don't merge a serving-version change while a daily
+run is in flight. Orange County shows 0 served in that run (county-direct merges the previous
+run's scrape) and appears from the next run that checks out today's data.
+
+**Contract amendment found by the worker before anything shipped:** the existing top-level
+`beaches.json` is the web's flat shape, not the API's `BeachSummary` — API-shaped copies moved
+under `api/` and the mobile reader switched before release.
+
+**Workers:** Gemini out of credits, Cursor at its usage limit until 10-06; every task from
+county-scrapers phase 50 on ran on the Claude Sonnet fallback. `office-worker` fixed (Cursor
+without a saved chat now starts fresh; `~/office` `134c29a`).
+
+**shorelife-web housekeeping:** the old uncommitted SEO edits and an old `llms.txt` draft in
+`~/shorelife-web` (superseded by PR #17) are stashed there with labels; that checkout is on
+`main`.
+
+**Open:** 3.4 needs 7 consecutive zero-diff shadow days → 3.5 CI split (check scheduled
+10-10). 3.6 Render retirement after 2 weeks of the OTA (check scheduled 10-16; suspending the
+service is the CEO's manual step). Monterey outreach email is in the CEO's Gmail drafts
+(recipient address unverified).

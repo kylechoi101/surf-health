@@ -571,8 +571,8 @@ Only after 3.3 has been live for 2 weeks and the Render dashboard shows API traf
 - [x] 2.6 decision recorded (2026-10-02: logit_method promoted → served v2, PR #48)
 - [x] 3.1 scoreboard: within-beach AUROC, persistence, CIs (2026-10-02, PR #47; web table pending)
 - [x] 3.2 static detail + tides files (2026-10-02, PR #47 + shorelife-web #21)
-- [ ] 3.3 mobile static-first, OTA (code on feat/dual-mode deef880 + 012793f; OTA after api/ files verified live)
+- [x] 3.3 mobile static-first, OTA (2026-10-02: EAS update groups cfdf8b6b ios / 821374cf android, same runtime as the installed builds; static api/ verified against the live API first)
 - [ ] 3.4 standalone serving, 7 days zero diff (shadow live 2026-10-02, PR #46; 7-day clock running)
 - [ ] 3.5 CI split
 - [ ] 3.6 Render retired
-- [ ] 3.7 docs
+- [x] 3.7 docs (2026-10-02: CLAUDE.md section, plan checklist; CI and deploy sections follow 3.5 / 3.6)
