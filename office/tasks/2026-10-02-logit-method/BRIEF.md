@@ -3,7 +3,7 @@ task: logit-method
 repo: /Users/kylechoi/surf_health-p3
 worker: claude
 created: 2026-10-02
-status: open
+status: done
 ---
 
 ## Goal
@@ -91,3 +91,16 @@ Deliverable: CLAUDE.md updated; all Acceptance commands pass with output pasted.
 ## Corrections
 
 (appended by the PM; newest last; each entry dated)
+
+### 2026-10-02 22:25 — before phase 50 (PM)
+
+1. Your note on `estimate_for_serving`: `lab_logit` (used for the driver lines) must include the
+   `ddpcr` and `R_ddpcr` terms wherever it represents the lab-history contribution, so the
+   "above/below the 12-month record" driver stays consistent with the served number (CLAUDE.md
+   warns about a driver contradicting the served number — keep that test green / add one for a
+   ddPCR beach).
+2. `scripts/compare_logit_challenger.py` now backtests v2 (it follows `FEATURE_COLUMNS`) — that is
+   intended. In phase 75, re-run it on the after snapshot
+   (`--curated /Users/kylechoi/surf_health/data/snapshots/after-2026-10-02 --out /tmp/lcv2`) and
+   report the forward_1_3d all / not-SD metrics; do NOT overwrite
+   `data/experiments/logit_challenger/` (the PM refreshes it after merge).
