@@ -115,3 +115,10 @@ Humboldt/Sonoma/SLO: the advisory step lacks `GITHUB_TOKEN` and `models: read`. 
 parser emits prose fragments ("cate that water quality at the following beach") that were
 all 3 of CI's "unexpected unresolved". Los Angeles' "error" is informational (no warnings
 in window). Implementation: task `county-scrapers`.
+
+**canonical-sample-key task closed** (`office/tasks/2026-10-02-canonical-sample-key`): `sample_key.py`
+(rebind + collapse + `assay_kind`), `ceden.py` crosswalk fix, cli wiring, `label_method` in
+beach_day / history / forecasts (never a model input — pinned by test). PM-run acceptance: full
+suite 741 passed / 0 failed, ruff clean. Corrections: phase 25 (collapse lost 164 exceedances →
+same-source rule + rebind). Worker's phase 50/75 reports misstated the lost-exceedance count as
+0 (PM recompute 8). Tokens (Gemini): 25: 510k (two runs), 50: 425k, 75: 826k, 100: 272k.

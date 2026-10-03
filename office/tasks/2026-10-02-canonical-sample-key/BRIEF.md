@@ -3,7 +3,7 @@ task: canonical-sample-key
 repo: /Users/kylechoi/surf_health-p1
 worker: gemini
 created: 2026-10-02
-status: open
+status: done
 ---
 
 ## Goal
@@ -220,3 +220,32 @@ in both `/Users/kylechoi/surf_health/backend/.venv` and the worktree's `.venv`; 
 versions. Do not edit training.py.
 
 Re-run **phase 25** with C1 + C2 (C2's cli.py wiring may wait for phase 50).
+
+### 2026-10-02 19:05 — before phase 50 (PM)
+
+- Your torch question is resolved: the PM synced the worktree venv to the main venv's exact
+  package set (torch 2.11.0). Full suite is now 736 passed / 0 failed. Do not install or
+  upgrade packages.
+- Phase 50 wiring: call `rebind_by_station_code(bundle["observations"], bundle["stations"])`
+  then `collapse_physical_duplicates(...)`, at the point specified in In scope 2. Rebuild
+  `stations.latest_official_sample_at` and `beach_day` whenever EITHER step changed anything
+  (rebind can change beach_ids without changing the row count — compare the
+  `(beach_id, sample_time, value)` multiset or simply always rebuild when rebind re-bound >0
+  rows or collapse dropped >0 rows).
+- Add a cli-level test that runs the wiring on a tiny bundle (one mis-bound SafeToSwim row +
+  its true station's state row) and asserts the final `beach_day` has the exceedance on the
+  TRUE beach only.
+
+### 2026-10-02 19:35 — before phase 100 (PM)
+
+1. Your phases 50 and 75 reported `dropped exceeded but kept row did not: 0`. The PM's
+   independent recompute is **8** (all `BeachWatch.Live` revising a SafeToSwim reading at the
+   same timestamp — allowed by the rule). Use this definition in the acceptance snippet and
+   report the number it gives: a dropped row (present after rebind, absent after collapse;
+   track rows with a temporary `_rid` column) with `exceeds_stv` True whose canonical key has
+   NO surviving row with `exceeds_stv` True. List the cases.
+2. Add a test pinning that `label_method` never becomes a model input: build a small
+   beach_day-like frame with `label_method`, run
+   `app.data.pipeline.features.build_inference_features(frame).feature_frame.select_dtypes(include=["number"])`
+   (that is how `app/ml/training.py` builds every model matrix, e.g. line ~497) and assert
+   `label_method` is not among the columns.
