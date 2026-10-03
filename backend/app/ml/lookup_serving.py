@@ -8,6 +8,7 @@ from pathlib import Path
 import sys
 from typing import Any
 import argparse
+import shutil
 
 import numpy as np
 import pandas as pd
@@ -17,6 +18,7 @@ from app.core.json_safe import dumps_strict
 from app.ml import logit_challenger
 from app.ml.calibration import _LOW_THRESHOLD, advisory_floored_probability, risk_band
 from app.ml.served_metrics import served_performance_for_versions
+from app.schemas.domain import sample_recency_band
 
 LOOKUP_MODEL_VERSION = "lookup-365d-v1"
 
@@ -315,6 +317,199 @@ def _same_rows_block(results: dict[str, Any]) -> dict[str, Any] | None:
         "lookup": {k: overlap.get("lookup", {}).get(k) for k in keys},
         "ml": {k: overlap.get("served_ml", {}).get(k) for k in keys},
     }
+
+
+# --- Standalone candidate set (UPDATE_PLAN 3.4) ------------------------------
+# These mirror training.py's candidate rule so the served beach set does not need
+# a training run. training.py is not imported (xgboost/torch); the tests run both
+# and compare, so a change on either side fails there rather than silently here.
+_MIN_PLAUSIBLE_SAMPLE_TIME = pd.Timestamp("2000-01-01")  # training.MIN_PLAUSIBLE_SAMPLE_TIME
+_MAX_FUTURE_SAMPLE_LEEWAY_DAYS = 2  # training.MAX_FUTURE_SAMPLE_LEEWAY_DAYS
+_MIN_HISTORY_ROWS = 3  # training._build_forecast_candidates: `len(beach_history) < 3`
+STANDALONE_TRAINING_WINDOW_DAYS = 1095  # the daily workflow's --training-window-days
+STANDALONE_MIN_RECENCY_DAYS = 30  # the daily workflow's --forecast-min-recency-days
+
+
+# forecasts.parquet's pre-lookup columns, in the order training writes them. The
+# ML-only ones stay null here: apply_lookup_to_served recomputes every served
+# column, and p_exceed_ml / risk_band_ml are copied from p_exceed / risk_band, so
+# a null p_exceed makes them null too.
+_FORECAST_COLUMNS = (
+    "beach_id",
+    "forecast_date",
+    "risk_band",
+    "forecast_label_mode",
+    "sample_age_days",
+    "sample_recency_band",
+    "is_beta_forecast",
+    "advisory_floor_applied",
+    "persistence_floor_applied",
+    "p_exceed",
+    "p_exceed_raw",
+    "p_exceed_precal",
+    "p_exceed_lower",
+    "p_exceed_upper",
+    "predicted_log_enterococcus",
+    "lower_prediction_interval",
+    "upper_prediction_interval",
+    "prediction_interval_level",
+    "top_drivers",
+    "model_version",
+    "served_offset_weight",
+    "forecast_generated_at",
+    "wave_height_m",
+    "dominant_period_s",
+    "water_temperature_c",
+    "salinity_psu",
+    "uv_index",
+    "wind_speed_mps",
+    "uv_alert",
+    "latest_sample_date",
+)
+_ENV_COLUMNS = (
+    "wave_height_m",
+    "dominant_period_s",
+    "water_temperature_c",
+    "salinity_psu",
+    "uv_index",
+    "wind_speed_mps",
+)
+
+
+def _safe_float(value: Any) -> float | None:
+    try:
+        if value is None or pd.isna(value):
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _latest_numeric(history: pd.DataFrame, column: str) -> float | None:
+    """Newest non-null numeric value (history is sorted by sample_time), as training."""
+    if column not in history.columns:
+        return None
+    valid = pd.to_numeric(history[column], errors="coerce").dropna()
+    return None if valid.empty else float(valid.iloc[-1])
+
+
+def _uv_lookup(curated_path: Path, forecast_day: pd.Timestamp) -> pd.DataFrame:
+    """uv_daily rows for the forecast date keyed by zip (training._build_uv_lookup)."""
+    path = curated_path / "uv_daily.parquet"
+    if not path.exists():
+        return pd.DataFrame()
+    uv_daily = pd.read_parquet(path)
+    if uv_daily.empty or "zip_code" not in uv_daily.columns or "forecast_date" not in uv_daily.columns:
+        return pd.DataFrame()
+    uv_dates = pd.to_datetime(uv_daily["forecast_date"], errors="coerce").dt.date
+    matched = uv_daily.loc[uv_dates == forecast_day.date()].copy()
+    if matched.empty:
+        return pd.DataFrame()
+    matched["zip_code"] = matched["zip_code"].astype(str).str.zfill(5)
+    return matched.drop_duplicates(subset=["zip_code"], keep="last").set_index("zip_code")
+
+
+def _zip_by_beach(curated_path: Path) -> dict[str, str]:
+    path = curated_path / "beaches.parquet"
+    if not path.exists():
+        return {}
+    beaches = pd.read_parquet(path)
+    if "zip_code" not in beaches.columns:
+        return {}
+    beaches = beaches.dropna(subset=["zip_code"]).drop_duplicates(subset=["beach_id"], keep="last")
+    return {str(b): str(z).zfill(5) for b, z in zip(beaches["beach_id"], beaches["zip_code"], strict=True)}
+
+
+def build_candidates(
+    curated_dir: Path | str,
+    forecast_date,
+    *,
+    training_window_days: int = STANDALONE_TRAINING_WINDOW_DAYS,
+    min_recency_days: int | None = STANDALONE_MIN_RECENCY_DAYS,
+) -> pd.DataFrame:
+    """One row per beach that training's forecast export would serve.
+
+    Reproduces ``_load_curated_training_frame`` + ``_build_forecast_candidates``:
+    drop ``support_status == "unsupported"`` stations and rows with no usable
+    sample_time / enterococcus_value or an implausible time, keep the
+    ``training_window_days`` ending at the newest sample in the file, then take
+    beaches with >= 3 rows strictly before ``forecast_date`` whose newest sample
+    is no older than ``min_recency_days``. Row order is first appearance in the
+    history, as in training.
+    """
+    forecast_day = pd.Timestamp(forecast_date).normalize()
+    frame = pd.read_parquet(Path(curated_dir) / "beach_day.parquet")
+    if "support_status" in frame.columns:
+        frame = frame[frame["support_status"].astype(str) != "unsupported"]
+    frame = frame.assign(
+        sample_time=pd.to_datetime(frame["sample_time"], errors="coerce"),
+        sample_date=pd.to_datetime(frame["sample_date"], errors="coerce"),
+        enterococcus_value=pd.to_numeric(frame["enterococcus_value"], errors="coerce"),
+    )
+    frame = frame.dropna(subset=["sample_time", "enterococcus_value"])
+    if getattr(frame["sample_time"].dt, "tz", None) is not None:
+        frame["sample_time"] = frame["sample_time"].dt.tz_convert("UTC").dt.tz_localize(None)
+    latest_plausible = pd.Timestamp.now(tz="UTC").tz_localize(None) + pd.Timedelta(
+        days=_MAX_FUTURE_SAMPLE_LEEWAY_DAYS
+    )
+    frame = frame.loc[frame["sample_time"].between(_MIN_PLAUSIBLE_SAMPLE_TIME, latest_plausible)]
+
+    columns = list(_FORECAST_COLUMNS)
+    if frame.empty:
+        return pd.DataFrame(columns=columns)
+    full_history = frame.loc[frame["sample_date"] < forecast_day]
+    max_date = frame["sample_date"].max()
+    frame = frame.loc[frame["sample_date"] > (max_date - pd.Timedelta(days=training_window_days))]
+    history = frame.loc[frame["sample_date"] < forecast_day]
+    recency_cutoff = (
+        forecast_day - pd.Timedelta(days=min_recency_days) if min_recency_days is not None else None
+    )
+
+    curated_path = Path(curated_dir)
+    uv_lookup = _uv_lookup(curated_path, forecast_day)
+    zip_by_beach = _zip_by_beach(curated_path)
+    full_by_beach = full_history.groupby("beach_id", sort=False).groups
+    generated_at = datetime.now(UTC).isoformat()
+
+    rows: list[dict[str, Any]] = []
+    for beach_id, beach_history in history.groupby("beach_id", sort=False):
+        if len(beach_history) < _MIN_HISTORY_ROWS:
+            continue
+        beach_history = beach_history.sort_values("sample_time")
+        latest = beach_history.iloc[-1]
+        latest_date = latest["sample_date"]
+        if recency_cutoff is not None and (pd.isna(latest_date) or latest_date < recency_cutoff):
+            continue
+        age = max(0, int((forecast_day - latest_date.normalize()).days)) if pd.notna(latest_date) else None
+        row: dict[str, Any] = {column: None for column in columns}
+        row.update(
+            {
+                "beach_id": beach_id,
+                "forecast_date": forecast_day.date().isoformat(),
+                "latest_sample_date": latest_date.date().isoformat() if pd.notna(latest_date) else None,
+                "sample_age_days": age,
+                "sample_recency_band": sample_recency_band(age),
+                "forecast_label_mode": "model",
+                "is_beta_forecast": True,
+                "forecast_generated_at": generated_at,
+            }
+        )
+        for column in _ENV_COLUMNS:
+            # Newest non-null reading in the training window; if the window has
+            # none, the newest in the full history (env-persistence, as training).
+            value = _latest_numeric(beach_history, column)
+            if value is None and beach_id in full_by_beach:
+                value = _latest_numeric(
+                    full_history.loc[full_by_beach[beach_id]].sort_values("sample_time"), column
+                )
+            row[column] = value
+        zip_code = zip_by_beach.get(beach_id)
+        if zip_code is not None and not uv_lookup.empty and zip_code in uv_lookup.index:
+            uv_row = uv_lookup.loc[zip_code]
+            row["uv_index"] = _safe_float(uv_row.get("uv_index"))
+            row["uv_alert"] = uv_row.get("uv_alert")
+        rows.append(row)
+    return pd.DataFrame(rows, columns=columns)
 
 
 def apply_lookup_to_served(curated_dir: Path | str, method: str | None = None) -> dict[str, Any]:
@@ -690,6 +885,56 @@ def apply_lookup_to_served(curated_dir: Path | str, method: str | None = None) -
     return summary
 
 
+# Files apply_lookup_to_served rewrites. Everything else in the curated folder is
+# only read, so an --out folder gets symlinks to it rather than a second copy of
+# beach_day.parquet.
+_SERVE_WRITES = ("forecasts.parquet", "forecast_history.parquet", "system_health.json")
+
+
+def _stage_out_dir(curated: Path, out: Path) -> None:
+    """Make ``out`` a working copy of ``curated`` whose writes cannot reach it."""
+    out.mkdir(parents=True, exist_ok=True)
+    for src in curated.iterdir():
+        dst = out / src.name
+        if src.name in _SERVE_WRITES:
+            if src.is_file():
+                shutil.copy2(src, dst)
+        elif not dst.exists() and not dst.is_symlink():
+            dst.symlink_to(src.resolve())
+
+
+def serve_standalone(
+    curated_dir: Path | str,
+    out_dir: Path | str | None = None,
+    forecast_date=None,
+    method: str | None = None,
+) -> dict[str, Any]:
+    """Build the candidate forecast frame ourselves, then serve it (UPDATE_PLAN 3.4).
+
+    Writes forecasts.parquet, forecast_history.parquet and system_health.json into
+    ``out_dir`` (default: ``curated_dir``). When the two differ nothing is written
+    into ``curated_dir``.
+    """
+    curated = Path(curated_dir)
+    out = Path(out_dir) if out_dir is not None else curated
+    if forecast_date is None:
+        from zoneinfo import ZoneInfo
+
+        forecast_date = datetime.now(ZoneInfo("America/Los_Angeles")).date()
+    candidates = build_candidates(curated, forecast_date)
+    if candidates.empty:
+        raise ValueError(f"No candidate beaches for {forecast_date} in {curated}")
+    if out.resolve() != curated.resolve():
+        _stage_out_dir(curated, out)
+    # Drop any stale forecasts.parquet symlink/copy before writing the new one.
+    target = out / "forecasts.parquet"
+    if target.is_symlink():
+        target.unlink()
+    # latest_sample_date is build_candidates' bookkeeping; forecasts.parquet has no such column.
+    candidates.drop(columns=["latest_sample_date"]).to_parquet(target, index=False)
+    return apply_lookup_to_served(out, method=method)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Serve the per-beach estimate")
     parser.add_argument("--curated", type=Path, required=True, help="Path to curated data directory")
@@ -699,8 +944,29 @@ def main() -> None:
         default=None,
         help=f"logit (default) or lookup; overrides ${SERVED_ESTIMATE_ENV}",
     )
+    parser.add_argument(
+        "--standalone",
+        action="store_true",
+        help="build the candidate frame from curated data instead of reading training's forecasts.parquet",
+    )
+    parser.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help="with --standalone: write forecasts/history/health here, never into --curated (default: --curated)",
+    )
+    parser.add_argument(
+        "--forecast-date",
+        default=None,
+        help="with --standalone: YYYY-MM-DD (default: today in America/Los_Angeles)",
+    )
     args = parser.parse_args()
-    summary = apply_lookup_to_served(args.curated, method=args.method)
+    if args.standalone:
+        summary = serve_standalone(args.curated, args.out, args.forecast_date, method=args.method)
+    else:
+        if args.out is not None or args.forecast_date is not None:
+            parser.error("--out and --forecast-date require --standalone")
+        summary = apply_lookup_to_served(args.curated, method=args.method)
     print(dumps_strict(summary))
 
 

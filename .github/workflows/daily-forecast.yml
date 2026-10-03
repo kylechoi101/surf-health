@@ -281,6 +281,24 @@ jobs:
         run: python -m app.ml.lookup_serving --curated ../data/curated/
         working-directory: backend
 
+      - name: Shadow standalone serving (UPDATE_PLAN 3.4)
+        # Builds the forecast without training's output into a temp copy, diffs it
+        # against the real one and appends the verdict to standalone_shadow_log.jsonl.
+        # Never published; touches no other file in data/curated.
+        continue-on-error: true
+        env:
+          SHORELIFE_SERVED_ESTIMATE: ${{ vars.SHORELIFE_SERVED_ESTIMATE || 'logit' }}
+        run: |
+          FORECAST_DATE=$(TZ=America/Los_Angeles date +%Y-%m-%d)
+          SHADOW_TMP=$(mktemp -d)
+          cp -r ../data/curated "$SHADOW_TMP/in"
+          python -m app.ml.lookup_serving --curated "$SHADOW_TMP/in" --standalone \
+            --out "$SHADOW_TMP/out" --forecast-date "$FORECAST_DATE"
+          python scripts/diff_standalone_forecast.py --real ../data/curated \
+            --shadow "$SHADOW_TMP/out" --date "$FORECAST_DATE" \
+            --log ../data/curated/standalone_shadow_log.jsonl
+        working-directory: backend
+
       - name: Audit forecasts vs advisories
         run: |
           python scripts/audit_forecasts_vs_advisories.py \
