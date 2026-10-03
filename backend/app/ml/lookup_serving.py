@@ -33,7 +33,7 @@ SERVED_ESTIMATE_ENV = "SHORELIFE_SERVED_ESTIMATE"
 # these was written by a previous run of this module, so its p_exceed is NOT the
 # ML's and must not be copied into p_exceed_ml (the step runs twice per workflow).
 SERVED_ESTIMATE_VERSIONS = frozenset(
-    {LOOKUP_MODEL_VERSION, logit_challenger.LOGIT_CHALLENGER_VERSION}
+    {LOOKUP_MODEL_VERSION} | logit_challenger.ALL_LOGIT_VERSIONS
 )
 
 # Drivers: the served number is compared with the beach's 12-month record (the
@@ -641,7 +641,7 @@ def apply_lookup_to_served(curated_dir: Path | str, method: str | None = None) -
             p_floor = base > p_model
             # The lookup's Beta interval, carried through the model's departure
             # from the lookup on the logit scale. It still describes uncertainty
-            # in the beach's rate (n tests), not in the four coefficients, which
+            # in the beach's rate (n tests), not in the coefficients, which
             # are fit on ~117k rows and move by a few hundredths between refits.
             # Shift the raw quantiles, not the bounds compute_lookup already
             # widened to contain its own persistence floor.
@@ -891,7 +891,7 @@ def apply_lookup_to_served(curated_dir: Path | str, method: str | None = None) -
     try:
         live = served_performance_for_versions(
             curated_path,
-            frozenset({logit_challenger.LOGIT_CHALLENGER_VERSION}),
+            logit_challenger.ALL_LOGIT_VERSIONS,
             compare_columns=("p_exceed_lookup", "p_exceed_ml", "p_exceed_persistence"),
         )
     except Exception as exc:  # noqa: BLE001 — a scoring failure must not cost the forecast

@@ -2,9 +2,9 @@
 
 The lookup knows WHICH beaches are dirty but has no day-to-day skill: its
 within-beach AUROC is ~0.48. This model keeps the lookup as a fixed offset and
-learns only the departures from it, from four terms known by 5 AM on day D:
+learns only the departures from it, from six terms known by 5 AM on day D:
 
-    logit(p) = logit(lookup) + b0 + b1*R + b2*R*F + b3*W + b4*S
+    logit(p) = logit(lookup) + b0 + b1*R + b2*R*F + b3*W + b4*S + b5*ddpcr + b6*R*ddpcr
 
     R  log10(last lab result / its own limit), strictly before D, within the
        lookup window. Culture (104 MPN) and ddPCR (1413 copies) rows are put on
@@ -15,6 +15,9 @@ learns only the departures from it, from four terms known by 5 AM on day D:
     W  log2(1 + 4 * inches of rain in the 72h to 5 AM on D): 0 / 1 / 2 / 3 at
        0 / 0.25 / 0.75 / 1.75 in. Each step roughly doubles the odds.
     S  cos(season), +1 mid-January, -1 mid-July.
+    ddpcr  1 if the beach's most recent label before D came from a ddPCR assay
+       (``beach_day.label_method``), else 0; ``R*ddpcr`` lets a ddPCR result
+       carry a different weight than a culture result at the same ratio.
 
 Every feature is computed as of D from rows strictly before D, the same rule as
 ``compute_lookup``, and every input is a curated artifact the daily-forecast
@@ -33,10 +36,15 @@ import numpy as np
 import pandas as pd
 
 from app.core.geo import haversine_km
+from app.ml.assay import compute_assays, derive_label_method_from_observations
 from app.ml.calibration import _LOW_THRESHOLD
 
-LOGIT_CHALLENGER_VERSION = "logit-lookup-offset-v1"
-FEATURE_COLUMNS: tuple[str, ...] = ("R", "RF", "W", "S")
+LOGIT_CHALLENGER_VERSION = "logit-lookup-offset-v2"
+# Versions this module served before the current one. Their rows stay in
+# forecast_history and the live scoreboard, so they must stay recognisable.
+PAST_LOGIT_VERSIONS: frozenset[str] = frozenset({"logit-lookup-offset-v1"})
+ALL_LOGIT_VERSIONS: frozenset[str] = PAST_LOGIT_VERSIONS | {LOGIT_CHALLENGER_VERSION}
+FEATURE_COLUMNS: tuple[str, ...] = ("R", "RF", "W", "S", "ddpcr", "R_ddpcr")
 
 WINDOW_DAYS = 365
 PRIOR_STRENGTH = 5.0
@@ -71,12 +79,14 @@ class ChallengerInputs:
 def load_inputs(curated_dir: Path | str) -> ChallengerInputs:
     """Read what ``app.data.pipeline.cli`` wrote in the daily-forecast workflow.
 
-    beach_day.parquet            labels, enterococcus_action_ratio, beach coords
+    beach_day.parquet            labels, enterococcus_action_ratio, label_method, beach coords
     precip_daily.parquet         rain windows per grid station, through the forecast date
     hydrologic_beach_links.parquet  pour points for the beach -> station rule
     """
     curated = Path(curated_dir)
     beach_day = pd.read_parquet(curated / "beach_day.parquet")
+    # Older snapshots carry no label_method; derive it from the observations.
+    beach_day = derive_label_method_from_observations(curated, beach_day)
     precip_daily = pd.read_parquet(curated / "precip_daily.parquet")
     links_path = curated / "hydrologic_beach_links.parquet"
     links = pd.read_parquet(links_path) if links_path.exists() else None
@@ -263,6 +273,13 @@ def build_features(
     feats["W"] = rain_feature(inputs.precip_daily, inputs.station_map, beach_ids, dates)
     feats["S"] = season_feature(dates)
     feats["RF"] = feats["R"] * feats["F"]
+    # The beach's assay as of D, strictly before D (a ddPCR sample ON D does not count).
+    if "label_method" in inputs.beach_day.columns:
+        assay = compute_assays(inputs.beach_day, beach_ids, dates)
+        feats["ddpcr"] = (assay == "ddpcr").astype(float)
+    else:
+        feats["ddpcr"] = 0.0
+    feats["R_ddpcr"] = feats["R"] * feats["ddpcr"]
     return feats
 
 
@@ -385,7 +402,14 @@ def estimate_for_serving(
     # Contribution of the last lab result, relative to R_MISSING (a typical clean
     # result with no freshness weight) so "no effect" means "reads like a normal
     # clean week" rather than "reads like a result exactly at the limit".
-    feats["lab_logit"] = coefs["R"] * (feats["R"] - R_MISSING) + coefs["RF"] * feats["RF"]
+    # The ddPCR terms are part of the lab-history contribution: the assay shift
+    # and the ddPCR-specific slope on R (same R_MISSING reference as the R term).
+    feats["lab_logit"] = (
+        coefs["R"] * (feats["R"] - R_MISSING)
+        + coefs["RF"] * feats["RF"]
+        + coefs["ddpcr"] * feats["ddpcr"]
+        + coefs["R_ddpcr"] * feats["ddpcr"] * (feats["R"] - R_MISSING)
+    )
     feats["rain_logit"] = coefs["W"] * feats["W"]
     feats["season_logit"] = coefs["S"] * feats["S"]
     return ServingEstimate(
