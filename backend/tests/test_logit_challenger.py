@@ -77,9 +77,11 @@ def test_fit_recovers_known_coefficients():
             "RF": rng.normal(-0.2, 0.3, n),
             "W": rng.exponential(0.3, n),
             "S": rng.uniform(-1, 1, n),
+            "ddpcr": (rng.random(n) < 0.3).astype(float),
         }
     )
-    truth = {"intercept": -0.1, "R": 0.4, "RF": 0.7, "W": 0.7, "S": 0.2}
+    feats["R_ddpcr"] = feats["R"] * feats["ddpcr"]
+    truth = {"intercept": -0.1, "R": 0.4, "RF": 0.7, "W": 0.7, "S": 0.2, "ddpcr": 0.3, "R_ddpcr": -0.2}
     y = rng.random(n) < predict(feats, truth)
     fitted = fit_coefficients(feats, y)
     for k, v in truth.items():
@@ -88,8 +90,9 @@ def test_fit_recovers_known_coefficients():
 
 def test_zero_coefficients_return_the_lookup():
     feats = pd.DataFrame({"L": np.log([0.1 / 0.9, 0.4 / 0.6]), "R": [1.0, -1.0],
-                          "RF": [0.5, 0.0], "W": [2.0, 0.0], "S": [1.0, -1.0]})
-    zero = {"intercept": 0.0, "R": 0.0, "RF": 0.0, "W": 0.0, "S": 0.0}
+                          "RF": [0.5, 0.0], "W": [2.0, 0.0], "S": [1.0, -1.0],
+                          "ddpcr": [1.0, 0.0], "R_ddpcr": [1.0, 0.0]})
+    zero = {"intercept": 0.0, "R": 0.0, "RF": 0.0, "W": 0.0, "S": 0.0, "ddpcr": 0.0, "R_ddpcr": 0.0}
     assert np.allclose(predict(feats, zero), [0.1, 0.4])
 
 
@@ -129,6 +132,43 @@ def test_build_features_combines_terms():
     assert f["S"].iloc[0] == pytest.approx(1.0, abs=1e-3)  # Jan 15 is the season peak
 
 
+def _inputs_with_assay(label_method) -> ChallengerInputs:
+    bd = _beach_day()
+    bd["label_method"] = label_method
+    precip = pd.DataFrame(
+        {"station_id": ["s"], "latitude": [33.0], "longitude": [-118.0],
+         "sample_date": [pd.Timestamp("2026-01-15")], "precip_mm_72h": [0.0]}
+    )
+    return ChallengerInputs(bd, precip, {"a": "s", "b": "s"})
+
+
+def test_ddpcr_is_the_strictly_prior_assay():
+    """Beach a's 01-15 sample is ddPCR: it flips ddpcr for 01-16 but not for D = 01-15."""
+    inputs = _inputs_with_assay(["culture", "culture", "ddpcr", "ddpcr", "culture"])
+    f = build_features(inputs, ["a", "a", "b", "never"], ["2026-01-15", "2026-01-16", "2026-01-15", "2026-01-15"])
+    assert f["ddpcr"].tolist() == [0.0, 1.0, 0.0, 0.0]  # b's latest prior sample (01-14) is culture
+    assert f["R_ddpcr"].iloc[1] == pytest.approx(f["R"].iloc[1])
+    assert (f["R_ddpcr"].iloc[[0, 2, 3]] == 0.0).all()
+
+
+def test_ddpcr_is_zero_without_a_label_method_column():
+    f = build_features(ChallengerInputs(_beach_day(), pd.DataFrame(
+        {"station_id": ["s"], "latitude": [33.0], "longitude": [-118.0],
+         "sample_date": [pd.Timestamp("2026-01-15")], "precip_mm_72h": [0.0]}), {"a": "s"}), ["a"], ["2026-01-15"])
+    assert f["ddpcr"].iloc[0] == 0.0 and f["R_ddpcr"].iloc[0] == 0.0
+
+
+def test_load_inputs_derives_label_method_from_observations(tmp_path):
+    _write_curated(tmp_path)
+    obs = pd.DataFrame(
+        {"beach_id": ["a"], "sample_date": [pd.Timestamp("2026-01-08")], "exceeds_stv": [True],
+         "value": [3000.0], "method": ["ddPCR"], "units": ["copies/100mL"]}
+    )
+    obs.to_parquet(tmp_path / "observations.parquet", index=False)
+    bd = logit_challenger.load_inputs(tmp_path).beach_day
+    assert "label_method" in bd.columns
+
+
 def test_missing_ratio_column_refuses_rather_than_reading_every_beach_as_clean():
     with pytest.raises(ValueError, match="enterococcus_action_ratio"):
         lab_history_features(_beach_day().drop(columns="enterococcus_action_ratio"), ["a"], ["2026-01-20"])
@@ -146,6 +186,8 @@ def test_an_exceedance_with_no_ratio_reads_at_the_limit_not_as_clean():
     "coefs, rows",
     [
         ({"intercept": 0.0, "R": 0.4, "RF": 0.7, "W": 0.7, "S": np.nan}, 50_000),
+        ({"intercept": 0.0, "R": 0.4, "ddpcr": 4.5, "R_ddpcr": 0.1}, 50_000),
+        ({"intercept": 0.0, "R": 0.4, "ddpcr": 0.5, "R_ddpcr": np.nan}, 50_000),
         ({"intercept": 0.0, "R": 12.0, "RF": 0.7, "W": 0.7, "S": 0.2}, 50_000),
         ({"intercept": 0.0, "R": 0.4, "RF": 0.7, "W": 0.7, "S": 0.2}, 10),
     ],
@@ -418,6 +460,61 @@ def test_health_carries_live_and_backtest_results_for_the_served_method(tmp_path
     ).to_parquet(tmp_path / "forecast_history.parquet", index=False)
     apply_lookup_to_served(tmp_path)
     health = json.loads((tmp_path / "system_health.json").read_text())["serving_method"]
-    assert health["live"]["versions"] == [LOGIT_CHALLENGER_VERSION]
+    # v1 rows stay in the live scoreboard alongside the current version.
+    assert health["live"]["versions"] == sorted(logit_challenger.ALL_LOGIT_VERSIONS)
+    assert "logit-lookup-offset-v1" in health["live"]["versions"]
     assert health["live"]["first_served"] == FORECAST_DATE  # today's row was just relabelled
     assert "backtest" not in health  # tmp_path has no ../experiments
+
+
+def test_v2_is_the_served_version_and_v1_stays_recognised():
+    from app.ml.lookup_serving import SERVED_ESTIMATE_VERSIONS
+
+    assert LOGIT_CHALLENGER_VERSION == "logit-lookup-offset-v2"
+    assert "logit-lookup-offset-v1" in logit_challenger.PAST_LOGIT_VERSIONS
+    assert {"logit-lookup-offset-v1", LOGIT_CHALLENGER_VERSION} <= SERVED_ESTIMATE_VERSIONS
+
+
+def test_health_records_the_ddpcr_coefficients_and_lab_logit_includes_them(tmp_path, small_fit):
+    _write_curated(tmp_path, rain_mm=10.0)
+    bd = pd.read_parquet(tmp_path / "beach_day.parquet")
+    bd["label_method"] = np.where(bd["beach_id"] == "c", "ddpcr", "culture")
+    bd.to_parquet(tmp_path / "beach_day.parquet", index=False)
+    apply_lookup_to_served(tmp_path)
+    logit = json.loads((tmp_path / "system_health.json").read_text())["serving_method"]["logit"]
+    assert {"ddpcr", "R_ddpcr"} <= set(logit["coefficients"])
+    assert {"ddpcr", "R_ddpcr"} <= set(logit["features"])
+
+    est = logit_challenger.estimate_for_serving(tmp_path, FORECAST_DATE, ["a", "c"], min_train_rows=100)
+    f = est.frame.set_index("beach_id")
+    assert f.loc["c", "ddpcr"] == 1.0 and f.loc["a", "ddpcr"] == 0.0
+    co = est.coefficients
+    for b in ("a", "c"):
+        r, rf, dd = f.loc[b, "R"], f.loc[b, "RF"], f.loc[b, "ddpcr"]
+        want = (
+            co["R"] * (r - logit_challenger.R_MISSING) + co["RF"] * rf
+            + co["ddpcr"] * dd + co["R_ddpcr"] * dd * (r - logit_challenger.R_MISSING)
+        )
+        assert f.loc[b, "lab_logit"] == pytest.approx(want)
+
+
+def test_serving_end_to_end_with_one_ddpcr_beach_and_one_culture_beach(tmp_path, small_fit):
+    _write_curated(tmp_path, rain_mm=5.0)
+    bd = pd.read_parquet(tmp_path / "beach_day.parquet")
+    bd["label_method"] = np.where(bd["beach_id"] == "c", "ddpcr", "culture")
+    bd.to_parquet(tmp_path / "beach_day.parquet", index=False)
+    summary = apply_lookup_to_served(tmp_path)
+    assert summary["serving_method"] == LOGIT_CHALLENGER_VERSION
+    assert summary["fallback_reason"] is None
+
+    est = logit_challenger.estimate_for_serving(tmp_path, FORECAST_DATE, ["a", "c"], min_train_rows=100)
+    f = est.frame.set_index("beach_id")
+    assert (f.loc["c", "ddpcr"], f.loc["a", "ddpcr"]) == (1.0, 0.0)
+    assert f.loc["c", "R_ddpcr"] == pytest.approx(f.loc["c", "R"])
+    assert f.loc["a", "R_ddpcr"] == 0.0
+
+    served = pd.read_parquet(tmp_path / "forecasts.parquet").set_index("beach_id")
+    assert (served["model_version"] == LOGIT_CHALLENGER_VERSION).all()
+    health = json.loads((tmp_path / "system_health.json").read_text())["serving_method"]
+    assert health["name"] == LOGIT_CHALLENGER_VERSION
+    assert {"ddpcr", "R_ddpcr"} <= set(health["logit"]["coefficients"])

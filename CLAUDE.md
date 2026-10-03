@@ -610,17 +610,32 @@ From 2026-09-22 to 2026-09-27 the probability the product served was the per-bea
 
 The ML pipeline still trains and runs as before; its probability is preserved as `p_exceed_ml` (in `forecasts.parquet` and `forecast_history.parquet`) and its band as `risk_band_ml` (`forecasts.parquet` only). Pre-2026-09-22 history rows have `p_exceed_ml == p_exceed` because the ML was what served. The change was made because the lookup beat the served ML on forward 1–3 day lab outcomes on the served log (90d AUROC 0.878 vs 0.824, AUCPR 0.580 vs 0.395, Brier 0.060 vs 0.071) and produces four well-separated bands at existing cutpoints (realized Low 0.033 / Moderate 0.114 / High 0.354 / Very High 0.818).
 
-### Served estimate: logistic model on top of the lookup (2026-09-28 — SERVING)
+### Served estimate: logistic model on top of the lookup (2026-09-28; v2 since 2026-10-02 — SERVING)
 
 Since 2026-09-28 the served probability is `app/ml/logit_challenger.py`, called from the same
 `lookup_serving` step (it runs twice per workflow, before and after G.2). It keeps the lookup as a
 fixed offset and learns only departures from it:
-`logit(p) = logit(lookup) + b0 + b1·R + b2·R·F + b3·W + b4·S`, where R = log10(last result ÷ its
+`logit(p) = logit(lookup) + b0 + b1·R + b2·R·F + b3·W + b4·S + b5·ddpcr + b6·R·ddpcr`, where R = log10(last result ÷ its
 own limit, via `enterococcus_action_ratio`, so culture and ddPCR share a scale), F =
-exp(−(age_days−1)/3), W = log2(1 + 4·inches of 72h rain to 5 AM on D), S = cos(season). Refit every
+exp(−(age_days−1)/3), W = log2(1 + 4·inches of 72h rain to 5 AM on D), S = cos(season), ddpcr = 1 when the beach's most recent `beach_day.label_method` strictly BEFORE D
+is `ddpcr` (else 0; no prior label → 0; a ddPCR sample ON D does not count). Refit every
 run on the 4 years of sample-days before D (~117k rows, ~9 s). All inputs are the daily workflow's
 own artifacts (`load_inputs`); rain uses the pipeline's pour-point → nearest-station rule (matches
 `beach_day.precip_mm_72h` on 167,430/167,430 sample-days).
+
+- **v2 (`logit-lookup-offset-v2`, 2026-10-02) added the two ddPCR terms.** Adopted from
+  `backend/app/ml/PROMOTION.md` applied to the 2026-10-02 comparison
+  (`docs/MODEL_COMPARISON_2026-10-02.md`), which promoted `logit_method`. Measured effect vs v1:
+  within-beach AUROC +0.003..+0.007, Brier −0.0001..−0.0006, on both the all and non-SD slices.
+  The strictly-prior assay lives in `app/ml/assay.py` (`compute_assays`,
+  `derive_label_method_from_observations`), shared with `scripts/compare_all_models.py`; with no
+  `label_method` column in `beach_day`, `load_inputs` derives it from `observations.parquet`.
+  `lab_logit` (the driver input) includes both ddPCR terms so the "above/below the record" line
+  stays consistent with the served number. v1 stays recognised: `PAST_LOGIT_VERSIONS` /
+  `ALL_LOGIT_VERSIONS`, `SERVED_ESTIMATE_VERSIONS` and the live scoreboard score v1 and v2 rows
+  together (`live.versions` lists both). On the after-2026-10-02 snapshot: fitted `ddpcr` 0.115,
+  `R_ddpcr` 0.654, mean served p 0.0864 → 0.0855, 5 of 496 beaches change band (4 San Diego,
+  1 East Bay Parks).
 
 - **Product rules unchanged:** the persistence floor (last test exceeded → ≥ 0.20, never Low) and
   the advisory floor (active posting → ≥ 0.30) apply to the model's number exactly as they did to
@@ -630,9 +645,9 @@ own artifacts (`load_inputs`); rain uses the pipeline's pour-point → nearest-s
   persistence-floored lookup) sits beside them in `forecasts.parquet` and
   `forecast_history.parquet` on every row from 2026-09-28, whichever method served, so the two stay
   comparable on forward outcomes. `p_exceed_ml` is unchanged (the XGB ensemble).
-  `model_version` is `logit-lookup-offset-v1` (or `lookup-365d-v1` on a fallback).
+  `model_version` is `logit-lookup-offset-v2` (v1 before 2026-10-02; or `lookup-365d-v1` on a fallback).
 - **Automatic fallback to the lookup** (never loses the day's forecast): a missing artifact, no
-  `enterococcus_action_ratio` column, < 20k training rows, a coefficient outside ±3 (13 refits sat
+  `enterococcus_action_ratio` column, < 20k training rows, a coefficient outside ±3 — now also `ddpcr` and `R_ddpcr` (13 v1 refits sat
   in [−0.15, 0.79]), rain rows for D on < 90% of beaches (a dead feed would otherwise score every
   beach dry), or the model's lookup term disagreeing with `compute_lookup` by > 1e-9. The reason
   lands in `system_health.json["serving_method"]["fallback_reason"]`, and

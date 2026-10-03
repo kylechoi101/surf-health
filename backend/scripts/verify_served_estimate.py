@@ -30,7 +30,7 @@ import sys
 from pathlib import Path
 
 _HEALTH_FILE = "system_health.json"
-LOGIT_VERSION = "logit-lookup-offset-v1"
+LOGIT_VERSION = "logit-lookup-offset-v2"
 
 
 def resolve(payload: dict) -> tuple[bool, str]:
