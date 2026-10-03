@@ -107,6 +107,7 @@ runs at the end of observation merging, so a physical sample appears once. The a
 ## Allowed files
 
 - backend/app/data/pipeline/sample_key.py
+- backend/app/data/pipeline/ceden.py
 - backend/app/data/pipeline/cli.py
 - backend/app/data/pipeline/beachwatch.py
 - backend/app/data/pipeline/schema_guard.py
@@ -156,3 +157,66 @@ Deliverable: full suite and ruff clean, and all Acceptance commands pass with ou
 ## Corrections
 
 (appended by the PM; newest last; each entry dated)
+
+### 2026-10-02 18:20 — after phase 25 (verdict: corrected)
+
+PM audit of the phase-25 collapse on the real `observations.parquet`: it drops **164 rows that
+exceeded where the kept row did not**. Two causes; both must be fixed before phase 50.
+
+**C1. Same-source, different-value rows are distinct samples — keep both.** Replace the rule
+"everything else in the group is one sample" with: two rows in one cluster are the same
+physical sample only if (a) their values are equal (`np.isclose`), OR (b) they come from
+DIFFERENT sources (a cross-source mirror, where a different value is a revision and source
+priority picks the winner). Two rows from the SAME source with different values are separate
+samples and both survive (beach_day's worst-sample rule then labels the day). This overrides
+my earlier "final tiebreak" correction: change that test to expect BOTH the 50 and the 200
+`BeachWatch` date-only rows to survive, and add a test that `BeachWatch` 50 + `BeachWatch` 50
+(same value, both date-only) collapse to one.
+Implementation hint: inside each cluster, after picking the winner, keep additionally every
+row whose source equals some other row's source in the cluster AND whose value differs from
+every kept row of that source. Simplest correct form: sub-cluster by `(_source_clean, value)`
+first — rows of one source with one value are one sample; then merge sub-clusters across
+sources; a same-source different-value pair never merges.
+
+**C2. Re-bind rows whose `station_code` names a different beach than their `beach_id`.**
+Measured on the committed snapshot: **10,790 rows** (10,703 `BeachWatch.SafeToSwim`, 87
+`CEDEN.SafeToSwim`, 2,312 exceedances; 1,412 rows / 202 exceedances in the last 365 d) carry
+their true `station_code` (e.g. `S-3`, `EH-030`, `BDP13`) but the `beach_id` of a NEIGHBOURING
+station (e.g. Doheny DSB4Z, EH-033, MDP11). Root cause: `ceden.py::build_ceden_station_crosswalk`
+looks the CEDEN station code up in an index of BeachWatch station NAME tokens
+(`exact_code` is indexed by `name_token`), so a code never matches and it falls through to
+"nearest station in the same county within 0.5 km".
+- Add `rebind_by_station_code(observations, stations) -> DataFrame` in `sample_key.py`:
+  build `{(county_clean, normalized station_code) -> beach_id}` from `stations`
+  (`beaches.parquet` columns `beach_id`, `county`, `station_code`; normalize with
+  `.str.strip().str.upper()`; drop keys that map to >1 beach_id). For each observation whose
+  `(county, station_code)` maps to a beach_id different from its own, set `beach_id` to the
+  mapped one. Rows with no/unknown/ambiguous station_code are untouched. Print
+  `[sample-key] re-bound N rows to their station_code's beach (by source: ...)`.
+- In `cli.py`, call it immediately BEFORE `collapse_physical_duplicates` (same insertion point),
+  passing `bundle["stations"]`.
+- Fix the root cause in `backend/app/data/pipeline/ceden.py::build_ceden_station_crosswalk`:
+  try an exact match of the CEDEN `station_code_token` against BeachWatch `station_code`
+  tokens (same county) FIRST, then the existing name-token match, then nearest. Add a
+  regression test: CEDEN site `EH-030` near BeachWatch stations `EH-030` and `EH-033` (EH-033
+  slightly nearer) must map to `EH-030`'s beach_id. (Find existing crosswalk tests with
+  `grep -rn build_ceden_station_crosswalk tests/`.)
+- Tests for `rebind_by_station_code`: mis-bound row moves; correct row untouched; ambiguous
+  code untouched; row with null station_code untouched.
+
+**Acceptance additions** (append to the python snippet, run with
+`stations = pd.read_parquet("../data/curated/beaches.parquet")`, rebind first, then collapse):
+- print the re-bound count (expect ~10,790 on the committed snapshot),
+- print `dropped exceeded but kept row did not` (compute per canonical key as in the PM audit:
+  a dropped row with `exceeds_stv` True whose key's surviving rows are all False). Expect a
+  number close to 0; explain every remaining case in the report.
+
+**Allowed files** now also include `backend/app/data/pipeline/ceden.py`.
+
+**Your open question (MPS test failure):** the PM's baseline in the main checkout's venv was
+718 passed / 0 failed, including `test_training.py`. Run it in the worktree venv with
+`PYTORCH_ENABLE_MPS_FALLBACK=1` and also check `python -c "import torch;print(torch.__version__)"`
+in both `/Users/kylechoi/surf_health/backend/.venv` and the worktree's `.venv`; report the
+versions. Do not edit training.py.
+
+Re-run **phase 25** with C1 + C2 (C2's cli.py wiring may wait for phase 50).
