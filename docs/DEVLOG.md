@@ -59,3 +59,59 @@ The tests for each were mutation-checked. Backend suite: 709 passed.
 **Caveat.** At the Low cutoff it misses about as many exceedances as the lookup, with ~23% fewer false alarms. It is slightly overconfident at the extremes on forward days.
 
 **Apps.** Web copy: kylechoi101/shorelife-web#14. Mobile copy: kylechoi101/shorelife-mobile#1, against `feat/dual-mode`, which is where `465cf9b` and the live OTA are. Both change the band rates to the served model's 4 / 19 / 37 / 87%, and both should merge after this backend change has served a day.
+
+## 2026-10-02 — UPDATE_PLAN Phase 0–1: data fixes, county sources (in progress)
+
+Branch `feat/update-plan-phase1` (worktree `../surf_health-p1`), runbook `docs/UPDATE_PLAN.md`.
+
+**Phase 0.** Baseline `pytest -q`: 718 passed / 0 failed. Before snapshot built locally the CI
+way from pinned raw inputs (`data/snapshots/raw-2026-10-02/`, BeachWatch CSVs downloaded once
+and reused for "after"), training `--winner-only` without spatial backtests, forecast date
+pinned to 2026-10-02. **Local vs served:** against the CI-committed 10-02 run (`e5a826fe7`, what
+Render serves) the local before has the same 375 served beaches, +19 observation rows, +3
+culture positives, the same median age; 7 of 375 bands differ, all from fetch timing (advisory
+scrape 17:38 vs 20:32; live feed −41 Live / +59 SafeToSwim rows). The worktree venv first
+resolved torch 2.14.1 vs main's 2.11.0 (an MPS test failed); synced to main's exact freeze so
+before and after differ only in code.
+
+**Found: 10,790 SafeToSwim rows on the wrong beach.** `ceden.py::build_ceden_station_crosswalk`
+looked the CEDEN station code up in an index of BeachWatch station *names*, so codes never
+matched and fell through to "nearest station within 0.5 km" — the neighbour (EH-030→EH-033,
+IB-070→IB-069, BDP13→MDP11, S-3→Doheny DSB4Z). Each row kept its true `station_code`, so the
+defect is exact: 10,703 `BeachWatch.SafeToSwim` + 87 `CEDEN.SafeToSwim`, 2,312 exceedances
+(1,412 rows / 202 exceedances in the last 365 d), mostly San Diego and Orange. Fixed at the
+root (code match first) and repaired in place (`sample_key.rebind_by_station_code`). Label
+effect: 5,990 beach-days that existed only through a neighbour's sample removed, 302
+exceedance→clean flips, 11 the other way; last 365 d positives 4,859 → 4,697.
+
+**1.1 canonical sample key** (`sample_key.py`): collapses 12,085 physical duplicates incl. all
+151 SF CountyDirect rows later re-reported by SafeToSwim/Live (the 151 were a cross-run effect
+of the incremental pipeline, not merge order within a run). Same-source different-value rows
+are kept as separate samples (first draft collapsed them and lost 164 exceedances). 8
+exceedances are dropped where `BeachWatch.Live` revised a SafeToSwim reading at the same
+timestamp — by rule. 3,712 groups keep >1 row (plan expected a few hundred): same-source
+pairs with different values, e.g. Enterolert + MF the same day.
+
+**1.4 Orange County.** OC did not stop publishing — it stopped reporting to the state (state
+routes end 2026-08-24). `ocbeachinfo.com/data/` links a running-year xlsx
+(`Orange-County-Beach-Monitoring-Data-2026-9.15.2026.xlsx`, 5,459 enterococcus rows,
+2026-01-05..09-11, all 180 StationIDs = `beaches.station_code`). Mirror check vs state,
+2026-03-01..07-31: 3,363 state beach-days, 3,230 matched (96.0%); identical value 94.1% of
+matched, 95.1% counting non-detects (xlsx `ND` blank vs state 0/1) as identical; exceedance
+label agreement 99.63% (state 131 positives vs xlsx 119 — the excess state positives are the
+mis-bound SafeToSwim rows above, e.g. S-3's 820 on Doheny DSB4Z 04-28). Newest OC sample is
+09-11 (21 d), so OC re-enters serving under the 30-d gate but the plan's "within 14 days"
+check cannot pass until OC posts its next file. **Monterey: no public source** — the county
+page offers a phone hotline only (831-755-4599); per-beach pages carry no status or results;
+state routes end 2026-08-25. Needs outreach to Monterey County EH, not code.
+
+**1.5 scraper failures, live-investigated.** San Diego moved to an OutSystems app
+(`cosdapps.sandiegocounty.gov/sdbeachinfo`); `BlockNotification/ScreenDataSetGetEventsList`
+returns station ID + issue time per event type, browser-free. San Mateo's page moved; per-site
+posting status is a Google My Maps layer exportable as KML. Santa Barbara's map reads a
+public ArcGIS layer with status *and* numeric results for all 16 beaches. OC's parser works
+locally (3/3) — the CI failure is runner-specific; the scraper will now log what it received.
+Humboldt/Sonoma/SLO: the advisory step lacks `GITHUB_TOKEN` and `models: read`. Ventura's
+parser emits prose fragments ("cate that water quality at the following beach") that were
+all 3 of CI's "unexpected unresolved". Los Angeles' "error" is informational (no warnings
+in window). Implementation: task `county-scrapers`.
