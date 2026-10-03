@@ -3,7 +3,7 @@ task: scoreboard-static-bake
 repo: /Users/kylechoi/surf_health-p3
 worker: claude
 created: 2026-10-02
-status: open
+status: done
 ---
 
 ## Goal
@@ -119,3 +119,29 @@ Repo is the worktree `/Users/kylechoi/surf_health-p3`, branch `feat/update-plan-
 modify `data/curated` there (use /tmp copies; a full fixture is
 `/Users/kylechoi/surf_health/data/snapshots/after-2026-10-02`). `lookup_serving.py` now also has
 the standalone path from PR #46 — keep it working (its tests must stay green).
+
+### 2026-10-02 23:45 — after phase 75 (PM) — read docs/STATIC_DATA_CONTRACT.md again (amended)
+
+1. **API-shaped files live under `api/`.** You were right: the existing top-level
+   `beaches.json` / `parent_beaches.json` are the web's flat shapes. Leave them exactly as they
+   are. With `--with-details`, write instead:
+   - `api/parent_beaches.json` — `ParentBeachSummary[]` exactly as `GET /parent-beaches` returns,
+   - `api/beaches.json` — `BeachSummary[]` exactly as `GET /beaches` returns, each with an extra
+     `forecast` key = the `ForecastRecord` `GET /beaches/{id}/forecast?date=<bake forecast_date>`
+     returns (including the serve-time confidence cap you noted; port it), or `null`,
+   - `api/health.json` (move `health.json` here),
+   - `api/beach/{id}.json` (move `beach/` here), one per `api/beaches.json` row.
+   The mobile reader (already updated) reads only `api/*`.
+2. **Station list:** the vendored `_CA_TIDE_STATIONS` must equal `app.services.tides.CA_TIDE_STATIONS`
+   (the PM removed 3 dead NOAA stations there in phase 50: 9410665, 9415118, 9413745). Sync it and
+   pin equality in a test. Expect the null-tides count to drop from 66 to (near) the beaches
+   with no coordinates.
+3. **Parity tests (phase 100)** run the API's own code on the same fixture and compare: every
+   `api/beaches.json` row (minus `forecast`) equals `BeachService.list_beaches()` output; each
+   `forecast` equals `get_forecast(id, date)`; `api/parent_beaches.json` equals
+   `list_parent_beaches()`; `api/health.json` validates as `SystemHealthResponse`; each
+   `observations` equals `get_observations(id)` (or is null where the API 404s); `explain` equals
+   `explain_forecast(id, date)`; vendored twins (`explain_summary`, `_derive_friendly_name`,
+   `ADVISORY_AUTO_EXPIRE_DAYS`, the station list) equal their `app` originals. Build the
+   `BeachService` against the fixture the way `app/api/deps` / the repository factory does.
+4. Keep `hourly` per beach as is (31 MB is acceptable).
