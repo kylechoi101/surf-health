@@ -722,6 +722,37 @@ Measured on the live grid — bands change on 6.49% of beach-days and **92.5% of
 occur on days with no new lab sample**, i.e. the model responds to rain/solar covariates rather
 than parroting the last result. Necessary but not sufficient: right variance ≠ right timing.
 
+### UPDATE_PLAN 2026-10-02 — data fixes, model comparison, serving (runbook: `docs/UPDATE_PLAN.md`)
+
+- **10,790 SafeToSwim rows had been on the wrong beach.** `ceden.py::build_ceden_station_crosswalk`
+  looked CEDEN station codes up in an index of station *names* and fell back to the nearest
+  station within 0.5 km (a neighbour). Fixed at the root; existing rows re-bound by
+  `sample_key.rebind_by_station_code`. Four beaches had been served purely on a neighbour's data.
+- **One physical sample = one row:** `sample_key.collapse_physical_duplicates` on
+  (beach, day, analyte, assay), run once after every source merges. Same-source different-value
+  rows are kept (separate samples). `label_method` (ddpcr/culture) rides into beach_day,
+  history and forecasts.
+- **Orange County** reports to the state no more (state rows end 2026-08-24) but posts a results
+  spreadsheet; found by contents through the WordPress media API
+  (`fetch_orange_county_samples`), ingested gap-only (`INGEST_COUNTIES`). Cadence ≈ 20–36 days
+  between uploads — OC can drop out of the 30-day serving gate between uploads.
+  **Monterey** has no public source (hotline only); reported as `no_public_source`, not an error.
+- **Advisory resolver:** `--heuristic-mode` defaults to **`suggest`** — a substring/fuzzy match
+  goes to `unresolved_advisories.parquet` with `suggested_beach_id` for review, because the
+  2026-10-02 review found 2 of 5 heuristic hits on the wrong beach. Add an alias row to accept
+  one. `resolve` is the rollback.
+- **Promotion rule:** `backend/app/ml/PROMOTION.md` (within-beach AUROC AND Brier, beach-cluster
+  CI excluding 0 on all and non-SD slices, forward D+1..3). Harness:
+  `scripts/compare_all_models.py` + `scripts/diff_comparisons.py`; first report
+  `docs/MODEL_COMPARISON_2026-10-02.md` → served logistic **v2** (adds the assay term). The XGB
+  arms rank days within a beach better (+0.04–0.06) but fail on calibration (Brier).
+- **Static files for the app:** `bake_web_static.py --with-details` publishes `api/*` in the API's
+  exact shapes (`docs/STATIC_DATA_CONTRACT.md`, 34 parity tests run the real `BeachService`);
+  tides come from the daily `--with-tides` step (`tides.parquet`).
+- **Standalone serving shadow:** the daily run diffs `lookup_serving --standalone` against the
+  real output into `data/curated/standalone_shadow_log.jsonl`; 7 consecutive zero-diff days gate
+  the CI split (UPDATE_PLAN 3.5).
+
 ## ML training
 
 ```

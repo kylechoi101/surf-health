@@ -556,23 +556,23 @@ Only after 3.3 has been live for 2 weeks and the Render dashboard shows API traf
 
 ## Checklist
 
-- [ ] 0.1 venv on 3.12, baseline test count recorded
-- [ ] 0.2 `data/snapshots/` ignored
-- [ ] 0.3 before snapshot
-- [ ] 1.1 canonical key + tests; 151 SF duplicates explained
-- [ ] 1.2 `label_method` in beach_day, history, forecasts
-- [ ] 1.3 heuristic resolutions reviewed into alias CSV; `suggest` mode
-- [ ] 1.4 OC publishing status known; OC connector mirror-verified; spreadsheet-match check; Monterey outreach (resume state reporting)
-- [ ] 1.5 scraper errors fixed
-- [ ] 1.6 after snapshot + data-change report
-- [ ] 2.1 PROMOTION.md committed before any run
-- [ ] 2.2–2.4 compare_all_models on both snapshots
-- [ ] 2.5 comparison report: common / full / new-beach
-- [ ] 2.6 decision recorded
-- [ ] 3.1 scoreboard: within-beach AUROC, persistence, CIs
-- [ ] 3.2 static detail + tides files
-- [ ] 3.3 mobile static-first, OTA
-- [ ] 3.4 standalone serving, 7 days zero diff
+- [x] 0.1 venv on 3.12, baseline test count recorded (2026-10-02: 718/0)
+- [x] 0.2 `data/snapshots/` ignored (2026-10-02)
+- [x] 0.3 before snapshot (2026-10-02; local ≈ CI-served, 7/375 bands differ by fetch timing)
+- [x] 1.1 canonical key + tests; 151 SF duplicates explained (2026-10-02, PR #45; + 10,790 mis-bound SafeToSwim rows re-bound)
+- [x] 1.2 `label_method` in beach_day, history, forecasts (2026-10-02, PR #45)
+- [x] 1.3 heuristic resolutions reviewed into alias CSV; `suggest` mode (2026-10-02: 2 of 5 heuristic hits were wrong-beach; 10 alias rows; default flipped to suggest)
+- [x] 1.4 OC publishing status known; OC connector mirror-verified; spreadsheet-match check; Monterey outreach (resume state reporting) (2026-10-02: OC via county spreadsheet, match PASS; Monterey outreach drafted, awaiting send)
+- [x] 1.5 scraper errors fixed (2026-10-02: SD/SB/SM/OC fixed; Humboldt/Sonoma/SLO via CI token; Monterey = no public source)
+- [x] 1.6 after snapshot + data-change report (2026-10-02: docs/DATA_CHANGE_REPORT_2026-10-02.md)
+- [x] 2.1 PROMOTION.md committed before any run (2026-10-02, 89c024377)
+- [x] 2.2–2.4 compare_all_models on both snapshots (2026-10-02)
+- [x] 2.5 comparison report: common / full / new-beach (2026-10-02: docs/MODEL_COMPARISON_2026-10-02.md)
+- [x] 2.6 decision recorded (2026-10-02: logit_method promoted → served v2, PR #48)
+- [x] 3.1 scoreboard: within-beach AUROC, persistence, CIs (2026-10-02, PR #47; web table pending)
+- [x] 3.2 static detail + tides files (2026-10-02, PR #47 + shorelife-web #21)
+- [ ] 3.3 mobile static-first, OTA (code on feat/dual-mode deef880 + 012793f; OTA after api/ files verified live)
+- [ ] 3.4 standalone serving, 7 days zero diff (shadow live 2026-10-02, PR #46; 7-day clock running)
 - [ ] 3.5 CI split
 - [ ] 3.6 Render retired
 - [ ] 3.7 docs

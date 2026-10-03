@@ -2753,10 +2753,14 @@ def main() -> int:
     parser.add_argument(
         "--heuristic-mode",
         choices=("resolve", "suggest"),
-        default="resolve",
-        help="resolve (default): substring/fuzzy hits resolve to a beach. "
-        "suggest: they go to unresolved_advisories.parquet with a "
-        "suggested_beach_id and count as unresolved in the gate.",
+        # suggest since 2026-10-02 (UPDATE_PLAN 1.3.4): the review of every heuristic hit
+        # found 2 of 5 on the wrong beach, and all 5 are now curated alias rows, so a NEW
+        # heuristic match surfaces in unresolved_advisories.parquet (with suggested_beach_id)
+        # for a human instead of posting silently. `resolve` remains the rollback.
+        default="suggest",
+        help="suggest (default): substring/fuzzy hits go to unresolved_advisories.parquet "
+        "with a suggested_beach_id and count as unresolved in the gate. "
+        "resolve: they resolve to a beach (rollback).",
     )
     args = parser.parse_args()
 
