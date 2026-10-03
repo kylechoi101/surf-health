@@ -33,6 +33,16 @@ data/
   raw/cnrfc/       Open-Meteo cache (openmeteo/, openmeteo_solar_wind/ subdirs)
 ```
 
+## Next steps
+
+See `docs/NEXT_STEPS.md` (2026-10-02): a data-source inventory with measured coverage (Orange
+County dark in every state route since 2026-08-24 → 0 of 224 OC beaches served; Monterey 0 of
+15; 375 of 726 production beaches served) and five ordered steps — scoreboard before model,
+simple model on the critical path with XGB as a weekly challenger, county feeds primary with
+curated aliases, static-file serving instead of the Render API tier, and daily/weekly CI split.
+The runnable, phased version is `docs/UPDATE_PLAN.md`: fix data, compare every model on
+before/after snapshots, then change serving.
+
 ## Data pipeline
 
 Run from `backend/` with `.venv/bin/python -m app.data.pipeline.cli`.
@@ -182,8 +192,10 @@ problems, fixed separately:
     correct-group **7278 → 8214**, wrong-group **1148 → 615** vs `main`. The 9 newly-wrong vs the
     mid-PR state are 2 underlying strings: the deliberate Mothers alias and the `on`-phrasing
     limitation above.
-- **Layer order is now confidence order:** exact `beach_name` → exact secondary → **alias CSV** →
-  token-guarded substring → fuzzy. The curated alias file deliberately outranks the heuristic so
+- **Layer order is confidence order:** exact `beach_name` → **alias CSV** → exact secondary →
+  token-guarded substring → fuzzy (the order in `StationResolver.resolve_all_by_name`; this line
+  previously put the alias CSV third, contradicting the code and the bullet above — corrected
+  2026-10-02). The curated alias file deliberately outranks the heuristic so
   an operator can correct a bad match by adding a row. Alias rows may now **fan out**: repeated
   `(county, beach_name_normalized)` keys accumulate, and `resolve_advisories` replicates the
   posting onto every covered `beach_id`. EBRPD's one district-wide "Crown Beach Regional

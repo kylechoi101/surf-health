@@ -37,6 +37,10 @@ from app.data.pipeline.ceden import (
 )
 from app.data.pipeline.curation import curate_beach_days, write_duckdb_snapshot
 from app.data.pipeline.external_covariates import enrich_beach_day_with_external_covariates
+from app.data.pipeline.sample_key import (
+    collapse_physical_duplicates,
+    rebind_by_station_code,
+)
 from app.data.pipeline.station_quality import support_status_for
 
 
@@ -276,6 +280,9 @@ def refresh_latest_official_sample_at(
     )
     if latest_samples.empty:
         return stations
+    if "latest_official_sample_at" not in stations.columns:
+        stations = stations.copy()
+        stations["latest_official_sample_at"] = pd.NaT
     stations = stations.merge(latest_samples, on="beach_id", how="left", suffixes=("", "_new"))
     stations["latest_official_sample_at"] = stations["latest_official_sample_at_new"].fillna(
         stations["latest_official_sample_at"]
@@ -381,6 +388,35 @@ def dedupe_incremental_beachwatch_observations(merged: pd.DataFrame) -> pd.DataF
     if sort_key:
         combined = combined.sort_values(sort_key, kind="stable")
     return combined.reset_index(drop=True)
+
+
+def rebind_and_collapse_observations(
+    bundle: dict[str, pd.DataFrame],
+) -> dict[str, pd.DataFrame]:
+    """Rebind mis-bound observations to station_code's beach and collapse physical duplicates.
+
+    If either step modifies observations (rebind changes beach_ids or collapse drops rows),
+    refreshes stations' latest_official_sample_at and rebuilds beach_day.
+    """
+    _obs_before = bundle["observations"]
+    _obs_rebound = rebind_by_station_code(_obs_before, bundle["stations"])
+    _rebound_changed = (
+        not _obs_rebound["beach_id"].equals(_obs_before["beach_id"])
+        if "beach_id" in _obs_before.columns
+        else False
+    )
+    _obs_collapsed = collapse_physical_duplicates(_obs_rebound)
+    _collapse_changed = len(_obs_collapsed) != len(_obs_rebound)
+
+    bundle["observations"] = _obs_collapsed
+    if _rebound_changed or _collapse_changed or "beach_day" not in bundle:
+        bundle["stations"] = refresh_latest_official_sample_at(
+            bundle["stations"], bundle["observations"]
+        )
+        bundle["beach_day"] = build_beach_day_frame(
+            bundle["observations"], bundle["stations"], bundle.get("advisories", pd.DataFrame())
+        )
+    return bundle
 
 
 def normalize_beachwatch_bundle(
@@ -767,6 +803,7 @@ def main() -> None:
                     bundle["beach_day"] = build_beach_day_frame(
                         bundle["observations"], bundle["stations"], bundle["advisories"]
                     )
+        bundle = rebind_and_collapse_observations(bundle)
         uv_daily = pd.DataFrame()
         if args.with_external_covariates:
             bundle["stations"], bundle["beach_day"], uv_daily = asyncio.run(

@@ -42,6 +42,8 @@ EXPECTED_FEATURE_COLUMNS: tuple[str, ...] = (
     # feature is built from it, so an absent or all-NaN column means the model is
     # silently back on the raw mixed-unit value.
     "enterococcus_action_ratio",
+    # Assay method for the day's winning sample ('ddpcr' or 'culture').
+    "label_method",
     # 11 marine-microbiology features (--with-solar-wind)
     "shore_normal_wind_ms",
     "solar_inactivation_index",

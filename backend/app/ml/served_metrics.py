@@ -68,6 +68,9 @@ _HISTORY_COLUMNS = [
     # 2026-09-28 the logistic model on top of it), so the two stay comparable
     # on forward outcomes. Null on rows logged before the column existed.
     "p_exceed_lookup",
+    # Assay method for the beach's most recent sample ('ddpcr' or 'culture').
+    # Null on rows logged before the column existed or beaches with no history.
+    "label_method",
 ]
 _PROBABILITY_COLUMNS = ("p_exceed", "p_exceed_raw", "p_exceed_precal", "p_exceed_ml", "p_exceed_lookup")
 

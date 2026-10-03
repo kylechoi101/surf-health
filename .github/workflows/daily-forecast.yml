@@ -37,6 +37,7 @@ jobs:
     timeout-minutes: 170
     permissions:
       contents: write
+      models: read
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
@@ -151,6 +152,9 @@ jobs:
         # Transient per-county HTTP failures are absorbed inside the script's
         # RetryingClient and the CountyReport telemetry, so the only way the
         # script returns non-zero is the explicit operability signal above.
+        env:
+          # Humboldt / Sonoma / San Luis Obispo use GitHub Models LLM extraction.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python scripts/fetch_county_advisories.py --curated ../data/curated/
         working-directory: backend

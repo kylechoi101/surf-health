@@ -342,23 +342,45 @@ def build_ceden_station_crosswalk(
         return pd.DataFrame()
 
     station_candidates = beachwatch_stations.copy()
+    if "station_code" in station_candidates.columns:
+        station_candidates["station_code_token"] = station_candidates["station_code"].map(_normalized_token)
+    else:
+        station_candidates["station_code_token"] = ""
     station_candidates["name_token"] = station_candidates["name"].map(_normalized_token)
     station_candidates["county_clean"] = station_candidates["county"].map(_clean_text)
 
+    code_candidates = station_candidates.loc[station_candidates["station_code_token"] != ""]
     exact_code = station_candidates.drop_duplicates(subset=["name_token"]).set_index("name_token")
     assignments: list[dict[str, Any]] = []
     for _, row in ceden_sites.iterrows():
         code_token = row.get("station_code_token")
         name_token = row.get("station_name_token")
+        county = _clean_text(row.get("county"))
         match = None
         match_method = None
-        if code_token and code_token in exact_code.index:
+
+        if code_token and not code_candidates.empty:
+            if county:
+                same_county = code_candidates.loc[
+                    (code_candidates["station_code_token"] == code_token)
+                    & (code_candidates["county_clean"] == county)
+                ]
+                if not same_county.empty:
+                    match = same_county.iloc[0]
+                    match_method = "station_code"
+            if match is None:
+                any_match = code_candidates.loc[code_candidates["station_code_token"] == code_token]
+                if not any_match.empty and (county is None or len(any_match) == 1):
+                    match = any_match.iloc[0]
+                    match_method = "station_code"
+
+        if match is None and code_token and code_token in exact_code.index:
             match = exact_code.loc[code_token]
             match_method = "station_code"
-        elif name_token and name_token in exact_code.index:
+        elif match is None and name_token and name_token in exact_code.index:
             match = exact_code.loc[name_token]
             match_method = "station_name"
-        else:
+        elif match is None:
             county = _clean_text(row.get("county"))
             lat = _safe_float(row.get("latitude"))
             lon = _safe_float(row.get("longitude"))

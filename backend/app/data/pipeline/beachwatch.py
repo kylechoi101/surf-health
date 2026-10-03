@@ -11,6 +11,7 @@ import pandas as pd
 from app.core.json_safe import write_json
 from app.data.pipeline.county_corrections import correct_county
 from app.data.pipeline.exceedance import action_value_ratio, compute_exceeds_stv
+from app.data.pipeline.sample_key import assay_kind
 from app.data.pipeline.schema_guard import validate_beach_day
 from app.data.pipeline.spelling import correct_place_spelling
 
@@ -630,17 +631,20 @@ def build_beach_day_frame(
     # THIS column, not the raw one — see app/data/pipeline/features.py. Rows
     # whose method/units are unknown fall back to the culture action value,
     # matching compute_exceeds_stv's own default for those rows.
+    _methods = per_day_observation.get(
+        "method", pd.Series(index=per_day_observation.index, dtype="object")
+    )
+    _units = per_day_observation.get(
+        "units", pd.Series(index=per_day_observation.index, dtype="object")
+    )
     per_day_observation["enterococcus_action_ratio"] = action_value_ratio(
         per_day_observation["enterococcus_value"],
-        per_day_observation.get(
-            "method", pd.Series(index=per_day_observation.index, dtype="object")
-        ),
-        per_day_observation.get(
-            "units", pd.Series(index=per_day_observation.index, dtype="object")
-        ),
+        _methods,
+        _units,
         stv_threshold,
     )
-    # method/units were carried only to resolve the action value; beach_day stays
+    per_day_observation["label_method"] = assay_kind(_methods, _units)
+    # method/units were carried only to resolve the action value and label_method; beach_day stays
     # a beach-day frame and does not gain per-assay columns here.
     per_day_observation = per_day_observation.drop(
         columns=[c for c in ("method", "units") if c in per_day_observation.columns]

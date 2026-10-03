@@ -72,6 +72,7 @@ _RETRY_DELAYS_S = (5, 15, 45)
 def _do_with_retry(raw_client: httpx.Client, method: str, url: str, *,
                    headers: dict[str, str] | None = None,
                    data: dict[str, str] | None = None,
+                   json: object | None = None,
                    timeout: float = 30.0) -> httpx.Response:
     """Retry GET/POST on 403/429/5xx/timeout with exponential backoff +
     jitter. After the first attempt, fall back to a browser UA in case
@@ -87,7 +88,10 @@ def _do_with_retry(raw_client: httpx.Client, method: str, url: str, *,
             if method == "GET":
                 resp = raw_client.get(url, headers=req_headers, timeout=timeout)
             else:
-                resp = raw_client.post(url, headers=req_headers, data=data or {}, timeout=timeout)
+                if json is not None:  # OutSystems screenservices (San Diego) take a JSON body
+                    resp = raw_client.post(url, headers=req_headers, json=json, timeout=timeout)
+                else:
+                    resp = raw_client.post(url, headers=req_headers, data=data or {}, timeout=timeout)
             if resp.status_code in _RETRY_STATUS and attempt < len(_RETRY_DELAYS_S):
                 last_exc = httpx.HTTPStatusError(
                     f"transient {resp.status_code}", request=resp.request, response=resp
@@ -125,8 +129,10 @@ class RetryingClient:
     def get(self, url, *, headers=None, timeout=30.0):
         return _do_with_retry(self._raw, "GET", url, headers=headers, timeout=timeout)
 
-    def post(self, url, *, data=None, headers=None, timeout=30.0):
-        return _do_with_retry(self._raw, "POST", url, headers=headers, data=data, timeout=timeout)
+    def post(self, url, *, data=None, json=None, headers=None, timeout=30.0):
+        return _do_with_retry(
+            self._raw, "POST", url, headers=headers, data=data, json=json, timeout=timeout
+        )
 
 
 # ---------- Data classes ---------- #
@@ -179,9 +185,17 @@ class CountyReport:
     matched_via_live_list: int = 0
     matched_via_csv: int = 0
     matched_via_fuzzy: int = 0
+    matched_via_exact: int = 0
+    matched_via_secondary: int = 0
+    matched_via_substring: int = 0
+    heuristic_matches: list[dict] = field(default_factory=list)
     unmatched_names: list[str] = field(default_factory=list)
     error: str | None = None
+    # Set instead of `error` for a county with no public source at all
+    # (NO_SOURCE_COUNTIES): a known gap, not a breakage.
+    no_public_source: str | None = None
     samples_collected: int = 0  # purely informational counter for the report
+    rejected_fragments: int = 0
 
 
 # ---------- Common parsing utilities ---------- #
@@ -401,6 +415,9 @@ class StationResolver:
     def resolve_all_by_name(self, county: str, beach_name: str) -> tuple[list[str], str]:
         """Hybrid name resolution. Returns (beach_ids, match_kind).
 
+        match_kind is one of exact, csv, secondary, substring, fuzzy, miss.
+        substring and fuzzy are the heuristic layers.
+
         Returns a LIST because one scraped posting can legitimately cover
         several sampled beaches (a district-wide EBRPD notice over the six
         Crown Beach points). Every layer but the alias CSV is single-valued;
@@ -418,7 +435,7 @@ class StationResolver:
         # Layer A: live county lookup on beach_name (exact normalized match)
         county_lookup = self._beach_name_lookup.get(county, {})
         if norm in county_lookup:
-            return [county_lookup[norm]], "live_list"
+            return [county_lookup[norm]], "exact"
 
         # Layer B: alias CSV (curated; may fan out to several beach_ids).
         #
@@ -448,7 +465,7 @@ class StationResolver:
         # only — see __init__ for why these keys never feed the fuzzy layers).
         secondary = self._secondary_name_lookup.get(county, {})
         if norm in secondary:
-            return [secondary[norm]], "live_list"
+            return [secondary[norm]], "secondary"
 
         # Layer A.2: substring match either direction, token-guarded. Requires
         # _MIN_SUBSTRING_SHARED_TOKENS shared tokens so a single incidental
@@ -486,7 +503,7 @@ class StationResolver:
                 best = max(_rank(c) for c in candidates)
                 winners = {bid for c, bid in ((c, c[1]) for c in candidates) if _rank(c) == best}
                 if len(winners) == 1:
-                    return [next(iter(winners))], "live_list"
+                    return [next(iter(winners))], "substring"
 
         # Layer C: fuzzy match (only if rapidfuzz available), under the SAME
         # conservatism as Layer A.2.
@@ -527,105 +544,113 @@ class StationResolver:
         return (beach_ids[0] if beach_ids else None), kind
 
 
-# ---------- San Diego (sdbeachinfo.com) ---------- #
+# ---------- San Diego (cosdapps.sandiegocounty.gov OutSystems) ---------- #
+
+SD_BASE_URL = "https://cosdapps.sandiegocounty.gov/sdbeachinfo"
+SD_HOMEPAGE = f"{SD_BASE_URL}/"
+SD_MODULE_VERSION_URL = f"{SD_BASE_URL}/moduleservices/moduleversioninfo"
+SD_MODULE_INFO_URL = f"{SD_BASE_URL}/moduleservices/moduleinfo"
+SD_EVENTS_URL = (
+    f"{SD_BASE_URL}/screenservices/CoSD_Beach_Water_CW/MainFlow/BlockNotification/ScreenDataSetGetEventsList"
+)
+SD_DEFAULT_API_VERSION = "7ZgLP6EfhAWhyK1_ilFFoA"
+SD_CSRF_TOKEN = "T6C+9iB49TLra4jEsMeSckDMNhQ="
+
+_SD_API_VERSION_RE = re.compile(
+    r'"screenservices/CoSD_Beach_Water_CW/MainFlow/BlockNotification/ScreenDataSetGetEventsList",\s*"([^"]+)"'
+)
 
 
-SD_HOMEPAGE = "https://www.sdbeachinfo.com/"
-SD_GETDATA = "https://www.sdbeachinfo.com/Home/GetData"
-
-
-def _sd_fetch_partial(client: httpx.Client, name: str) -> str:
-    resp = client.post(
-        SD_GETDATA,
-        data={"name": name},
-        headers={
-            "User-Agent": UA,
-            "X-Requested-With": "XMLHttpRequest",
-            "Referer": SD_HOMEPAGE,
-        },
-        timeout=30.0,
-    )
-    resp.raise_for_status()
-    return resp.text
-
-
-def fetch_san_diego_advisories(client: httpx.Client, resolver: StationResolver) -> tuple[list[CountyAdvisory], CountyReport]:
-    """Scrape sdbeachinfo.com.
-
-    Pulls TWO partials:
-      - _AdvisoryPartialView: per-station Advisories / Closures / Chronic
-        Advisories (with station code in parentheses).
-      - _ClosurePartialView: shoreline-scope closures (Tijuana Slough,
-        Silver Strand, Imperial Beach) that span multiple stations and
-        have no per-station code.
-    """
-    rpt = CountyReport(
-        county="San Diego",
-        success=False,
-        last_attempted_at=datetime.now(timezone.utc).isoformat(),
-        source_url=SD_HOMEPAGE,
-    )
-    rpt.stations_in_lookup = len(resolver._station_code_lookup.get("San Diego", {}))
+def _sd_discover_api_version(client: httpx.Client) -> str:
+    """Discover current apiVersion from BlockNotification script, with fallback."""
     try:
-        html = _sd_fetch_partial(client, "_AdvisoryPartialView")
-        closure_html = _sd_fetch_partial(client, "_ClosurePartialView")
-    except Exception as e:
-        rpt.error = f"fetch failed: {e}"
-        return [], rpt
+        modinfo_resp = client.get(SD_MODULE_INFO_URL, timeout=15.0)
+        script_path = None
+        if modinfo_resp.status_code == 200:
+            manifest = modinfo_resp.json().get("manifest", {})
+            for url in manifest.get("urlVersions", {}):
+                if "BlockNotification" in url and url.endswith(".js"):
+                    script_path = url
+                    break
+        if not script_path:
+            hp_resp = client.get(SD_HOMEPAGE, timeout=15.0)
+            if hp_resp.status_code == 200:
+                m = re.search(r'["\'](/sdbeachinfo/scripts/[^"\']*BlockNotification[^"\']*\.js)["\']', hp_resp.text)
+                if m:
+                    script_path = m.group(1)
+        if script_path:
+            script_url = f"https://cosdapps.sandiegocounty.gov{script_path}" if script_path.startswith("/") else script_path
+            js_resp = client.get(script_url, timeout=15.0)
+            if js_resp.status_code == 200:
+                m_ver = _SD_API_VERSION_RE.search(js_resp.text)
+                if m_ver:
+                    return m_ver.group(1)
+    except Exception:
+        pass
+    return SD_DEFAULT_API_VERSION
 
-    # San Diego also lists "Closure: <Shoreline name>" entries that span
-    # multiple stations without a per-station code (Tijuana Slough,
-    # Silver Strand, Imperial Beach). Map each shoreline to the stations
-    # the live page describes (verified from sdbeachinfo.com's Stations
-    # field). These persist as long as the shoreline closure is listed.
-    SD_SHORELINE_CLOSURES = {
-        "Tijuana Slough Shoreline": ["IB-010", "IB-020", "IB-030", "IB-040"],
-        "Silver Strand Shoreline": ["IB-067", "IB-068", "IB-069", "IB-070"],
-        "Imperial Beach Shoreline": [
-            "EH-010", "EH-020", "EH-030", "EH-033", "EH-041",
-            "IB-045", "IB-050", "IB-060", "PL-010",
-        ],
-    }
 
+def _parse_sd_events_payload(
+    data: dict,
+    event_type_id: int,
+    resolver: StationResolver | None = None,
+    *,
+    now: pd.Timestamp | None = None,
+) -> tuple[list[CountyAdvisory], str | None]:
+    """Parse a single ScreenDataSetGetEventsList JSON payload.
+    Returns (advisories, error_string).
+    """
+    version_info = data.get("versionInfo", {})
+    if version_info.get("hasApiVersionChanged"):
+        return [], "versionInfo.hasApiVersionChanged is True"
+    if "exception" in data:
+        return [], f"API exception: {data['exception']}"
+
+    items = data.get("data", {}).get("List", {}).get("List", [])
     advisories: list[CountyAdvisory] = []
+    ref_now = now if now is not None else pd.Timestamp.now(timezone.utc)
+    ref_now_naive = ref_now.tz_localize(None) if ref_now.tzinfo is not None else ref_now
 
-    # Pass 1: per-station Advisories / Closures / Chronic from _AdvisoryPartialView
-    for li in re.findall(r"<li>(.*?)</li>", html, re.DOTALL):
-        text = _clean_html_text(li)
-        if "Status Since" not in text:
+    for item in items:
+        site = item.get("Site", {})
+        ev = item.get("Event", {})
+        station_code = site.get("StationID") or None
+        beach_name = (site.get("BeachName") or "").strip()
+        location_name = (site.get("LocationName") or "").strip()
+        area = beach_name or location_name
+
+        issue_dt_str = ev.get("IssueDateTime")
+        if not issue_dt_str:
             continue
-        m_type = re.match(r"^(Advisory|Closure|Chronic Advisory)\s*:", text)
-        if not m_type:
+        try:
+            issue_dt = pd.Timestamp(issue_dt_str)
+        except Exception:
             continue
-        ui_type = m_type.group(1)
-        adv_type = (
-            "Closure" if ui_type == "Closure"
-            else "Chronic Posting" if ui_type == "Chronic Advisory"
-            else "Posting"
-        )
-        m_code = re.search(r"\(([A-Z]{2,4}-\d{2,4})\)", text)
-        if not m_code:
-            continue
-        station_code = m_code.group(1)
-        m_date = re.search(
-            r"Status Since\s*:\s*([A-Za-z]+\s+\d+,?\s*\d{4}|[A-Za-z]+\s+\d{4})",
-            text,
-        )
-        if not m_date:
-            continue
-        started_at = _parse_us_date(m_date.group(1))
-        if started_at is None:
-            continue
-        m_area = re.search(
-            r"^(?:Advisory|Closure|Chronic Advisory)\s*:\s*(.+?)\s*Station\s*:",
-            text,
-        )
-        area = m_area.group(1).strip() if m_area else ""
-        cause = None
-        if "tijuana" in text.lower():
+        started_at = issue_dt.tz_localize(None) if issue_dt.tzinfo is not None else issue_dt
+
+        # Map EventTypeId 2 -> Closure, others -> Posting, > 365 days -> Chronic Posting
+        if event_type_id == 2:
+            adv_type = "Closure"
+        else:
+            if (ref_now_naive - started_at).days > 365:
+                adv_type = "Chronic Posting"
+            else:
+                adv_type = "Posting"
+
+        reason = (ev.get("Reason") or "").strip()
+        if reason:
+            cause = reason
+        elif "tijuana" in (beach_name + " " + location_name).lower():
             cause = "Other - Tijuana River Associated"
-        elif "exceed" in text.lower():
+        else:
             cause = "Bacterial Standards Violation"
+
+        beach_id = None
+        if resolver and station_code:
+            bid, _ = resolver.resolve_by_station_code("San Diego", station_code)
+            if bid:
+                beach_id = bid
+
         advisories.append(CountyAdvisory(
             county="San Diego",
             station_code=station_code,
@@ -634,54 +659,84 @@ def fetch_san_diego_advisories(client: httpx.Client, resolver: StationResolver) 
             started_at=started_at,
             advisory_website=SD_HOMEPAGE,
             cause=cause,
+            beach_id=beach_id,
         ))
 
-    # Pass 2: shoreline-scope closures from _ClosurePartialView. These span
-    # multiple stations without per-station codes (Tijuana Slough since
-    # Oct 2025, Imperial Beach since Dec 2025, etc.). Expand each to all
-    # the affected stations so they show as Closed in the API+UI.
-    for li in re.findall(r"<li>(.*?)</li>", closure_html, re.DOTALL):
-        text = _clean_html_text(li)
-        if "Status Since" not in text:
-            continue
-        if not re.match(r"^Closure\s*:", text):
-            continue
-        # Match shoreline name; allow flexible whitespace because the live
-        # HTML has &nbsp; sprinkled inside (e.g., "Silver Strand Shoreline").
-        matched_codes: list[str] | None = None
-        matched_name: str | None = None
-        for shoreline, codes in SD_SHORELINE_CLOSURES.items():
-            pattern = re.compile(r"\s+".join(re.escape(w) for w in shoreline.split()), re.IGNORECASE)
-            if pattern.search(text):
-                matched_codes = codes
-                matched_name = shoreline
-                break
-        if not matched_codes:
-            continue
-        m_date = re.search(
-            r"Status Since\s*:\s*([A-Za-z]+\s+\d+,?\s*\d{4}|[A-Za-z]+\s+\d{4})",
-            text,
-        )
-        if not m_date:
-            continue
-        started_at = _parse_us_date(m_date.group(1))
-        if started_at is None:
-            continue
-        cause = "Other - Tijuana River Associated" if "tijuana" in text.lower() else "Bacterial Standards Violation"
-        for code in matched_codes:
-            advisories.append(CountyAdvisory(
-                county="San Diego",
-                station_code=code,
-                area=matched_name,
-                advisory_type="Closure",
-                started_at=started_at,
-                advisory_website=SD_HOMEPAGE,
-                cause=cause,
-            ))
+    return advisories, None
 
-    rpt.success = True
-    rpt.advisories_parsed = len(advisories)
-    return advisories, rpt
+
+def fetch_san_diego_advisories(
+    client: httpx.Client,
+    resolver: StationResolver,
+    *,
+    now: pd.Timestamp | None = None,
+) -> tuple[list[CountyAdvisory], CountyReport]:
+    """Scrape San Diego County via cosdapps.sandiegocounty.gov OutSystems API."""
+    rpt = CountyReport(
+        county="San Diego",
+        success=False,
+        last_attempted_at=datetime.now(timezone.utc).isoformat(),
+        source_url=SD_HOMEPAGE,
+    )
+    if resolver:
+        rpt.stations_in_lookup = len(resolver._station_code_lookup.get("San Diego", {}))
+
+    try:
+        # Step 1: GET homepage to establish session / cookies
+        client.get(SD_HOMEPAGE, timeout=30.0)
+
+        # Step 2: GET moduleversioninfo
+        ver_resp = client.get(SD_MODULE_VERSION_URL, timeout=30.0)
+        ver_resp.raise_for_status()
+        module_version = ver_resp.json().get("versionToken")
+        if not module_version:
+            rpt.error = "no versionToken in moduleversioninfo"
+            return [], rpt
+
+        # Step 3: Discover apiVersion (falls back to constant if discovery fails)
+        api_version = _sd_discover_api_version(client)
+
+        advisories: list[CountyAdvisory] = []
+        # EventTypeId: 1=Advisories, 2=Closures, 3=Warnings
+        for event_type_id in (1, 2, 3):
+            payload = {
+                "versionInfo": {
+                    "moduleVersion": module_version,
+                    "apiVersion": api_version,
+                },
+                "viewName": "MainFlow.Home",
+                "screenData": {
+                    "variables": {
+                        "EventTypeId": event_type_id,
+                        "_eventTypeIdInDataFetchStatus": 1,
+                    }
+                },
+                "inputParameters": {},
+            }
+            post_resp = client.post(
+                SD_EVENTS_URL,
+                headers={
+                    "Content-Type": "application/json; charset=UTF-8",
+                    "X-CSRFToken": SD_CSRF_TOKEN,
+                },
+                json=payload,
+                timeout=30.0,
+            )
+            post_resp.raise_for_status()
+            data = post_resp.json()
+            advs, err = _parse_sd_events_payload(data, event_type_id, resolver, now=now)
+            if err:
+                rpt.error = err
+                return [], rpt
+            advisories.extend(advs)
+
+        rpt.success = True
+        rpt.advisories_parsed = len(advisories)
+        return advisories, rpt
+
+    except Exception as e:
+        rpt.error = f"fetch failed: {e}"
+        return [], rpt
 
 
 # ---------- Orange County (ocbeachinfo.com) ---------- #
@@ -718,7 +773,13 @@ def fetch_orange_county_advisories(client: httpx.Client, resolver: StationResolv
     m_wr = re.search(r"WARNINGS\s*:?", text, re.IGNORECASE)
     m_ad = re.search(r"ADVISORIES\s*:?", text, re.IGNORECASE)
     if not (m_cl and m_wr and m_ad):
-        rpt.error = "expected section markers (CLOSURES/WARNINGS/ADVISORIES) not all found"
+        title_m = re.search(r"<title[^>]*>(.*?)</title>", html, re.IGNORECASE | re.DOTALL)
+        title = _clean_html_text(title_m.group(1)) if title_m else ""
+        rpt.error = (
+            "expected section markers (CLOSURES/WARNINGS/ADVISORIES) not all found "
+            f"[status={resp.status_code} url={resp.url} title={title!r} "
+            f"text={text[:200]!r}]"
+        )
         return [], rpt
     sections["Closure"] = (m_cl.end(), m_wr.start())
     sections["Posting"] = (m_wr.end(), m_ad.start())
@@ -760,10 +821,74 @@ def fetch_orange_county_advisories(client: httpx.Client, resolver: StationResolv
 # ---------- San Mateo County ---------- #
 
 
-SM_HOMEPAGE = "https://www.smchealth.org/beaches"
+SM_HOMEPAGE = (
+    "https://smchealth.org/division/divisions/environmental-health-services/"
+    "permits-business-services/water-protection-and-land-use/beach-creek-monitoring-program/"
+)
+SM_KML_URL = "https://www.google.com/maps/d/kml?mid=1Y0U-5M0-ej_PnH8i1mJYFaXBlok-8fE&forcekml=1"
+_KML_NS = "{http://www.opengis.net/kml/2.2}"
+
+
+def _sm_color_is_posted(hex6: str) -> bool:
+    """Legend: red = Posted, orange = Not Sampled, Posted; green/gray = not posted.
+    Any red/orange hue (<=45 or >=345 degrees, clearly saturated) is a posting."""
+    import colorsys
+
+    try:
+        r, g, b = (int(hex6[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
+    except ValueError:
+        return False
+    h, sat, val = colorsys.rgb_to_hsv(r, g, b)
+    deg = h * 360.0
+    return sat >= 0.5 and val >= 0.4 and (deg <= 45.0 or deg >= 345.0)
+
+
+def _parse_sm_kml(kml_text: str) -> list[tuple[str, str]]:
+    """Return (site name, colour hex) for every Placemark in the My Maps export."""
+    import xml.etree.ElementTree as ET
+
+    root = ET.fromstring(kml_text.encode("utf-8") if isinstance(kml_text, str) else kml_text)
+    out: list[tuple[str, str]] = []
+    for pm in root.iter(f"{_KML_NS}Placemark"):
+        name = (pm.findtext(f"{_KML_NS}name") or "").strip()
+        style = (pm.findtext(f"{_KML_NS}styleUrl") or "").strip()
+        m = re.search(r"-([0-9A-Fa-f]{6})(?:-\w+)?$", style)
+        if name and m:
+            out.append((name, m.group(1).upper()))
+    return out
+
+
+_SM_CLOSED_RE = re.compile(
+    r"([A-Z][A-Za-z0-9'#&\-\.\s,]{2,160}?)\s+(?:is|are)\s+(?:currently\s+)?closed\b"
+)
+
+
+def _parse_sm_notices(html: str) -> list[str]:
+    """Names of sites the 'Beach and Creek Notices' block says are closed."""
+    html = re.sub(r"<(script|style)\b.*?</\1>", " ", html, flags=re.S | re.IGNORECASE)
+    text = _clean_html_text(html)
+    start = text.find("Beach and Creek Notices")
+    if start < 0:
+        return []
+    block = text[start + len("Beach and Creek Notices"):]
+    end = re.search(r"Beach and Creek Updates|Beach Data Map|FAQs", block)
+    if end:
+        block = block[:end.start()]
+    names: list[str] = []
+    for m in _SM_CLOSED_RE.finditer(block):
+        subject = re.sub(r"^(?:Public Notice|Notice)\s*:?\s*", "", m.group(1).strip())
+        for part in re.split(r"\s*,\s*(?:and\s+)?|\s+and\s+", subject):
+            part = part.strip(" .")
+            if part and part[0].isupper() and len(part.split()) <= 6 and part not in names:
+                names.append(part)
+    return names
 
 
 def fetch_san_mateo_advisories(client: httpx.Client, resolver: StationResolver) -> tuple[list[CountyAdvisory], CountyReport]:
+    """Per-site posting status comes from the county's Google My Maps KML
+    (red / orange placemark = posted); closures come from the page's
+    'Beach and Creek Notices' text. Names are left unresolved here so they go
+    through StationResolver (alias CSV, anchoring guard, per-layer accounting)."""
     rpt = CountyReport(
         county="San Mateo",
         success=False,
@@ -772,84 +897,47 @@ def fetch_san_mateo_advisories(client: httpx.Client, resolver: StationResolver) 
     )
     rpt.stations_in_lookup = len(resolver._beach_name_lookup.get("San Mateo", {}))
     try:
-        resp = client.get(SM_HOMEPAGE, headers={"User-Agent": _BROWSER_UA}, timeout=30.0)
+        resp = client.get(SM_KML_URL, headers={"User-Agent": _BROWSER_UA}, timeout=30.0)
         resp.raise_for_status()
-        html = resp.text
+        placemarks = _parse_sm_kml(resp.text)
     except Exception as e:
-        rpt.error = f"fetch failed: {e}"
+        rpt.error = f"KML fetch/parse failed: {e}"
+        return [], rpt
+    if not placemarks:
+        rpt.error = "KML contained no placemarks"
         return [], rpt
 
-    # SM's page lists posted beaches as short <br>-separated lines (Linda Mar #5,
-    # Pillar Point #7, Dunes Beach, etc.) — within an advisory-list section that
-    # is preceded by markers like "currently posted" / "contaminated" and that
-    # contains the literal list of beach names.
-    text = _clean_html_text(html)
-    m_upd = re.search(r"(?:updated|last updated)\s*[:on]*\s*([A-Za-z]+\s+\d{1,2},?\s+\d{4})", text, re.IGNORECASE)
-    page_date = _parse_us_date(m_upd.group(1)) if m_upd else None
-    if page_date is None:
-        page_date = pd.Timestamp.now().normalize()
-
+    today = pd.Timestamp.now().normalize()
     advisories: list[CountyAdvisory] = []
-    san_mateo_beaches = resolver._beach_name_lookup.get("San Mateo", {})
+    for name, colour in placemarks:
+        if not _sm_color_is_posted(colour):
+            continue
+        advisories.append(CountyAdvisory(
+            county="San Mateo",
+            station_code=None,
+            area=name,
+            advisory_type="Posting",
+            started_at=today,
+            advisory_website=SM_HOMEPAGE,
+            cause="Bacterial Standards Violation",
+        ))
 
-    # Split the FULL page into <br>-separated lines and scan every line that's
-    # short enough to be a beach-name entry (not a paragraph of FAQ prose).
-    # Build a combined lookup keyed by NORMALIZED station_code AND beach_name.
-    # The live SM page posts by station_code ("Linda Mar #5", "Pillar Point #7"),
-    # not by parent beach_name ("Pacifica State Beach", "Pillar Point Harbor"),
-    # so station_code is what we need to match. Also normalize the line text
-    # itself so "#5" maps to "5" — without this, "linda mar 5" never substring-
-    # matches "linda mar #5 (at san pedro creek)".
-    sm_lookup: dict[str, str] = {}
-    for norm_name, bid in san_mateo_beaches.items():
-        if len(norm_name) >= 6:
-            sm_lookup[norm_name] = bid
-    for code, bid in resolver._station_code_lookup.get("San Mateo", {}).items():
-        norm_code = _normalize_name(code)
-        if len(norm_code) >= 4:
-            sm_lookup.setdefault(norm_code, bid)
-    # Also honor the static alias CSV — same county-specific keys the
-    # other counties' resolvers use. Catches semantic mismatches like
-    # "Fitzgerald Marine Reserve" → moss-beach station.
-    # `_alias_lookup` values are lists (one scraped name may cover several
-    # beach_ids); San Mateo's line-scanner is single-valued, so take the first
-    # target. No San Mateo alias fans out today.
-    for (cnty, norm_alias), aids in resolver._alias_lookup.items():
-        if cnty != "San Mateo":
-            continue
-        aid = next((a for a in aids if a and a != "nan"), "")
-        if aid.startswith("ca") and len(norm_alias) >= 4:
-            sm_lookup.setdefault(norm_alias, aid)
-
-    lines = re.split(r"<br\s*/?>|</p>|</li>", html, flags=re.IGNORECASE)
-    seen = set()
-    for raw_line in lines:
-        line_text = _clean_html_text(raw_line)
-        if not (4 < len(line_text) < 80):
-            continue
-        # Discard lines that are clearly FAQ prose
-        word_count = len(line_text.split())
-        if word_count > 12:
-            continue
-        norm_line = _normalize_name(line_text)
-        if not norm_line:
-            continue
-        # Prefer longer matches (catches "linda mar 5" before "linda mar")
-        for lookup_key in sorted(sm_lookup, key=len, reverse=True):
-            beach_id = sm_lookup[lookup_key]
-            if lookup_key in norm_line and beach_id not in seen:
-                seen.add(beach_id)
-                advisories.append(CountyAdvisory(
-                    county="San Mateo",
-                    station_code=None,
-                    area=line_text[:60],
-                    advisory_type="Posting",
-                    started_at=page_date,
-                    advisory_website=SM_HOMEPAGE,
-                    cause="Bacterial Standards Violation",
-                    beach_id=beach_id,
+    # Closures are best-effort: a page fetch failure must not discard the KML postings.
+    try:
+        page = client.get(SM_HOMEPAGE, headers={"User-Agent": _BROWSER_UA}, timeout=30.0)
+        page.raise_for_status()
+        for name in _parse_sm_notices(page.text):
+            advisories.append(CountyAdvisory(
+                county="San Mateo",
+                station_code=None,
+                area=name,
+                advisory_type="Closure",
+                started_at=today,
+                advisory_website=SM_HOMEPAGE,
+                cause="Sanitary Sewer Overflow",
                 ))
-                break
+    except Exception as e:
+        print(f"  San Mateo notices page unavailable: {e}", file=sys.stderr)
 
     rpt.success = True
     rpt.advisories_parsed = len(advisories)
@@ -1206,6 +1294,18 @@ def fetch_east_bay_advisories(
 # ---------- Ventura County ---------- #
 
 
+def _is_name_fragment(name: str) -> bool:
+    """True for scraped 'names' that are really prose fragments (Correction C1):
+    empty, starts lowercase, contains a sentence break, or is too long."""
+    return (
+        not name
+        or len(name) > 50
+        or name[0].islower()
+        or ". " in name
+        or len(name.split()) > 10
+    )
+
+
 VT_HOMEPAGE = "https://rma.venturacounty.gov/divisions/environmental-health/ocean-water-quality-sampling-results/"
 
 
@@ -1253,7 +1353,8 @@ def fetch_ventura_advisories(
         re.IGNORECASE,
     ):
         beach = m.group(1).strip()
-        if len(beach) > 50:
+        if _is_name_fragment(beach):
+            rpt.rejected_fragments += 1
             continue
         advisories.append(CountyAdvisory(
             county="Ventura",
@@ -1598,6 +1699,100 @@ def fetch_slo_advisories(
     return advs, rpt
 
 
+# ---------- Santa Barbara (ArcGIS) ---------- #
+
+SB_HOMEPAGE = "https://www.countyofsb.org/ch-ocean-water-monitoring-program"
+SB_ARCGIS_URL = (
+    "https://services.arcgis.com/KkJhFbLnXVqahKz2/arcgis/rest/services/"
+    "Ocean_Water_Quality_Points_Public/FeatureServer/0/query"
+    "?where=1%3D1&outFields=*&returnGeometry=false&f=json"
+)
+
+
+def _parse_sb_arcgis_payload(
+    data: dict,
+    resolver: StationResolver | None = None,
+) -> tuple[list[CountyAdvisory], str | None]:
+    """Parse Santa Barbara ArcGIS FeatureServer query JSON."""
+    if "error" in data:
+        return [], f"ArcGIS error: {data['error']}"
+
+    features = data.get("features", [])
+    advisories: list[CountyAdvisory] = []
+
+    for feat in features:
+        attrs = feat.get("attributes", {})
+        identifier = attrs.get("Identifier")
+        beach_name = (attrs.get("Beach_Name") or "").strip()
+        status = str(attrs.get("Beach_status") or "").strip()
+        status_lower = status.lower()
+
+        if "clos" in status_lower:
+            adv_type = "Closure"
+        elif "warning" in status_lower:
+            adv_type = "Posting"
+        else:
+            # Open or unknown status -> skip
+            continue
+
+        status_date_ms = attrs.get("StatusDate")
+        if status_date_ms:
+            started_at = pd.to_datetime(status_date_ms, unit="ms").normalize()
+        else:
+            started_at = pd.Timestamp.now().normalize()
+
+        beach_id = None
+        if resolver and identifier:
+            bid, _ = resolver.resolve_by_station_code("Santa Barbara", identifier)
+            if bid:
+                beach_id = bid
+
+        cause = "Bacterial Standards Violation"
+        advisories.append(CountyAdvisory(
+            county="Santa Barbara",
+            station_code=identifier,
+            area=beach_name,
+            advisory_type=adv_type,
+            started_at=started_at,
+            advisory_website=SB_HOMEPAGE,
+            cause=cause,
+            beach_id=beach_id,
+        ))
+
+    return advisories, None
+
+
+def fetch_santa_barbara_advisories(
+    client: httpx.Client,
+    resolver: StationResolver,
+) -> tuple[list[CountyAdvisory], CountyReport]:
+    """Scrape Santa Barbara County via public ArcGIS FeatureServer."""
+    rpt = CountyReport(
+        county="Santa Barbara",
+        success=False,
+        last_attempted_at=datetime.now(timezone.utc).isoformat(),
+        source_url=SB_HOMEPAGE,
+    )
+    if resolver:
+        rpt.stations_in_lookup = len(resolver._station_code_lookup.get("Santa Barbara", {}))
+
+    try:
+        resp = client.get(SB_ARCGIS_URL, timeout=30.0)
+        resp.raise_for_status()
+        data = resp.json()
+        advs, err = _parse_sb_arcgis_payload(data, resolver)
+        if err:
+            rpt.error = err
+            return [], rpt
+
+        rpt.success = True
+        rpt.advisories_parsed = len(advs)
+        return advs, rpt
+    except Exception as e:
+        rpt.error = f"fetch failed: {e}"
+        return [], rpt
+
+
 # ---------- Best-effort stubs (try, log, move on) ---------- #
 
 
@@ -1638,6 +1833,144 @@ def fetch_best_effort_county(
 
 
 _SAMPLES_PARQUET = "county_direct_samples.parquet"
+
+
+OC_DATA_PAGE = "https://ocbeachinfo.com/data/"
+OC_SAMPLE_WINDOW_DAYS = 120
+OC_ENTERO_LIMIT = 104.0
+# Name changes with each update, e.g. Orange-County-Beach-Monitoring-Data-2026-9.15.2026.xlsx
+_OC_XLSX_RE = re.compile(
+    r"""(?:href=["'])?(?P<url>[^"'\s<>]*Orange-County-Beach-Monitoring-Data-[^"'\s<>]*?"""
+    r"""(?P<m>\d{1,2})\.(?P<d>\d{1,2})\.(?P<y>\d{4})\.xlsx)""",
+    re.IGNORECASE,
+)
+
+
+def _oc_pick_newest_xlsx(html: str, base_url: str = OC_DATA_PAGE) -> str | None:
+    """Newest Orange-County-Beach-Monitoring-Data-*.xlsx link by the date in its filename."""
+    best: tuple[tuple[int, int, int], str] | None = None
+    for m in _OC_XLSX_RE.finditer(html):
+        key = (int(m.group("y")), int(m.group("m")), int(m.group("d")))
+        if best is None or key > best[0]:
+            best = (key, m.group("url"))
+    if best is None:
+        return None
+    return str(httpx.URL(base_url).join(best[1]))
+
+
+def _oc_samples_from_frame(
+    df: pd.DataFrame,
+    resolver: StationResolver,
+    source_url: str,
+    now: pd.Timestamp,
+) -> list[CountySample]:
+    """Orange County lab xlsx rows -> CountySample (enterococcus, last 120 days).
+
+    ND rows carry no Result; the state feed stores them as 1 (majority), so use 1.0.
+    One sample per (station, date): the worst reading, so a same-day split sample
+    cannot hide an exceedance behind persist_samples' (county, area, date, analyte) dedupe.
+    """
+    if df.empty:
+        return []
+    frame = df.loc[df["ParameterCode"].astype(str).str.strip().str.lower() == "enterococcus"].copy()
+    if frame.empty:
+        return []
+    frame["_date"] = pd.to_datetime(frame["SampleDate"], errors="coerce").dt.normalize()
+    frame = frame.loc[frame["_date"].notna()]
+    frame = frame.loc[frame["_date"] >= now.normalize() - pd.Timedelta(days=OC_SAMPLE_WINDOW_DAYS)]
+    result = pd.to_numeric(frame["Result"], errors="coerce")
+    qualifier = frame["Qualifier"].astype(str).str.strip().str.upper()
+    frame["_value"] = result.where(result.notna(), other=pd.NA)
+    nd = result.isna() & (qualifier == "ND")
+    frame.loc[nd, "_value"] = 1.0
+    frame = frame.loc[frame["_value"].notna() & frame["StationID"].notna()]
+    if frame.empty:
+        return []
+    frame["_value"] = frame["_value"].astype(float)
+    frame["station"] = frame["StationID"].astype(str).str.strip()
+    worst = frame.groupby(["station", "_date"], as_index=False)["_value"].max()
+    worst = worst.rename(columns={"_date": "date_", "_value": "value_"})
+
+    out: list[CountySample] = []
+    for row in worst.itertuples(index=False):
+        bid, _ = resolver.resolve_by_station_code("Orange", row.station)
+        out.append(CountySample(
+            county="Orange",
+            area=row.station,
+            sample_date=row.date_,
+            analyte="ENTEROCOCCUS",
+            value=float(row.value_),
+            exceeds_limit=bool(row.value_ > OC_ENTERO_LIMIT),
+            source_url=source_url,
+            station_code=row.station,
+            beach_id=bid,
+        ))
+    return out
+
+
+# The results file has been renamed three times (Historical-Data-..., then
+# Orange-County-Data-2026-Compiled, then Orange-County-Beach-Monitoring-Data-...),
+# and other spreadsheets share the media library (OC-Combined-Data.xlsx). So the
+# primary path lists uploads newest-first and takes the first whose CONTENTS look
+# like lab results; the /data/ page link pattern is only the fallback.
+OC_MEDIA_API = (
+    "https://ocbeachinfo.com/wp-json/wp/v2/media"
+    "?mime_type=application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    "&per_page=10&orderby=date&order=desc&_fields=date,source_url"
+)
+_OC_RESULT_COLUMNS = {"StationID", "SampleDate", "ParameterCode", "Result"}
+_OC_MEDIA_CANDIDATES = 5
+
+
+def _oc_media_candidates(client: httpx.Client) -> list[str]:
+    """Newest-first spreadsheet URLs from the WordPress media library (may be empty)."""
+    try:
+        resp = client.get(OC_MEDIA_API, headers={"User-Agent": _BROWSER_UA}, timeout=30.0)
+        if resp.status_code != 200:
+            return []
+        return [str(item["source_url"]) for item in resp.json() if item.get("source_url")]
+    except Exception:
+        return []
+
+
+def _oc_load_results(client: httpx.Client, url: str) -> pd.DataFrame | None:
+    """The spreadsheet at ``url`` if it carries the lab-result columns, else None."""
+    resp = client.get(url, headers={"User-Agent": _BROWSER_UA}, timeout=120.0)
+    resp.raise_for_status()
+    df = pd.read_excel(io.BytesIO(resp.content), engine="openpyxl")
+    return df if _OC_RESULT_COLUMNS.issubset(df.columns) else None
+
+
+def fetch_orange_county_samples(client: httpx.Client, resolver: StationResolver) -> int:
+    """Append Orange County lab results (running-year xlsx) to _COLLECTED_SAMPLES.
+
+    Returns the number of samples added. Never raises: a failure here must not
+    cost the advisory run, so it is logged to stderr and 0 is returned."""
+    try:
+        url, df = None, None
+        for candidate in _oc_media_candidates(client)[:_OC_MEDIA_CANDIDATES]:
+            df = _oc_load_results(client, candidate)
+            if df is not None:
+                url = candidate
+                break
+        if url is None:
+            page = client.get(OC_DATA_PAGE, headers={"User-Agent": _BROWSER_UA}, timeout=30.0)
+            page.raise_for_status()
+            url = _oc_pick_newest_xlsx(page.text, str(page.url))
+            if not url:
+                print("  [OC samples] no results spreadsheet found (media API or /data/ page)", file=sys.stderr)
+                return 0
+            df = _oc_load_results(client, url)
+            if df is None:
+                print(f"  [OC samples] {url} lacks the lab-result columns", file=sys.stderr)
+                return 0
+        samples = _oc_samples_from_frame(df, resolver, url, pd.Timestamp.now(tz="UTC").tz_localize(None))
+    except Exception as e:
+        print(f"  [OC samples] failed: {e}", file=sys.stderr)
+        return 0
+    _COLLECTED_SAMPLES.extend(samples)
+    print(f"  [OC samples] {len(samples)} station-days from {url}")
+    return len(samples)
 
 
 def persist_samples(
@@ -1698,11 +2031,49 @@ def persist_samples(
 # ---------- Resolution + merge ---------- #
 
 
+HEURISTIC_KINDS = ("substring", "fuzzy")
+
+
+def _unresolved_row(ca: CountyAdvisory, suggested_beach_id: str | None = None) -> dict:
+    started_naive = (
+        ca.started_at.tz_localize(None)
+        if (ca.started_at is not None and ca.started_at.tzinfo is not None)
+        else ca.started_at
+    )
+    return {
+        "source_county": ca.county,
+        "scraped_name": ca.area,
+        "scraped_name_normalized": _normalize_name(ca.area),
+        "scraped_date": started_naive,
+        "scraped_at": pd.Timestamp.now(tz="UTC").tz_localize(None),
+        "suggested_beach_id": suggested_beach_id,
+    }
+
+
+def _count_match(report: CountyReport, kind: str) -> None:
+    """Bump the per-layer counter. matched_via_live_list stays the sum of the
+    three exact-identity layers so existing readers of the report keep working."""
+    if kind == "csv":
+        report.matched_via_csv += 1
+    elif kind == "fuzzy":
+        report.matched_via_fuzzy += 1
+    elif kind == "substring":
+        report.matched_via_substring += 1
+        report.matched_via_live_list += 1
+    elif kind == "secondary":
+        report.matched_via_secondary += 1
+        report.matched_via_live_list += 1
+    else:
+        report.matched_via_exact += 1
+        report.matched_via_live_list += 1
+
+
 def resolve_advisories(
     advisories: list[CountyAdvisory],
     resolver: StationResolver,
     report: CountyReport,
     unresolved_sink: list[dict] | None = None,
+    heuristic_mode: str = "resolve",
 ) -> list[CountyAdvisory]:
     """Resolve each CountyAdvisory.beach_id via the hybrid resolver.
 
@@ -1714,29 +2085,37 @@ def resolve_advisories(
 
     One scraped posting may resolve to SEVERAL beaches (a district-wide
     notice over a multi-point beach group); each gets its own
-    CountyAdvisory so downstream merge logic stays one-row-per-beach."""
+    CountyAdvisory so downstream merge logic stays one-row-per-beach.
+
+    Every substring/fuzzy hit is listed in report.heuristic_matches. With
+    heuristic_mode="suggest" those hits are NOT resolved: they go to the sink
+    with a suggested_beach_id and count as unresolved."""
     resolved: list[CountyAdvisory] = []
     for ca in advisories:
         if ca.beach_id:
             # already resolved by parser (some inline)
-            report.matched_via_live_list += 1
+            _count_match(report, "exact")
             resolved.append(ca)
             continue
         if ca.station_code:
             bid, kind = resolver.resolve_by_station_code(ca.county, ca.station_code)
             if bid:
                 ca.beach_id = bid
-                report.matched_via_live_list += 1
+                _count_match(report, "exact")
                 resolved.append(ca)
                 continue
         beach_ids, kind = resolver.resolve_all_by_name(ca.county, ca.area)
+        if beach_ids and kind in HEURISTIC_KINDS:
+            report.heuristic_matches.append(
+                {"posted_name": ca.area, "beach_id": beach_ids[0], "kind": kind}
+            )
+            if heuristic_mode == "suggest":
+                report.unmatched_names.append(ca.area)
+                if unresolved_sink is not None:
+                    unresolved_sink.append(_unresolved_row(ca, beach_ids[0]))
+                continue
         if beach_ids:
-            if kind == "csv":
-                report.matched_via_csv += 1
-            elif kind == "fuzzy":
-                report.matched_via_fuzzy += 1
-            else:
-                report.matched_via_live_list += 1
+            _count_match(report, kind)
             ca.beach_id = beach_ids[0]
             resolved.append(ca)
             # Fan-out: replicate the posting onto every other covered beach.
@@ -1745,18 +2124,7 @@ def resolve_advisories(
         else:
             report.unmatched_names.append(ca.area)
             if unresolved_sink is not None:
-                started_naive = (
-                    ca.started_at.tz_localize(None)
-                    if (ca.started_at is not None and ca.started_at.tzinfo is not None)
-                    else ca.started_at
-                )
-                unresolved_sink.append({
-                    "source_county": ca.county,
-                    "scraped_name": ca.area,
-                    "scraped_name_normalized": _normalize_name(ca.area),
-                    "scraped_date": started_naive,
-                    "scraped_at": pd.Timestamp.now(tz="UTC").tz_localize(None),
-                })
+                unresolved_sink.append(_unresolved_row(ca))
     return resolved
 
 
@@ -2333,6 +2701,7 @@ def _parse_iso_date(s: str) -> pd.Timestamp | None:
 COUNTIES_FIRST_CLASS = [
     ("San Diego", fetch_san_diego_advisories),
     ("Orange", fetch_orange_county_advisories),
+    ("Santa Barbara", fetch_santa_barbara_advisories),
     ("San Mateo", fetch_san_mateo_advisories),
     ("Los Angeles", fetch_la_county_advisories),
     ("Marin", fetch_marin_advisories),
@@ -2352,21 +2721,15 @@ COUNTIES_FIRST_CLASS = [
 # authoritative.)
 COUNTIES_PENDING_VALIDATION: set[str] = set()
 
-BEST_EFFORT_COUNTIES: dict[str, list[str]] = {
-    "Monterey": [
-        # Both URLs return 403 even via headless Playwright (datacenter-IP WAF).
-        # Resolving this requires either a residential proxy, undetected
-        # chromedriver, or county outreach for an alternate data path.
-        "https://www.countyofmonterey.gov/government/departments-a-h/health/environmental-health/general/public-beaches-water-quality",
-        "https://www.countyofmonterey.gov/Home/Components/News/News/9999/16",
-    ],
-    "Santa Barbara": [
-        # The Ocean Water Monitoring Program page only lists *sampling sites*,
-        # not current advisory status. SB does not appear to publish current
-        # postings on the public web — outreach to SB Public Health required
-        # for either a live status URL or an API.
-        "https://www.countyofsb.org/2263/Ocean-Water-Monitoring-Program",
-    ],
+BEST_EFFORT_COUNTIES: dict[str, list[str]] = {}
+
+# Counties with no public posting source at all. Reported (so the gap is
+# visible in county_advisories_report.json) but never scraped, never counted
+# toward the scraper gate, and never authoritative.
+NO_SOURCE_COUNTIES: dict[str, str] = {
+    # Reported through the State Water Board until 2026-08-25; the state routes pick
+    # it up with no code change if the county resumes. Hotline: 831-755-4599.
+    "Monterey": "no public posting source (hotline only); state reporting stopped 2026-08-25",
 }
 
 
@@ -2386,6 +2749,14 @@ def main() -> int:
         help="Exit non-zero on a SOFT gate trip too (default: soft trips only "
         "mark system_health.json['scraper_gate'], and scripts/verify_scraper_gate.py "
         "fails the job after the data commit). Useful when debugging locally.",
+    )
+    parser.add_argument(
+        "--heuristic-mode",
+        choices=("resolve", "suggest"),
+        default="resolve",
+        help="resolve (default): substring/fuzzy hits resolve to a beach. "
+        "suggest: they go to unresolved_advisories.parquet with a "
+        "suggested_beach_id and count as unresolved in the gate.",
     )
     args = parser.parse_args()
 
@@ -2431,10 +2802,14 @@ def main() -> int:
             # schema-drift check on it — so a fetcher that forgets must not
             # silently opt its county out of the check.
             rpt.advisories_parsed = len(advs)
-            resolved = resolve_advisories(advs, resolver, rpt, unresolved_sink=unresolved_rows)
+            resolved = resolve_advisories(
+                advs, resolver, rpt, unresolved_sink=unresolved_rows,
+                heuristic_mode=args.heuristic_mode,
+            )
             print(
                 f"  {len(advs)} parsed → {len(resolved)} resolved "
-                f"(live_list={rpt.matched_via_live_list}, csv={rpt.matched_via_csv}, "
+                f"(exact={rpt.matched_via_exact}, secondary={rpt.matched_via_secondary}, "
+                f"csv={rpt.matched_via_csv}, substring={rpt.matched_via_substring}, "
                 f"fuzzy={rpt.matched_via_fuzzy}, unmatched={len(rpt.unmatched_names)})"
             )
             all_advisories.extend(resolved)
@@ -2462,10 +2837,14 @@ def main() -> int:
             # schema-drift check on it — so a fetcher that forgets must not
             # silently opt its county out of the check.
             rpt.advisories_parsed = len(advs)
-            resolved = resolve_advisories(advs, resolver, rpt, unresolved_sink=unresolved_rows)
+            resolved = resolve_advisories(
+                advs, resolver, rpt, unresolved_sink=unresolved_rows,
+                heuristic_mode=args.heuristic_mode,
+            )
             print(
                 f"  {len(advs)} parsed → {len(resolved)} resolved "
-                f"(live_list={rpt.matched_via_live_list}, csv={rpt.matched_via_csv}, "
+                f"(exact={rpt.matched_via_exact}, secondary={rpt.matched_via_secondary}, "
+                f"csv={rpt.matched_via_csv}, substring={rpt.matched_via_substring}, "
                 f"fuzzy={rpt.matched_via_fuzzy}, unmatched={len(rpt.unmatched_names)})"
             )
             for ca in resolved:
@@ -2488,6 +2867,22 @@ def main() -> int:
             note = rpt.error or "fetched"
             print(f"  {note}")
             reports.append(rpt)
+
+        if not args.only or "orange" in args.only.lower():
+            print("Fetching Orange County lab results ...")
+            fetch_orange_county_samples(client, resolver)
+
+    for county_name, reason in NO_SOURCE_COUNTIES.items():
+        if args.only and args.only.lower() not in county_name.lower():
+            continue
+        reports.append(CountyReport(
+            county=county_name,
+            success=False,
+            last_attempted_at=datetime.now(timezone.utc).isoformat(),
+            source_url="",
+            stations_in_lookup=len(resolver._beach_name_lookup.get(county_name, {})),
+            no_public_source=reason,
+        ))
 
     # Write telemetry
     report_payload = {

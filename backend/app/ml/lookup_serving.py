@@ -355,6 +355,17 @@ def apply_lookup_to_served(curated_dir: Path | str, method: str | None = None) -
     else:
         beach_day = pd.DataFrame(columns=["beach_id", "sample_date", "exceeds_stv"])
 
+    most_recent_label_method: dict[str, str] = {}
+    if not beach_day.empty and "beach_id" in beach_day.columns and "label_method" in beach_day.columns:
+        sort_cols = ["sample_date"]
+        if "sample_time" in beach_day.columns:
+            sort_cols.append("sample_time")
+        bd_sorted = beach_day.dropna(subset=["beach_id"]).sort_values(sort_cols)
+        last_methods = bd_sorted.groupby("beach_id")["label_method"].last()
+        most_recent_label_method = {
+            str(k): str(v) for k, v in last_methods.items() if pd.notna(v)
+        }
+
     beach_ids = forecasts["beach_id"].tolist()
     lookup_df = compute_lookup(
         beach_day=beach_day,
@@ -503,6 +514,9 @@ def apply_lookup_to_served(curated_dir: Path | str, method: str | None = None) -
     forecasts["upper_prediction_interval"] = np.nan
     forecasts["prediction_interval_level"] = np.nan
     forecasts["top_drivers"] = top_drivers_list
+    forecasts["label_method"] = [
+        most_recent_label_method.get(str(bid)) for bid in beach_ids
+    ]
 
     # Atomic write for forecasts.parquet
     tmp_forecasts = forecasts_path.with_suffix(".parquet.tmp")
@@ -519,6 +533,10 @@ def apply_lookup_to_served(curated_dir: Path | str, method: str | None = None) -
                 history["p_exceed_ml"] = np.nan
             if "p_exceed_lookup" not in history.columns:
                 history["p_exceed_lookup"] = np.nan
+            if "persistence_floor_applied" not in history.columns:
+                history["persistence_floor_applied"] = None
+            if "label_method" not in history.columns:
+                history["label_method"] = None
 
             fc_keys = (
                 forecasts["beach_id"].astype(str)
@@ -552,6 +570,7 @@ def apply_lookup_to_served(curated_dir: Path | str, method: str | None = None) -
                     "model_version",
                     "persistence_floor_applied",
                     "served_offset_weight",
+                    "label_method",
                 ]:
                     mapped = hist_keys[matched_mask].map(fc_lookup[col])
                     if col in ("p_exceed", "p_exceed_raw", "p_exceed_lookup", "served_offset_weight"):
