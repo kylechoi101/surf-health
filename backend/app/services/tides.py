@@ -37,17 +37,20 @@ _PAST_PREDICTION_HOURS = 10
 # California NOAA CO-OPS tide stations, ordered roughly N→S along the coast.
 # All station IDs verified against https://tidesandcurrents.noaa.gov/stations.html
 # (filter: state=CA, type=harmonic).
+# Removed 2026-10-02 after a live check: 9410665 (Los Angeles Pilot Station) and 9415118
+# (Bodega Harbor Entrance) return no predictions for datum MLLW at all, and 9413745 (Santa
+# Cruz) is a subordinate station with high/low only — every hourly request to them failed, so
+# beaches nearest them got no tides. Their neighbours here (9410660 Los Angeles, 9415020 Point
+# Reyes, 9413450 Monterey) are harmonic and now serve those beaches.
 CA_TIDE_STATIONS: tuple[tuple[str, str, float, float], ...] = (
     ("9419750", "Crescent City", 41.7456, -124.1844),
     ("9418767", "North Spit, Humboldt Bay", 40.7667, -124.2167),
     ("9418723", "North Jetty, Humboldt Bay", 40.7667, -124.2333),
     ("9416841", "Arena Cove", 38.9145, -123.7113),
     ("9415020", "Point Reyes", 37.9961, -122.9744),
-    ("9415118", "Bodega Harbor Entrance", 38.3170, -123.0500),
     ("9414750", "Alameda", 37.7717, -122.3000),
     ("9414290", "San Francisco", 37.8063, -122.4659),
     ("9413450", "Monterey", 36.6050, -121.8881),
-    ("9413745", "Santa Cruz", 36.9583, -122.0167),
     ("9412110", "Port San Luis", 35.1686, -120.7542),
     ("9411406", "Oceano Beach Pier", 35.1011, -120.6300),
     ("9411340", "Santa Barbara", 34.4036, -119.6925),
@@ -55,7 +58,6 @@ CA_TIDE_STATIONS: tuple[tuple[str, str, float, float], ...] = (
     ("9410840", "Santa Monica", 34.0083, -118.5000),
     ("9410660", "Los Angeles", 33.7200, -118.2728),
     ("9410680", "Long Beach Pier J", 33.7400, -118.1869),
-    ("9410665", "Los Angeles Pilot Station", 33.7158, -118.2706),
     ("9410580", "Newport Bay Entrance", 33.6028, -117.8819),
     ("9410230", "La Jolla", 32.8669, -117.2571),
     ("9410170", "San Diego", 32.7142, -117.1736),
@@ -143,11 +145,31 @@ def fetch_tides(lat: float, lon: float, *, _client: httpx.Client | None = None) 
     Cached per station_id for 24 h.
     """
     station_id, station_name, station_distance_km = nearest_station(lat, lon)
+    return fetch_station_tides(
+        station_id, station_name, station_distance_km, _client=_client
+    )
 
+
+def fetch_station_tides(
+    station_id: str,
+    station_name: str,
+    station_distance_km: float,
+    *,
+    hours_ahead: int = _PREDICTION_HOURS,
+    use_cache: bool = True,
+    _client: httpx.Client | None = None,
+) -> dict | None:
+    """Fetch predictions for ONE station (the NOAA call behind ``fetch_tides``).
+
+    ``hours_ahead`` and ``use_cache`` exist for the pipeline's ``--with-tides``
+    step, which wants a longer window than the live route and must not read or
+    populate the route's 24 h cache (which holds the 48 h payload).
+    """
     now = time.time()
-    cached = _CACHE.get(station_id)
-    if cached and cached.expires_at > now:
-        return cached.payload
+    if use_cache:
+        cached = _CACHE.get(station_id)
+        if cached and cached.expires_at > now:
+            return cached.payload
 
     # NOAA CO-OPS interprets begin_date / end_date in the timezone specified
     # by time_zone. Previously we sent naive UTC strings paired with
@@ -160,7 +182,7 @@ def fetch_tides(lat: float, lon: float, *, _client: httpx.Client | None = None) 
     # them as UTC and auto-localizes for display.
     nowUtc = datetime.now(timezone.utc).replace(tzinfo=None)
     begin = nowUtc - timedelta(hours=_PAST_PREDICTION_HOURS)
-    end = nowUtc + timedelta(hours=_PREDICTION_HOURS)
+    end = nowUtc + timedelta(hours=hours_ahead)
     params = {
         "product": "predictions",
         "application": "Shorelife",
@@ -202,5 +224,6 @@ def fetch_tides(lat: float, lon: float, *, _client: httpx.Client | None = None) 
         "predictions": predictions,
         "extrema": detect_extrema(predictions),
     }
-    _CACHE[station_id] = _CacheEntry(expires_at=now + _CACHE_TTL_SECONDS, payload=payload)
+    if use_cache:
+        _CACHE[station_id] = _CacheEntry(expires_at=now + _CACHE_TTL_SECONDS, payload=payload)
     return payload

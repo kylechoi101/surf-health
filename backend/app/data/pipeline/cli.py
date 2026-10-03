@@ -602,6 +602,13 @@ def main() -> None:
              "instead of calling Open-Meteo live (which is rate-limited from the "
              "production server, 502-ing all surf data).",
     )
+    parser.add_argument(
+        "--with-tides",
+        action="store_true",
+        help="Fetch NOAA CO-OPS tide predictions once per station that any beach "
+             "maps to and write tides.parquet (>= 72 h ahead of the run) so the "
+             "static bake can serve /tides without a live NOAA call.",
+    )
     parser.add_argument("--usgs-gages-csv", type=Path)
     parser.add_argument("--cnrfc-observed-csv", type=Path)
     parser.add_argument("--cnrfc-qpf-csv", type=Path)
@@ -1242,6 +1249,87 @@ def main() -> None:
         n_cells = len(hourly)
         n_coords = beaches[["latitude", "longitude"]].dropna().round(1).drop_duplicates().shape[0]
         print(f"[hourly] wrote hourly_forecast.parquet ({n_cells}/{n_coords} grid cells covered)")
+
+    if args.with_tides:
+        curated = Path(get_settings().curated_dir)
+        beaches = pd.read_parquet(curated / "beaches.parquet")
+        tides_path = curated / "tides.parquet"
+        previous = pd.read_parquet(tides_path) if tides_path.exists() else None
+        tides = build_tides_frame(beaches, previous=previous)
+        if tides.empty:
+            print("[tides] NOAA returned no usable predictions; leaving tides.parquet untouched")
+        else:
+            tmp = tides_path.with_suffix(".parquet.tmp")
+            tides.to_parquet(tmp, index=False)
+            tmp.replace(tides_path)
+            print(f"[tides] wrote tides.parquet ({tides['station_id'].nunique()} stations, {len(tides)} rows)")
+
+
+TIDES_HOURS_AHEAD = 96  # > the 72 h the static bake promises, with slack for a late run
+
+
+def build_tides_frame(
+    beaches: pd.DataFrame,
+    *,
+    previous: pd.DataFrame | None = None,
+    hours_ahead: int = TIDES_HOURS_AHEAD,
+    client: httpx.Client | None = None,
+) -> pd.DataFrame:
+    """One NOAA call per station any beach maps to, as a long frame.
+
+    Columns: ``station_id, station_name, station_lat, station_lon, kind``
+    (``prediction`` | ``extremum``), ``timestamp`` (UTC), ``height`` (ft MLLW),
+    ``type`` (``H``/``L`` on extrema, null on predictions). Station selection and
+    the NOAA call are ``app.services.tides``'s own. Harmonic predictions are
+    deterministic, so rows from ``previous`` for a station whose fetch failed
+    today are kept (still-future rows only) rather than dropping that station.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from app.services.tides import CA_TIDE_STATIONS, fetch_station_tides, nearest_station
+
+    coords = beaches[["latitude", "longitude"]].dropna().drop_duplicates()
+    stations: dict[str, tuple[str, float]] = {}
+    for lat, lon in coords.itertuples(index=False):
+        sid, name, dist = nearest_station(float(lat), float(lon))
+        stations.setdefault(sid, (name, dist))
+    locations = {sid: (lat, lon) for sid, _, lat, lon in CA_TIDE_STATIONS}
+
+    rows: list[dict] = []
+    for sid, (name, dist) in sorted(stations.items()):
+        payload = fetch_station_tides(
+            sid, name, dist, hours_ahead=hours_ahead, use_cache=False, _client=client
+        )
+        if payload is None:
+            print(f"[tides] station {sid} ({name}): fetch failed")
+            continue
+        base = {
+            "station_id": sid,
+            "station_name": name,
+            "station_lat": locations[sid][0],
+            "station_lon": locations[sid][1],
+        }
+        for point in payload["predictions"]:
+            rows.append({**base, "kind": "prediction", "timestamp": point["t"], "height": point["v"], "type": None})
+        for point in payload["extrema"]:
+            rows.append({**base, "kind": "extremum", "timestamp": point["t"], "height": point["v"], "type": point["type"]})
+
+    columns = [
+        "station_id", "station_name", "station_lat", "station_lon",
+        "kind", "timestamp", "height", "type",
+    ]
+    fresh = pd.DataFrame(rows, columns=columns)
+    if not fresh.empty:
+        fresh["timestamp"] = pd.to_datetime(fresh["timestamp"], utc=True)
+    if previous is not None and not previous.empty:
+        cutoff = pd.Timestamp(datetime.now(timezone.utc) - timedelta(hours=1))
+        carried = previous[
+            previous["station_id"].isin(stations)
+            & ~previous["station_id"].isin(fresh["station_id"].unique())
+            & (previous["timestamp"] >= cutoff)
+        ]
+        fresh = pd.concat([fresh, carried[columns]], ignore_index=True)
+    return fresh.reset_index(drop=True)
 
 
 if __name__ == "__main__":

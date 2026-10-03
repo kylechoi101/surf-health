@@ -415,3 +415,76 @@ def test_history_columns_contains_label_method():
     from app.ml.served_metrics import _HISTORY_COLUMNS
 
     assert "label_method" in _HISTORY_COLUMNS
+
+
+def test_persistence_probability_is_logged_and_follows_the_compare_all_models_definition(tmp_path):
+    from app.ml.lookup_serving import apply_lookup_to_served
+    from app.ml.served_metrics import _HISTORY_COLUMNS, _PROBABILITY_COLUMNS
+
+    assert "p_exceed_persistence" in _HISTORY_COLUMNS
+    assert "p_exceed_persistence" in _PROBABILITY_COLUMNS
+
+    forecasts = pd.DataFrame(
+        {
+            "beach_id": ["b1", "b2", "b3"],
+            "forecast_date": ["2026-09-22"] * 3,
+            "risk_band": ["Low"] * 3,
+            "p_exceed": [0.1] * 3,
+            "p_exceed_raw": [0.1] * 3,
+            "p_exceed_precal": [0.1] * 3,
+            "model_version": ["ml-v2"] * 3,
+            "forecast_generated_at": ["2026-09-22T08:00:00"] * 3,
+            "sample_age_days": [1, 2, 3],
+            "sample_recency_band": ["fresh"] * 3,
+            "forecast_label_mode": ["model"] * 3,
+        }
+    )
+    forecasts.to_parquet(tmp_path / "forecasts.parquet", index=False)
+    # b1's last label exceeded; b2's did not; b3 has no history. Pooled rate = 1/4.
+    beach_day = pd.DataFrame(
+        {
+            "beach_id": ["b1", "b1", "b2", "b2"],
+            "sample_date": pd.to_datetime(["2026-09-10", "2026-09-20", "2026-09-05", "2026-09-15"]),
+            "sample_time": pd.to_datetime(
+                ["2026-09-10 08:00", "2026-09-20 08:00", "2026-09-05 08:00", "2026-09-15 08:00"]
+            ),
+            "exceeds_stv": [False, True, False, False],
+            "label_method": ["culture"] * 4,
+        }
+    )
+    beach_day.to_parquet(tmp_path / "beach_day.parquet", index=False)
+
+    apply_lookup_to_served(tmp_path, method="lookup")
+
+    f = pd.read_parquet(tmp_path / "forecasts.parquet").set_index("beach_id")
+    assert f.loc["b1", "p_exceed_persistence"] == 1.0
+    assert f.loc["b2", "p_exceed_persistence"] == pytest.approx(0.25)
+    assert f.loc["b3", "p_exceed_persistence"] == pytest.approx(0.25)
+
+
+def test_persistence_is_backfilled_on_earlier_served_history_rows():
+    from app.ml.lookup_serving import SERVED_ESTIMATE_VERSIONS, _backfill_persistence
+
+    version = sorted(SERVED_ESTIMATE_VERSIONS)[0]
+    beach_day = pd.DataFrame(
+        {
+            "beach_id": ["b1", "b1", "b2"],
+            "sample_date": pd.to_datetime(["2026-09-01", "2026-09-10", "2026-09-05"]),
+            "exceeds_stv": [False, True, False],
+        }
+    )
+    history = pd.DataFrame(
+        {
+            "beach_id": ["b1", "b1", "b2", "b2"],
+            # b1 on 09-08 had not yet exceeded; on 09-12 its last label had. Two issues for b2.
+            "forecast_date": ["2026-09-08", "2026-09-12", "2026-09-12", "2026-09-12"],
+            "model_version": [version, version, version, "ml-v1"],
+            "p_exceed_persistence": [None, None, None, None],
+        }
+    )
+    history["p_exceed_persistence"] = pd.to_numeric(history["p_exceed_persistence"])
+    assert _backfill_persistence(history, beach_day) == 3
+    assert history["p_exceed_persistence"].iloc[0] == 0.0  # two prior labels, both clean
+    assert history["p_exceed_persistence"].iloc[1] == 1.0
+    assert history["p_exceed_persistence"].iloc[2] == pytest.approx(1 / 3)
+    assert pd.isna(history["p_exceed_persistence"].iloc[3])  # not a served-estimate row
