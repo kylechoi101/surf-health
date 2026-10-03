@@ -1,0 +1,33 @@
+# Shorelife
+
+> Shorelife (https://kylechoi101.github.io/surf-health/) publishes free daily
+> beach water quality ratings for monitored California beaches statewide.
+
+Key facts:
+
+- Coverage: statewide California, about 850 monitored beaches.
+- Water quality rating: starts from the share of each beach's official
+  enterococcus lab tests over the past 12 months that exceeded the safety
+  limit, shrunk toward the statewide average. A logistic model, refit every
+  morning on four years of lab results, adjusts that number for how far the
+  latest result was above or below its limit, how recent it is, rain in the
+  past 72 hours, and the season. The rating is never Low if the last test
+  exceeded the safety limit, and it is raised to High while an official county
+  advisory is active.
+- Machine learning: a larger machine-learning model also trains daily as a
+  challenger but does not set the served number. It serves only if it beats
+  the rating on forward lab outcomes.
+- Advisories take precedence: active county advisories and closures always override
+  the rating.
+- Decision support: ratings are decision support, not official lab results.
+
+## Pages
+
+- [Beach directory](https://kylechoi101.github.io/surf-health/beaches/): all
+  California beaches with today's risk band.
+- [Conditions](https://kylechoi101.github.io/surf-health/conditions/): coastal
+  conditions, tides, water temperature, and surf context across California.
+- [Methodology](https://kylechoi101.github.io/surf-health/methodology/): how
+  each beach's rating is computed and how county advisories override it.
+- [Research](https://kylechoi101.github.io/surf-health/research/): live accuracy
+  metrics, calibration, risk bands, and data sources.
