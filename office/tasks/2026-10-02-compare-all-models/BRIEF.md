@@ -3,7 +3,7 @@ task: compare-all-models
 repo: /Users/kylechoi/surf_health-p1
 worker: gemini
 created: 2026-10-02
-status: open
+status: done
 ---
 
 ## Goal
@@ -134,3 +134,33 @@ Deliverable: all Acceptance commands pass, outputs pasted.
   `beach_day`) is in the working tree, uncommitted. The before snapshot has NO `label_method`
   column — that is the case the brief's derivation-from-observations fallback is for.
 - Do not install packages; the venv is pinned to match the before/after runs.
+
+### 2026-10-02 22:40 — phase 50 moved to the Claude fallback (PM)
+
+Gemini ran out of credits mid-phase. Partial phase-50 edits are in the working tree; inspect
+`git diff` / the untracked files, keep what is correct, and complete phase 50. The "after"
+snapshot now exists at `/Users/kylechoi/surf_health/data/snapshots/after-2026-10-02` (has
+`label_method`); smoke runs may use either snapshot, never `../data/curated`. Time one forecast
+day before the full loop as the brief says, and put the timing in the report.
+
+### 2026-10-02 23:05 — before phase 75 (PM)
+
+**Fix the served-log check (In scope 5) — the phase-50 version compares the wrong things.**
+Reconstructed raw `xgb_ensemble` scored AUROC 0.893 vs the logged `p_exceed_ml` 0.840 (gap
+0.053; the plan's bar is 0.02). But in August the served ML was NOT the plain ensemble: 89% of
+`forecast_history` rows carry `served_offset_weight > 0` (mean 0.86), i.e. the two-tier router
+blended ensemble and offset, then the serving isotonic and floors were applied. Replace the
+check with:
+- `p_router = (1 − w) · p_xgb_ensemble_raw + w · p_xgb_offset_raw`, with `w` = the logged
+  `served_offset_weight` for that (beach, D) (rows with null `w` are excluded and counted);
+- compare `p_router` against the logged `p_exceed_precal` (pre-calibration; report against
+  `p_exceed_raw` too): AUROC of each on the same pairs, the AUROC gap, Pearson and Spearman
+  correlations, n, and the window. Pass/fail vs the 0.02 bar goes in `results.json`.
+- Run this check on the **before** snapshot over **2026-08-01..2026-08-31** (closest to what
+  actually served) and paste the result in the report. If the gap still exceeds 0.02, list the
+  candidate causes you can test (e.g. data vintage: a sample dated before D but published after
+  D is visible to the reconstruction but was not to the served run — measure how many forward
+  pairs' feature rows changed between the served day and the snapshot if you can) and stop;
+  do not tune anything to close the gap.
+
+Then do phase 75 as written (`diff_comparisons.py`).
