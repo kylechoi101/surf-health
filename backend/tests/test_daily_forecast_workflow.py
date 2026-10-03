@@ -80,3 +80,22 @@ def test_web_deploy_is_dispatched_after_the_commit_and_cannot_block_the_render_d
     # The token reaches the shell through env, never interpolated into the script.
     assert "${{ secrets.WEB_DEPLOY_DISPATCH_TOKEN }}" in step
     assert "secrets.WEB_DEPLOY_DISPATCH_TOKEN" not in text[text.find("run: |", text.rfind("- name:", 0, dispatch_index)):dispatch_index]
+
+
+def test_advisory_step_has_github_models_token_and_permission():
+    """Humboldt/Sonoma/SLO LLM extraction needs GITHUB_TOKEN and `models: read`."""
+    text = WORKFLOW.read_text()
+
+    refresh_index = text.find("  refresh:")
+    permissions_index = text.find("    permissions:", refresh_index)
+    steps_index = text.find("    steps:", refresh_index)
+    assert refresh_index != -1 and permissions_index < steps_index
+    permissions_block = text[permissions_index:steps_index]
+    assert "contents: write" in permissions_block
+    assert "models: read" in permissions_block
+
+    step_index = text.find("- name: Fetch county-direct advisories")
+    run_index = text.find("scripts/fetch_county_advisories.py", step_index)
+    assert step_index != -1 and run_index != -1
+    step_block = text[step_index:run_index]
+    assert "GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}" in step_block

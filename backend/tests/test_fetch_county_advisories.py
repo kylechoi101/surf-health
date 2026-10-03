@@ -714,7 +714,7 @@ def test_secondary_index_resolves_site_name_under_placeholder_beach_name():
     resolver = StationResolver(_ebrpd_marin_beaches())
     beach_ids, kind = resolver.resolve_all_by_name("Marin", "Green Bridge")
     assert beach_ids == ["marin-green-bridge"]
-    assert kind == "live_list"
+    assert kind == "secondary"
 
 
 def test_multi_point_group_resolves_to_the_right_site_not_a_sibling():
@@ -778,7 +778,7 @@ def test_substring_rule_still_matches_on_two_shared_tokens():
         "East Bay Parks District", "Del Valle Swim Beach Area"
     )
     assert beach_ids == ["ebrpd-del-valle-west"]
-    assert kind == "live_list"
+    assert kind == "substring"
 
 
 def test_ambiguous_substring_match_is_a_miss_not_a_coin_flip():

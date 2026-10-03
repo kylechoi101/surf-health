@@ -61,7 +61,7 @@ DATA_SOURCE = "CountyDirect"
 
 # Counties whose direct feed has been mirror-verified against the state route.
 # See the module docstring before adding to this set.
-INGEST_COUNTIES = frozenset({"San Francisco"})
+INGEST_COUNTIES = frozenset({"San Francisco", "Orange"})
 
 # The feed reports MPN/100mL (see ``_SF_THRESHOLDS`` in
 # scripts/fetch_county_advisories.py). Units matter: ``compute_exceeds_stv`` is

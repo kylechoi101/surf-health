@@ -192,8 +192,10 @@ problems, fixed separately:
     correct-group **7278 → 8214**, wrong-group **1148 → 615** vs `main`. The 9 newly-wrong vs the
     mid-PR state are 2 underlying strings: the deliberate Mothers alias and the `on`-phrasing
     limitation above.
-- **Layer order is now confidence order:** exact `beach_name` → exact secondary → **alias CSV** →
-  token-guarded substring → fuzzy. The curated alias file deliberately outranks the heuristic so
+- **Layer order is confidence order:** exact `beach_name` → **alias CSV** → exact secondary →
+  token-guarded substring → fuzzy (the order in `StationResolver.resolve_all_by_name`; this line
+  previously put the alias CSV third, contradicting the code and the bullet above — corrected
+  2026-10-02). The curated alias file deliberately outranks the heuristic so
   an operator can correct a bad match by adding a row. Alias rows may now **fan out**: repeated
   `(county, beach_name_normalized)` keys accumulate, and `resolve_advisories` replicates the
   posting onto every covered `beach_id`. EBRPD's one district-wide "Crown Beach Regional

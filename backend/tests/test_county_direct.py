@@ -168,3 +168,18 @@ def test_refresh_latest_official_sample_at_advances_a_stale_stamp():
     # A beach with no observations keeps its previous stamp rather than nulling.
     assert stamps["sf-beta"] == pd.Timestamp("2026-06-29 11:00:00")
     assert list(out.columns) == list(stations.columns)
+
+
+def test_orange_county_is_allowlisted_and_judged_at_104():
+    stations = pd.DataFrame([
+        {"beach_id": "oc-1", "station_code": "EH-010", "usepa_id": "CA3",
+         "county": "Orange", "beach_name": "Doheny"},
+    ])
+    raw = pd.DataFrame([
+        _direct("oc-1", "2026-07-27", 105.0, county="Orange", station="EH-010"),
+        _direct("oc-1", "2026-07-20", 10.0, county="Orange", station="EH-010"),
+    ])
+    out = normalize_county_direct_samples(raw, stations, 104.0, now=pd.Timestamp("2026-07-30"))
+    assert len(out) == 2
+    flags = dict(zip(out["value"], out["exceeds_stv"]))
+    assert flags[105.0] and not flags[10.0]

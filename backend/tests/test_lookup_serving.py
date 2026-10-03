@@ -356,3 +356,62 @@ def test_history_columns_contains_p_exceed_ml():
 
     assert "p_exceed_ml" in _HISTORY_COLUMNS
     assert "p_exceed_ml" in _PROBABILITY_COLUMNS
+
+
+def test_label_method_lands_in_forecasts_parquet(tmp_path):
+    from app.ml.lookup_serving import apply_lookup_to_served
+
+    forecast_date = "2026-09-22"
+    forecasts = pd.DataFrame(
+        {
+            "beach_id": ["b1", "b2", "b3"],
+            "forecast_date": [forecast_date] * 3,
+            "risk_band": ["Low", "High", "Very High"],
+            "p_exceed": [0.1, 0.5, 0.8],
+            "p_exceed_raw": [0.1, 0.5, 0.8],
+            "p_exceed_precal": [0.1, 0.5, 0.8],
+            "model_version": ["ml-v2"] * 3,
+            "forecast_generated_at": ["2026-09-22T08:00:00"] * 3,
+            "sample_age_days": [1, 2, 3],
+            "sample_recency_band": ["fresh", "recent", "recent"],
+            "forecast_label_mode": ["model"] * 3,
+        }
+    )
+    forecasts.to_parquet(tmp_path / "forecasts.parquet", index=False)
+
+    beach_day = pd.DataFrame(
+        {
+            "beach_id": ["b1", "b1", "b2"],
+            "sample_date": [
+                pd.Timestamp("2026-09-10"),
+                pd.Timestamp("2026-09-20"),
+                pd.Timestamp("2026-09-15"),
+            ],
+            "sample_time": [
+                pd.Timestamp("2026-09-10 08:00:00"),
+                pd.Timestamp("2026-09-20 08:00:00"),
+                pd.Timestamp("2026-09-15 09:00:00"),
+            ],
+            "exceeds_stv": [False, True, False],
+            "label_method": ["culture", "ddpcr", "culture"],
+        }
+    )
+    beach_day.to_parquet(tmp_path / "beach_day.parquet", index=False)
+
+    apply_lookup_to_served(tmp_path)
+
+    f = pd.read_parquet(tmp_path / "forecasts.parquet")
+    assert "label_method" in f.columns
+    b1_method = f.loc[f["beach_id"] == "b1", "label_method"].iloc[0]
+    b2_method = f.loc[f["beach_id"] == "b2", "label_method"].iloc[0]
+    b3_method = f.loc[f["beach_id"] == "b3", "label_method"].iloc[0]
+
+    assert b1_method == "ddpcr"
+    assert b2_method == "culture"
+    assert pd.isna(b3_method)
+
+
+def test_history_columns_contains_label_method():
+    from app.ml.served_metrics import _HISTORY_COLUMNS
+
+    assert "label_method" in _HISTORY_COLUMNS

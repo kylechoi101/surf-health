@@ -230,3 +230,141 @@ def test_open_ended_advisory_goes_inactive_after_fourteen_days():
     assert active[0] == 1, "in effect 4 days after it started"
     assert active[1] == 1, "still inside the 14d lookback of the capped end"
     assert active[2] == 0, "five months later it must NOT still read active"
+
+
+def test_build_beach_day_frame_label_method_reflects_worst_sample() -> None:
+    stations = pd.DataFrame([
+        {
+            "beach_id": "beach-1",
+            "name": "Test Beach",
+            "county": "San Diego",
+            "region": "San Diego",
+            "latitude": 32.7,
+            "longitude": -117.2,
+            "support_status": "production",
+            "usepa_id": "CA001",
+            "water_body_class": "Saltwater",
+            "water_body_type": "Open Coast",
+            "agency_name": "County",
+            "zip_code": "92101",
+        }
+    ])
+    advisories = pd.DataFrame(columns=["beach_id", "started_at", "ended_at"])
+    observations = pd.DataFrame([
+        # Day 1: ddPCR exceeds, culture does not -> ddpcr wins
+        {
+            "beach_id": "beach-1",
+            "sample_date": pd.Timestamp("2026-07-06"),
+            "sample_time": pd.Timestamp("2026-07-06 08:30:00"),
+            "value": 2000.0,
+            "exceeds_stv": True,
+            "method": "ddPCR",
+            "units": "copies/100 mL",
+            "weather": "Clear",
+            "storm_drain_flow": "None",
+            "tidal_height": None,
+            "surf_height_observed": None,
+            "turbidity_observed": None,
+            "odor": None,
+            "water_color": None,
+        },
+        {
+            "beach_id": "beach-1",
+            "sample_date": pd.Timestamp("2026-07-06"),
+            "sample_time": pd.Timestamp("2026-07-06 08:31:00"),
+            "value": 35.0,
+            "exceeds_stv": False,
+            "method": "Enterolert",
+            "units": "MPN/100 mL",
+            "weather": "Clear",
+            "storm_drain_flow": "None",
+            "tidal_height": None,
+            "surf_height_observed": None,
+            "turbidity_observed": None,
+            "odor": None,
+            "water_color": None,
+        },
+        # Day 2: culture exceeds, ddPCR does not -> culture wins
+        {
+            "beach_id": "beach-1",
+            "sample_date": pd.Timestamp("2026-07-07"),
+            "sample_time": pd.Timestamp("2026-07-07 08:30:00"),
+            "value": 500.0,
+            "exceeds_stv": True,
+            "method": "Enterolert",
+            "units": "MPN/100 mL",
+            "weather": "Clear",
+            "storm_drain_flow": "None",
+            "tidal_height": None,
+            "surf_height_observed": None,
+            "turbidity_observed": None,
+            "odor": None,
+            "water_color": None,
+        },
+        {
+            "beach_id": "beach-1",
+            "sample_date": pd.Timestamp("2026-07-07"),
+            "sample_time": pd.Timestamp("2026-07-07 08:31:00"),
+            "value": 100.0,
+            "exceeds_stv": False,
+            "method": "ddPCR",
+            "units": "copies/100 mL",
+            "weather": "Clear",
+            "storm_drain_flow": "None",
+            "tidal_height": None,
+            "surf_height_observed": None,
+            "turbidity_observed": None,
+            "odor": None,
+            "water_color": None,
+        },
+        # Day 3: missing method and units -> defaults to culture
+        {
+            "beach_id": "beach-1",
+            "sample_date": pd.Timestamp("2026-07-08"),
+            "sample_time": pd.Timestamp("2026-07-08 08:30:00"),
+            "value": 15.0,
+            "exceeds_stv": False,
+            "method": None,
+            "units": None,
+            "weather": "Clear",
+            "storm_drain_flow": "None",
+            "tidal_height": None,
+            "surf_height_observed": None,
+            "turbidity_observed": None,
+            "odor": None,
+            "water_color": None,
+        },
+    ])
+
+    bd = build_beach_day_frame(observations, stations, advisories)
+    assert len(bd) == 3
+    day_map = {row["sample_date"]: row["label_method"] for _, row in bd.iterrows()}
+    assert day_map[pd.Timestamp("2026-07-06")] == "ddpcr"
+    assert day_map[pd.Timestamp("2026-07-07")] == "culture"
+    assert day_map[pd.Timestamp("2026-07-08")] == "culture"
+
+
+def test_label_method_never_becomes_model_input() -> None:
+    from app.data.pipeline.features import build_inference_features
+
+    frame = pd.DataFrame([
+        {
+            "beach_id": "beach-1",
+            "sample_date": "2026-07-06",
+            "sample_time": "2026-07-06T08:00:00-07:00",
+            "enterococcus_value": 25.0,
+            "exceeds_stv": 0,
+            "label_method": "ddpcr",
+            "wave_height_m": 1.0,
+            "dominant_period_s": 10.0,
+            "wave_direction_deg": 215.0,
+            "water_temperature_c": 14.0,
+            "salinity_psu": 33.0,
+            "uv_index": 5.0,
+            "wind_speed_mps": 4.0,
+        }
+    ])
+    dataset = build_inference_features(frame)
+    numeric_feature_cols = dataset.feature_frame.select_dtypes(include=["number"]).columns
+    assert "label_method" not in numeric_feature_cols
+

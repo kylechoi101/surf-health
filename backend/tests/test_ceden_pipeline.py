@@ -134,6 +134,48 @@ def test_build_ceden_station_crosswalk_matches_station_code():
     assert crosswalk.iloc[0]["match_method"] == "station_code"
 
 
+def test_build_ceden_station_crosswalk_prefers_exact_station_code_over_nearer_station():
+    ceden_sites = normalize_ceden_sites(
+        pd.DataFrame(
+            [
+                {
+                    "StationName": "Aliso Beach, Orange",
+                    "StationCode": "EH-030",
+                    "TargetLatitude": "33.5100",
+                    "TargetLongitude": "-117.7500",
+                },
+            ]
+        )
+    )
+    beachwatch_stations = pd.DataFrame(
+        [
+            {
+                "beach_id": "beach-eh-033",
+                "name": "Aliso Beach Middle",
+                "station_code": "EH-033",
+                "county": "Orange",
+                "latitude": 33.51005,
+                "longitude": -117.75005,
+            },
+            {
+                "beach_id": "beach-eh-030",
+                "name": "Aliso Beach South",
+                "station_code": "EH-030",
+                "county": "Orange",
+                "latitude": 33.5102,
+                "longitude": -117.7502,
+            },
+        ]
+    )
+
+    crosswalk = build_ceden_station_crosswalk(ceden_sites, beachwatch_stations)
+
+    assert len(crosswalk) == 1
+    assert crosswalk.iloc[0]["station_code"] == "EH-030"
+    assert crosswalk.iloc[0]["beach_id"] == "beach-eh-030"
+    assert crosswalk.iloc[0]["match_method"] == "station_code"
+
+
 def test_merge_ceden_into_beachwatch_bundle_prefers_existing_beachwatch_duplicates():
     stations = pd.DataFrame(
         [
