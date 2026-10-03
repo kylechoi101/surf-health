@@ -144,3 +144,16 @@ rows added (wrong ones corrected, Baby Beach fanned out, 3 correct picks confirm
 unmapped. Result: `resolve` == `suggest` == 90 resolved, 0 heuristic (CI 10-02: 59).
 Full suite 773 passed / 0 failed. Tokens: Gemini 25: 538k; Claude fallback 50/75/100 ≈ 41k
 (reported by the CLI).
+
+**2026-10-02 (late) — CEO plan amendments applied** (Monterey, OC freshness). UPDATE_PLAN 1.4:
+Monterey connector dropped; the outreach asks Monterey County EH to *resume reporting to the
+State Water Board* (last state row 2026-08-25; hotline 831-755-4599) — the state routes pick it
+up with no code change. 1.4 check: "OC within 14 days" replaced by a spreadsheet-match check —
+PASS (newest 2026-09-11 both; per station 178/180 equal, 2 newer from state, 0 older). 1.5:
+Monterey marked `no_public_source` (new `CountyReport` field, never `error`), so the known gap no
+longer counts as a scraper breakage (after: 4 errors, all expected). 1.6 / 2.5: Orange County is
+the only new county in the comparison. OC posting cadence measured from the county's WordPress
+media library (uploads since 2020): median gap 20 / 36 / 21 days in 2023 / 2024 / 2025, newest
+sample 1–4 days old at upload; at the 2024 cadence OC would be unserved ~20% of days under the
+30-day gate. Unfloored OC forecasts track the 12-month record at r = 0.967, same as the rest of
+the state.

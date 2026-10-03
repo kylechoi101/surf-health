@@ -63,8 +63,22 @@ def column(folder: Path, forecast_date: pd.Timestamp) -> dict[str, object]:
         "unresolved (unexpected / total)":
             f"{gate.get('unresolved_unexpected')} / {gate.get('unresolved_total')}",
         "county scrapers with an error": sorted(
-            c["county"] for c in report.get("counties", []) if c.get("error")),
+            c["county"] for c in report.get("counties", [])
+            if c.get("error") and not _is_known_gap(c)),
+        "known gaps (no public source)": sorted(
+            c["county"] for c in report.get("counties", []) if _is_known_gap(c)),
     }
+
+
+def _is_known_gap(county_report: dict) -> bool:
+    """A county with no public source is a known gap, not a scraper breakage.
+
+    Newer reports carry ``no_public_source``; a report written before that field
+    existed carries the same reason in ``error``.
+    """
+    if county_report.get("no_public_source"):
+        return True
+    return str(county_report.get("error") or "").startswith("no public posting source")
 
 
 def main() -> None:

@@ -205,7 +205,7 @@ must be equal (every former heuristic hit is now an alias row). Keep
 
 **Rollback:** `--heuristic-mode resolve`.
 
-### 1.4 County lab-result connectors: Orange County, then Monterey
+### 1.4 County lab-result connector: Orange County (Monterey: outreach, not code)
 
 **Measured:** Orange County has had no rows in any state route since 2026-08-24 (it ran about
 700 rows/month March–July). 0 of 224 OC beaches are served; 146 of its production beaches have
@@ -233,11 +233,20 @@ newest row 2026-08-25. Both state routes read the same database, so this is upst
    verification numbers in `docs/DEVLOG.md`.
 5. Add `"Orange"` to `county_direct.INGEST_COUNTIES`.
 
-**Do (Monterey):** same steps against the county's environmental health page. On 10-02 both
-candidate URLs in the best-effort scraper returned non-200; find the current one first.
+**Monterey — outreach, not code** *(amended 2026-10-02)*. There is nothing to build. Monterey
+reported through the State Water Board until its last row on 2026-08-25, and the county
+publishes no results or postings of its own (the environmental health page offers only the
+Beach Condition Hotline, 831-755-4599). If the county resumes state reporting, the existing
+state routes pick it up with no code change. So the contact with Monterey County Environmental
+Health asks them to **resume reporting to the State Water Board**, not to publish a feed.
+Until then Monterey's 14 production beaches stay unserved in both snapshots.
 
-**Check:** after 1.6, OC and Monterey beaches appear in `forecasts.parquet`, and
-`beaches.latest_official_sample_at` for OC is within 14 days.
+**Check** *(amended 2026-10-02)*: after 1.6, OC beaches appear in `forecasts.parquet`, and the
+newest OC sample in `observations.parquet` equals the newest enterococcus `SampleDate` in the
+county's latest spreadsheet, per station. (The original "within 14 days" tested two things in
+one number — whether the connector works and how often the county publishes. Sample age is a
+property of the county's posting schedule; it is reported separately as OC's posting cadence
+in the data-change report.)
 
 **Rollback:** remove the county from `INGEST_COUNTIES`. Gap-fill only, so removing it can
 never displace a state row.
@@ -252,9 +261,11 @@ From `county_advisories_report.json`:
 | Orange | section markers not found | page layout changed; see 1.4 step 1 |
 | San Mateo | 403 on `smchealth.org/beaches` | rate limit or user agent; the code already notes 403 after rapid scrapes |
 | Humboldt, Sonoma, SLO | `GITHUB_TOKEN not set; skipping LLM extraction` | pass `GITHUB_TOKEN` into the advisory step's `env:` in the workflow |
-| Monterey, Santa Barbara | no candidate URL returned 200 | find current URLs, update `fetch_best_effort_county` candidates |
+| Santa Barbara | no candidate URL returned 200 | find current URLs, update `fetch_best_effort_county` candidates |
+| Monterey | no candidate URL returned 200 | *(amended 2026-10-02)* mark as **no public source** (reported in its own field, never as `error`), so a known gap stops looking like a new breakage; see 1.4 |
 
-**Check:** a local run of `fetch_county_advisories.py` reports no error for these counties.
+**Check:** a local run of `fetch_county_advisories.py` reports no error for these counties
+(Monterey reports `no_public_source`, not an error).
 
 ### 1.6 Build the "after" snapshot and write the data-change report
 
@@ -270,7 +281,8 @@ mkdir -p ../data/snapshots/after-$DAY && cp -r ../data/curated/. ../data/snapsho
 
 Note the ordering trap in CLAUDE.md: county-direct reads the **previous** run's scrape. For
 the snapshot, run the advisory fetch once before the pipeline so the new OC/Monterey sample
-rows are on disk when the pipeline merges them.
+rows are on disk when the pipeline merges them. *(Amended 2026-10-02: Orange County is the
+only new county in the before/after comparison; Monterey has no source.)*
 
 Write `docs/DATA_CHANGE_REPORT_$DAY.md` with this table filled in (a 30-line script that
 reads both snapshots is enough):
@@ -283,6 +295,7 @@ reads both snapshots is enough):
 | positive labels, last 365 d (culture / ddPCR) | | |
 | production beaches served | 375 | |
 | served by county (OC, Monterey, SD, LA, …) | | |
+| OC posting cadence (days between county spreadsheet uploads; newest-sample lag at upload) | | |
 | median sample age of served beaches | 3 d | |
 | advisories resolved | 59 | |
 | unresolved (unexpected) | 7 | |
@@ -365,13 +378,14 @@ done
 
 ### 2.5 Separate "the data changed" from "the scored population changed"
 
-The after snapshot serves more beaches (OC, Monterey), so its eval pairs are a different
+The after snapshot serves more beaches (Orange County — the only new county; Monterey has no
+source, see 1.4), so its eval pairs are a different
 population. Report every metric three ways:
 
 1. **Common pairs:** (beach, D) pairs present in both runs. Isolates the effect of fixed data
    on the same forecasts.
 2. **Full:** each run on its own pairs.
-3. **New beaches only:** pairs in after that are absent from before (mostly OC/Monterey).
+3. **New beaches only:** pairs in after that are absent from before (Orange County only).
 
 Add `scripts/diff_comparisons.py` that reads both `--out` folders and writes
 `docs/MODEL_COMPARISON_$DAY.md` with, per arm and per slice (all, non-SD, culture, ddPCR, wet,
@@ -548,7 +562,7 @@ Only after 3.3 has been live for 2 weeks and the Render dashboard shows API traf
 - [ ] 1.1 canonical key + tests; 151 SF duplicates explained
 - [ ] 1.2 `label_method` in beach_day, history, forecasts
 - [ ] 1.3 heuristic resolutions reviewed into alias CSV; `suggest` mode
-- [ ] 1.4 OC publishing status known; OC connector mirror-verified; Monterey
+- [ ] 1.4 OC publishing status known; OC connector mirror-verified; spreadsheet-match check; Monterey outreach (resume state reporting)
 - [ ] 1.5 scraper errors fixed
 - [ ] 1.6 after snapshot + data-change report
 - [ ] 2.1 PROMOTION.md committed before any run
