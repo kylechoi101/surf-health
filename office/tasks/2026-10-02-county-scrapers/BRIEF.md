@@ -197,3 +197,15 @@ Deliverable: resolver layer kinds + report fields + `--heuristic-mode`, tests, a
 ## Corrections
 
 (appended by the PM; newest last; each entry dated)
+
+### 2026-10-02 18:40 — added before phase 25 (PM)
+
+**C1. Ventura parser emits prose fragments as beach names.** The CI-committed
+`system_health.json["scraper_gate"]` for 2026-10-02 lists all 3 "unexpected unresolved" names
+as Ventura sentence fragments: `"cate that water quality at the following beach"`,
+`"on either side of each posted sign. This beach"`, `"ducted once per week on Tuesdays. When a
+beach"`. They inflate the scraper gate with non-postings. In the Ventura scraper (find it with
+`grep -n "Ventura" scripts/fetch_county_advisories.py`), reject candidate names that start
+with a lowercase letter, contain a sentence break (`". "`), or exceed 10 words; count rejects
+in a new `rpt.rejected_fragments` int (and the JSON report) instead of passing them to the
+resolver. Add a test with those three strings. Do this in phase 50.
