@@ -122,3 +122,15 @@ Deliverable: all Acceptance commands pass, outputs pasted.
 ## Corrections
 
 (appended by the PM; newest last; each entry dated)
+
+### 2026-10-02 21:50 — before phase 25 (PM)
+
+- **Do not read `../data/curated` in this task.** The PM is rebuilding it in the background
+  while you work. Use the frozen snapshot
+  `/Users/kylechoi/surf_health/data/snapshots/before-2026-10-02` for every smoke run (replace
+  `../data/curated` in the Acceptance commands with that path). An "after" snapshot will appear
+  at `/Users/kylechoi/surf_health/data/snapshots/after-2026-10-02`.
+- Phase-1 code (`app/data/pipeline/sample_key.py` with `assay_kind`, `label_method` in
+  `beach_day`) is in the working tree, uncommitted. The before snapshot has NO `label_method`
+  column — that is the case the brief's derivation-from-observations fallback is for.
+- Do not install packages; the venv is pinned to match the before/after runs.
