@@ -512,6 +512,23 @@ def build_candidates(
     return pd.DataFrame(rows, columns=columns)
 
 
+def _backfill_persistence(history: pd.DataFrame, beach_day: pd.DataFrame) -> int:
+    """Fill null ``p_exceed_persistence`` on served-estimate rows, in place."""
+    missing = history["p_exceed_persistence"].isna() & history["model_version"].isin(
+        SERVED_ESTIMATE_VERSIONS
+    )
+    filled = 0
+    for day, rows in history.loc[missing].groupby("forecast_date"):
+        # A day can carry several issues per beach; the lookup is per beach.
+        lk = compute_lookup(beach_day, day, rows["beach_id"].unique().tolist()).set_index("beach_id")
+        history.loc[rows.index, "p_exceed_persistence"] = [
+            1.0 if lk.at[b, "last_exceeds"] == 1 else float(lk.at[b, "g"])
+            for b in rows["beach_id"]
+        ]
+        filled += len(rows)
+    return filled
+
+
 def apply_lookup_to_served(curated_dir: Path | str, method: str | None = None) -> dict[str, Any]:
     """Serve the per-beach estimate: the logistic model on the lookup, else the lookup.
 
@@ -592,6 +609,7 @@ def apply_lookup_to_served(curated_dir: Path | str, method: str | None = None) -
     p_exceed_list: list[float] = []
     p_exceed_raw_list: list[float] = []
     p_exceed_lookup_list: list[float] = []
+    p_exceed_persistence_list: list[float] = []
     p_exceed_lower_list: list[float] = []
     p_exceed_upper_list: list[float] = []
     risk_band_list: list[str] = []
@@ -685,6 +703,9 @@ def apply_lookup_to_served(curated_dir: Path | str, method: str | None = None) -
         p_exceed_list.append(p_exceed)
         p_exceed_raw_list.append(p_raw)
         p_exceed_lookup_list.append(float(lk["base"]))
+        # Persistence arm of compare_all_models.py: the last label if it exceeded,
+        # else the statewide pooled rate over the same trailing window.
+        p_exceed_persistence_list.append(1.0 if last_exc is True else float(lk["g"]))
         p_exceed_lower_list.append(p_lower)
         p_exceed_upper_list.append(p_upper)
         risk_band_list.append(r_band)
@@ -697,6 +718,7 @@ def apply_lookup_to_served(curated_dir: Path | str, method: str | None = None) -
     # The plain lookup (persistence-floored, no advisory floor) on every row,
     # whichever method served, so the two can be compared on the served log.
     forecasts["p_exceed_lookup"] = p_exceed_lookup_list
+    forecasts["p_exceed_persistence"] = p_exceed_persistence_list
     forecasts["p_exceed_lower"] = p_exceed_lower_list
     forecasts["p_exceed_upper"] = p_exceed_upper_list
     forecasts["risk_band"] = risk_band_list
@@ -728,6 +750,8 @@ def apply_lookup_to_served(curated_dir: Path | str, method: str | None = None) -
                 history["p_exceed_ml"] = np.nan
             if "p_exceed_lookup" not in history.columns:
                 history["p_exceed_lookup"] = np.nan
+            if "p_exceed_persistence" not in history.columns:
+                history["p_exceed_persistence"] = np.nan
             if "persistence_floor_applied" not in history.columns:
                 history["persistence_floor_applied"] = None
             if "label_method" not in history.columns:
@@ -761,6 +785,7 @@ def apply_lookup_to_served(curated_dir: Path | str, method: str | None = None) -
                     "p_exceed",
                     "p_exceed_raw",
                     "p_exceed_lookup",
+                    "p_exceed_persistence",
                     "risk_band",
                     "model_version",
                     "persistence_floor_applied",
@@ -768,7 +793,13 @@ def apply_lookup_to_served(curated_dir: Path | str, method: str | None = None) -
                     "label_method",
                 ]:
                     mapped = hist_keys[matched_mask].map(fc_lookup[col])
-                    if col in ("p_exceed", "p_exceed_raw", "p_exceed_lookup", "served_offset_weight"):
+                    if col in (
+                        "p_exceed",
+                        "p_exceed_raw",
+                        "p_exceed_lookup",
+                        "p_exceed_persistence",
+                        "served_offset_weight",
+                    ):
                         history.loc[matched_mask, col] = pd.to_numeric(
                             mapped, errors="coerce"
                         )
@@ -786,6 +817,12 @@ def apply_lookup_to_served(curated_dir: Path | str, method: str | None = None) -
                     history.loc[update_ml_indices, "p_exceed_ml"] = pd.to_numeric(
                         ml_mapped, errors="coerce"
                     )
+
+            # Rows this module logged before p_exceed_persistence existed: rebuild it
+            # from beach_day as of each row's own forecast date (strictly prior
+            # labels, so it is what the column would have held). Without this the
+            # head-to-head's same-rows subset would be empty for every earlier day.
+            _backfill_persistence(history, beach_day)
 
             # For all OTHER history rows where p_exceed_ml is null and this module
             # did not write the row, backfill p_exceed_ml = p_exceed (those rows
@@ -855,7 +892,7 @@ def apply_lookup_to_served(curated_dir: Path | str, method: str | None = None) -
         live = served_performance_for_versions(
             curated_path,
             frozenset({logit_challenger.LOGIT_CHALLENGER_VERSION}),
-            compare_columns=("p_exceed_lookup", "p_exceed_ml"),
+            compare_columns=("p_exceed_lookup", "p_exceed_ml", "p_exceed_persistence"),
         )
     except Exception as exc:  # noqa: BLE001 — a scoring failure must not cost the forecast
         print(f"lookup_serving: live scoring failed ({type(exc).__name__}: {exc})", file=sys.stderr)

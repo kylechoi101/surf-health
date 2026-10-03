@@ -32,6 +32,7 @@ from sklearn.metrics import average_precision_score, brier_score_loss, roc_auc_s
 from app.core.json_safe import write_json
 from app.ml.calibration import _VERY_HIGH_THRESHOLD
 from app.ml.evaluation import sensitivity_at_specificity
+from app.ml.scoreboard_stats import cluster_bootstrap_delta, within_beach_auroc
 
 HISTORY_FILE = "forecast_history.parquet"
 CALIBRATION_FILE = "serving_calibration.json"
@@ -68,11 +69,15 @@ _HISTORY_COLUMNS = [
     # 2026-09-28 the logistic model on top of it), so the two stay comparable
     # on forward outcomes. Null on rows logged before the column existed.
     "p_exceed_lookup",
+    # The persistence baseline (1.0 if the last label exceeded, else the statewide
+    # pooled rate over the 365 d before the forecast date) — the bar any model
+    # has to clear. Null on rows logged before the column existed.
+    "p_exceed_persistence",
     # Assay method for the beach's most recent sample ('ddpcr' or 'culture').
     # Null on rows logged before the column existed or beaches with no history.
     "label_method",
 ]
-_PROBABILITY_COLUMNS = ("p_exceed", "p_exceed_raw", "p_exceed_precal", "p_exceed_ml", "p_exceed_lookup")
+_PROBABILITY_COLUMNS = ("p_exceed", "p_exceed_raw", "p_exceed_precal", "p_exceed_ml", "p_exceed_lookup", "p_exceed_persistence")
 
 # Lab results trail the forecast by days. A forecast row is matched to its
 # same-day result when one exists, else the first result in D+1..D+3 — near
@@ -231,6 +236,12 @@ def _score(pairs: pd.DataFrame, outcome_column: str) -> dict | None:
         record["auroc"] = round(float(roc_auc_score(labels, probabilities)), 4)
         operating = sensitivity_at_specificity(labels, probabilities, 0.87)
         record["sensitivity_at_spec_0_87"] = round(float(operating["sensitivity"]), 4)
+        if "beach_id" in subset.columns:
+            within = within_beach_auroc(
+                labels, probabilities, subset["beach_id"].astype(str).to_numpy()
+            )
+            if np.isfinite(within):
+                record["within_beach_auroc"] = round(float(within), 4)
     return record
 
 
@@ -344,6 +355,32 @@ def served_performance(
 # Below these a live score is noise; the same bar the serving isotonic uses.
 LIVE_MIN_PAIRS = _MIN_FIT_PAIRS
 LIVE_MIN_POSITIVES = _MIN_FIT_POSITIVES
+# ... and fewer distinct served days than this cannot separate skill from one
+# lucky or unlucky weather week (backend/app/ml/PROMOTION.md).
+LIVE_MIN_SERVED_DAYS = 28
+# Beach-cluster bootstrap for head_to_head confidence intervals.
+CI_BOOTSTRAP_REPS = 300
+CI_BOOTSTRAP_SEED = 0
+
+
+def _delta_ci(
+    labels: np.ndarray, served: np.ndarray, challenger: np.ndarray, beaches: np.ndarray
+) -> dict[str, list[float | None]]:
+    """95% beach-cluster bootstrap CI of (challenger - served), JSON-safe."""
+    clipped_served = np.clip(served, 1e-4, 1 - 1e-4)
+    clipped_challenger = np.clip(challenger, 1e-4, 1 - 1e-4)
+    raw = cluster_bootstrap_delta(
+        labels,
+        clipped_challenger,
+        clipped_served,
+        beaches,
+        reps=CI_BOOTSTRAP_REPS,
+        seed=CI_BOOTSTRAP_SEED,
+    )
+    return {
+        key: [round(v, 4) if np.isfinite(v) else None for v in raw[key]]
+        for key in ("within_beach_auroc", "auroc", "brier")
+    }
 
 
 def served_performance_for_versions(
@@ -361,7 +398,7 @@ def served_performance_for_versions(
     served probability on exactly the rows where every one of them is present, so
     the comparison is never across different rows. ``reportable`` is False until
     the pairs clear the same 500-pair / 25-positive bar the serving calibration
-    uses (``head_to_head`` carries its own flag on its own subset).
+    uses AND the method has served >= 28 distinct days (``head_to_head`` carries its own flag on its own subset).
     """
     loaded = _matched_from_disk(curated_dir)
     if loaded is None:
@@ -381,7 +418,9 @@ def served_performance_for_versions(
         if scored is None:
             continue
         scored["reportable"] = bool(
-            scored["n_pairs"] >= LIVE_MIN_PAIRS and scored["n_positive"] >= LIVE_MIN_POSITIVES
+            scored["n_pairs"] >= LIVE_MIN_PAIRS
+            and scored["n_positive"] >= LIVE_MIN_POSITIVES
+            and payload["served_days"] >= LIVE_MIN_SERVED_DAYS
         )
         present = [c for c in compare_columns if c in rows.columns]
         if present:
@@ -397,11 +436,20 @@ def served_performance_for_versions(
                 head["reportable"] = bool(
                     served["n_pairs"] >= LIVE_MIN_PAIRS
                     and served["n_positive"] >= LIVE_MIN_POSITIVES
+                    and payload["served_days"] >= LIVE_MIN_SERVED_DAYS
                 )
+                labels = common[outcome].astype(int).to_numpy()
+                beaches = common["beach_id"].astype(str).to_numpy()
+                served_p = common["p_exceed"].astype(float).to_numpy()
                 for column in present:
                     swapped = common.copy()
                     swapped["p_exceed"] = swapped[column]
-                    head[column] = _score(swapped, outcome)
+                    entry = _score(swapped, outcome)
+                    if entry is not None:
+                        entry["ci"] = _delta_ci(
+                            labels, served_p, common[column].astype(float).to_numpy(), beaches
+                        )
+                    head[column] = entry
                 scored["head_to_head"] = head
         payload[key] = scored
     return payload

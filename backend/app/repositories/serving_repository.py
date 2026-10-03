@@ -816,6 +816,10 @@ class ServingSnapshotRepository(BeachRepository):
             "order by sample_time desc limit 25",
             (beach_id,),
         )
+        # A row with no value (a dropped -999/-1000 sentinel) is not a displayable sample;
+        # float(None) used to 500 the whole route (Julia Pfeiffer Burns, 2026-10-02). The
+        # static bake drops the same rows, so the two stay identical.
+        rows = [row for row in rows if row["value"] is not None]
         if not rows:
             raise HTTPException(status_code=404, detail="Observation history not available")
 

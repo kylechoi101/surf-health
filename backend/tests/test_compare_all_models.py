@@ -501,3 +501,12 @@ def test_bootstrap_delta_scores_each_side_against_its_own_labels():
     y_new = (p > np.median(p)).astype(int)
     ci = dc.bootstrap_delta(y_new, p, p, beach, reps=50, seed=0, y_old=y_old)
     assert ci["auroc"][0] > 0
+
+
+def test_scoreboard_stats_are_the_ones_compare_all_models_uses():
+    from app.ml import scoreboard_stats
+
+    import scripts.compare_all_models as cam
+
+    assert cam.within_beach_auroc is scoreboard_stats.within_beach_auroc
+    assert cam.cluster_bootstrap_delta is scoreboard_stats.cluster_bootstrap_delta

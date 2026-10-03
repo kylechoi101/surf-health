@@ -111,3 +111,50 @@ def test_the_committed_backtest_is_where_serving_looks_for_it():
     curated = Path(__file__).resolve().parents[2] / "data" / "curated"
     assert (curated / _BACKTEST_RESULTS).exists()
     assert _backtest_summary(curated)["n"] > 10_000
+
+
+def test_score_carries_within_beach_auroc_over_beaches_with_both_outcomes():
+    pairs = pd.DataFrame({
+        "beach_id": ["a"] * 4 + ["b"] * 4 + ["c"] * 3,
+        # a and b each rank their own positive above their negatives; c never exceeds
+        "p_exceed": [0.9, 0.1, 0.2, 0.3, 0.8, 0.2, 0.1, 0.3, 0.95, 0.96, 0.97],
+        "outcome_forward": [1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0],
+    })
+    scored = served_metrics._score(pairs, "outcome_forward")
+    assert scored["within_beach_auroc"] == pytest.approx(1.0)
+    # the pooled AUROC is not the same number — c's high-p negatives drag it down
+    assert scored["auroc"] < 1.0
+
+
+def test_head_to_head_entries_carry_a_seeded_beach_cluster_ci(tmp_path):
+    _write(tmp_path)
+    cols = ("p_exceed_lookup", "p_exceed_ml")
+    first = served_performance_for_versions(tmp_path, {LOGIT}, compare_columns=cols)
+    again = served_performance_for_versions(tmp_path, {LOGIT}, compare_columns=cols)
+    head = first["forward_1_3d"]["head_to_head"]
+    assert "ci" not in head["served"]
+    for name in cols:
+        ci = head[name]["ci"]
+        assert set(ci) == {"within_beach_auroc", "auroc", "brier"}
+        for low, high in ci.values():
+            assert low is None or high is None or low <= high
+    # the served column beats the flat lookup, so (lookup - served) AUROC is negative
+    assert head["p_exceed_lookup"]["ci"]["auroc"][1] < 0
+    assert again["forward_1_3d"]["head_to_head"] == head  # fixed seed
+
+
+def test_not_reportable_under_28_served_days_even_with_enough_pairs(tmp_path):
+    _write(tmp_path, n_days=20 + 27, beaches=60)  # 27 logistic days x 60 beaches
+    out = served_performance_for_versions(tmp_path, {LOGIT}, compare_columns=("p_exceed_lookup",))
+    fwd = out["forward_1_3d"]
+    assert out["served_days"] == 27
+    assert fwd["n_pairs"] >= served_metrics.LIVE_MIN_PAIRS
+    assert fwd["n_positive"] >= served_metrics.LIVE_MIN_POSITIVES
+    assert fwd["reportable"] is False
+    assert fwd["head_to_head"]["reportable"] is False
+
+    _write(tmp_path, n_days=20 + 28, beaches=60)
+    out = served_performance_for_versions(tmp_path, {LOGIT}, compare_columns=("p_exceed_lookup",))
+    assert out["served_days"] == 28
+    assert out["forward_1_3d"]["reportable"] is True
+    assert out["forward_1_3d"]["head_to_head"]["reportable"] is True
