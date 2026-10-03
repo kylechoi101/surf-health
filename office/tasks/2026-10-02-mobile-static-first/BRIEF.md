@@ -1,9 +1,9 @@
 ---
 task: mobile-static-first
 repo: /Users/kylechoi/shorelife-mobile
-worker: cursor
+worker: claude
 created: 2026-10-02
-status: open
+status: done
 ---
 
 ## Goal
@@ -89,3 +89,18 @@ Deliverable: all Acceptance commands pass, outputs pasted, and a short note list
 ## Corrections
 
 (appended by the PM; newest last; each entry dated)
+
+### 2026-10-02 21:20 — before phase 100 (PM)
+
+**Session caches need a TTL.** A React Native "session" can last days (app backgrounded, not
+killed), so caching `beaches.json` and `beach/{id}.json` for the whole session would show
+yesterday's forecast after the daily publish, and pull-to-refresh would re-read the stale
+copy. Add `STATIC_CACHE_TTL_MS = 15 * 60 * 1000` to `lib/staticData.ts`: a cached entry older
+than the TTL is refetched (keep the in-flight dedupe; keep "failures are not cached"). Also
+export `invalidateStaticCache()` and call it from the app's existing pull-to-refresh path if
+one calls the getters (find it with `grep -rn "onRefresh\|RefreshControl" app components`;
+if wiring it would touch files outside Allowed files, list the call sites under Open
+questions instead of editing them). Tests: an entry is reused inside the TTL and refetched
+after it (inject a clock: `now` option or `Date.now` stub).
+
+Then do phase 100 as written.

@@ -1,8 +1,9 @@
 ---
 task: standalone-serving
+repo: /Users/kylechoi/surf_health-p3
 worker: claude
 created: 2026-10-02
-status: open
+status: done
 ---
 
 ## Goal
@@ -92,3 +93,17 @@ Deliverable: Acceptance commands pass; the diff on the after snapshot pasted wit
 ## Corrections
 
 (appended by the PM; newest last; each entry dated)
+
+### 2026-10-02 22:05 — before phase 25 (PM)
+
+Repo is the worktree `/Users/kylechoi/surf_health-p3` on branch `feat/update-plan-phase3`
+(cut from `main` after the Phase-1 merge). Its `data/raw` is a symlink to the main checkout's
+cache — never commit it. Do not modify `data/curated` there; use copies in /tmp for any run.
+
+### 2026-10-02 22:40 — before phase 75 (PM)
+
+`--forecast-date` accepted. The workflow shadow step must pass the same forecast date the real
+run used (the workflow's `FORECAST_DATE`, computed in the training step — reuse the same
+`TZ=America/Los_Angeles date +%Y-%m-%d` expression, do not depend on a variable from another
+step's shell). Record `forecast_generated_at` exclusion and the "ML columns null by design"
+rule in the diff script so they are never reported as differences.
