@@ -3,7 +3,7 @@ task: web-research-scoreboard
 repo: /Users/kylechoi/shorelife-web-bake
 worker: claude
 created: 2026-10-02
-status: open
+status: done
 ---
 
 ## Goal
@@ -88,3 +88,11 @@ Deliverable: all Acceptance commands pass, outputs pasted.
 ## Corrections
 
 (appended by the PM; newest last; each entry dated)
+
+### 2026-10-02 22:55 — before phase 100 (PM)
+
+1. The backend attaches `ci` to EVERY challenger entry in `head_to_head` (`p_exceed_lookup`,
+   `p_exceed_ml`, `p_exceed_persistence`). Render the lookup's CI too; only the served row has none.
+2. Yes — remove the live rows from the older "Forward outcomes" table so a number appears once;
+   keep that table's backtest rows.
+3. Then phase 100 as written.
