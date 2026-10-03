@@ -1,5 +1,6 @@
 ---
 task: scoreboard-static-bake
+repo: /Users/kylechoi/surf_health-p3
 worker: claude
 created: 2026-10-02
 status: open

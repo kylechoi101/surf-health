@@ -1,5 +1,6 @@
 ---
 task: standalone-serving
+repo: /Users/kylechoi/surf_health-p3
 worker: claude
 created: 2026-10-02
 status: open
@@ -92,3 +93,9 @@ Deliverable: Acceptance commands pass; the diff on the after snapshot pasted wit
 ## Corrections
 
 (appended by the PM; newest last; each entry dated)
+
+### 2026-10-02 22:05 — before phase 25 (PM)
+
+Repo is the worktree `/Users/kylechoi/surf_health-p3` on branch `feat/update-plan-phase3`
+(cut from `main` after the Phase-1 merge). Its `data/raw` is a symlink to the main checkout's
+cache — never commit it. Do not modify `data/curated` there; use copies in /tmp for any run.
