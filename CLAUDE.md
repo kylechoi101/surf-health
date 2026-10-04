@@ -909,6 +909,16 @@ gate's calibration + inner-validation split.
 
 `.github/workflows/daily-forecast.yml` runs at 9 AM PDT (cron `0 16 * * *`).
 Hydrology + solar-wind cache key: `hydro-${{ runner.os }}-v4`.
+
+**ML training is OFF on the daily cron (2026-10-04).** It took 53 of the run's 79 minutes (38.5 of
+them spatial backtests) and the served estimate does not use it. The daily run now serves with
+`lookup_serving --standalone` (builds its own candidate frame, appends today's rows to
+`forecast_history.parquet`), and `scripts/carry_forward_training_health.py` puts back the
+`system_health.json` keys the pipeline wipes (`model_registry`, `serving_calibration` carried from
+the last training run; `served_metrics` recomputed; `release_gate` written as not enforced;
+`ml_training.ran = false` + `registry_carried_from`). So `p_exceed_ml` is null on those days and
+the registry metrics age. Run ML by hand: `gh workflow run daily-forecast.yml -f run_ml=true`
+(`full_comparison=true` implies it). The standalone shadow diff only runs when training does.
 Timeout: 170 min (was 120; bumped 2026-06-10 — the 1095d window's spatial sweep was
 overrunning the old budget and timing the job out before it could commit).
 

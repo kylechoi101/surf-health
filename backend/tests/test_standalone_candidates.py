@@ -188,3 +188,39 @@ def test_standalone_out_never_writes_into_curated(tmp_path):
     assert served["p_exceed_ml"].isna().all() and served["p_exceed_precal"].isna().all()
     assert "latest_sample_date" not in served.columns
     assert "serving_method" in (out / "system_health.json").read_text()
+
+
+def test_standalone_logs_todays_forecast_to_history(tmp_path):
+    """Without training nothing else appends today's rows; standalone serving must."""
+    from app.ml.lookup_serving import apply_lookup_to_served, serve_standalone
+
+    curated = tmp_path / "curated"
+    curated.mkdir()
+    _env_fixture(curated)
+    (curated / "system_health.json").write_text("{}")
+    earlier = pd.DataFrame(
+        {
+            "beach_id": ["with_env"],
+            "forecast_date": ["2026-10-01"],
+            "forecast_generated_at": ["2026-10-01T20:00:00+00:00"],
+            "p_exceed": [0.1],
+            "model_version": ["logit-lookup-offset-v1"],
+        }
+    )
+    earlier.to_parquet(curated / "forecast_history.parquet", index=False)
+
+    summary = serve_standalone(curated, None, FORECAST, method="lookup")
+
+    served = pd.read_parquet(curated / "forecasts.parquet")
+    history = pd.read_parquet(curated / "forecast_history.parquet")
+    assert summary["history_appended"] == len(served) == 3
+    today = history[history["forecast_date"].astype(str) == str(FORECAST)]
+    assert sorted(today["beach_id"]) == sorted(served["beach_id"])
+    merged = today.merge(served[["beach_id", "p_exceed"]], on="beach_id", suffixes=("", "_served"))
+    assert np.allclose(merged["p_exceed"], merged["p_exceed_served"])
+    assert len(history) == len(earlier) + 3  # the earlier row is kept
+
+    # The workflow re-applies the estimate after advisory expiry: it updates
+    # today's rows in place and must not log them a second time.
+    apply_lookup_to_served(curated, method="lookup")
+    assert len(pd.read_parquet(curated / "forecast_history.parquet")) == len(earlier) + 3
