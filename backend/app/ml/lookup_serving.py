@@ -17,7 +17,7 @@ from scipy.stats import beta
 from app.core.json_safe import dumps_strict
 from app.ml import logit_challenger
 from app.ml.calibration import _LOW_THRESHOLD, advisory_floored_probability, risk_band
-from app.ml.served_metrics import served_performance_for_versions
+from app.ml.served_metrics import append_forecast_history, served_performance_for_versions
 from app.schemas.domain import sample_recency_band
 
 LOOKUP_MODEL_VERSION = "lookup-365d-v1"
@@ -969,7 +969,11 @@ def serve_standalone(
         target.unlink()
     # latest_sample_date is build_candidates' bookkeeping; forecasts.parquet has no such column.
     candidates.drop(columns=["latest_sample_date"]).to_parquet(target, index=False)
-    return apply_lookup_to_served(out, method=method)
+    summary = apply_lookup_to_served(out, method=method)
+    # Training appends today's rows to the served-forecast log and the serving step
+    # only updates them; on a day training does not run nothing else logs them.
+    summary["history_appended"] = append_forecast_history(out)
+    return summary
 
 
 def main() -> None:

@@ -23,6 +23,13 @@ on:
           runs stay winner-only.
         type: boolean
         default: false
+      run_ml:
+        description: >-
+          Also run ML training + spatial backtests (~53 min). Off by default
+          since 2026-10-04: the served estimate does not use the ML model, which
+          is kept only as a challenger. full_comparison implies this.
+        type: boolean
+        default: false
 
 # Never kill a mid-flight training/commit run — let it finish and queue the
 # next one. cancel-in-progress: false is deliberate: a cancelled run would
@@ -40,6 +47,11 @@ jobs:
       models: read
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      # ML training is off on the daily cron (2026-10-04): it took 53 of the
+      # run's 79 minutes and the served estimate (logit on the per-beach lookup,
+      # lookup_serving.py) does not use it. Serving builds its own candidate
+      # frame (--standalone, UPDATE_PLAN 3.4). Run it by hand with run_ml=true.
+      RUN_ML: ${{ github.event.inputs.run_ml == 'true' || github.event.inputs.full_comparison == 'true' }}
 
     steps:
       - uses: actions/checkout@v5
@@ -106,6 +118,9 @@ jobs:
         run: |
           cp data/curated/forecasts.parquet /tmp/prev_forecasts.parquet || true
           cp data/curated/hourly_forecast.parquet /tmp/prev_hourly_forecast.parquet || true
+          # The pipeline rewrites system_health.json with a placeholder registry;
+          # a run without training carries the last trained registry forward.
+          cp data/curated/system_health.json /tmp/prev_system_health.json || true
 
       - name: Run data pipeline
         run: |
@@ -174,6 +189,7 @@ jobs:
         working-directory: backend
 
       - name: Run ML training + forecasts
+        if: env.RUN_ML == 'true'
         # NOT continue-on-error: a failed training/forecast run must abort the
         # job loudly. set -e ensures any non-zero exit inside this block (not
         # just the final python call) fails the step rather than silently
@@ -217,9 +233,30 @@ jobs:
         # records why in system_health.json["serving_method"]. Rollback without a
         # code change: set the repository variable SHORELIFE_SERVED_ESTIMATE to
         # "lookup".
+        #
+        # Without training there is no forecasts.parquet to overwrite, so
+        # --standalone builds the candidate frame itself (UPDATE_PLAN 3.4; shadowed
+        # with zero diff against training's frame since 2026-10-02) and appends
+        # today's rows to forecast_history.parquet, which training did before.
         env:
           SHORELIFE_SERVED_ESTIMATE: ${{ vars.SHORELIFE_SERVED_ESTIMATE || 'logit' }}
-        run: python -m app.ml.lookup_serving --curated ../data/curated/
+        run: |
+          if [ "$RUN_ML" = "true" ]; then
+            python -m app.ml.lookup_serving --curated ../data/curated/
+          else
+            FORECAST_DATE=$(TZ=America/Los_Angeles date +%Y-%m-%d)
+            python -m app.ml.lookup_serving --curated ../data/curated/ --standalone --forecast-date "$FORECAST_DATE"
+          fi
+        working-directory: backend
+
+      - name: Carry the last training run's health forward (ML skipped)
+        # The pipeline rewrote system_health.json with a placeholder registry and
+        # no release_gate; training used to restore them. Must run before the
+        # release-gate checks below, which fail closed on a missing gate.
+        if: env.RUN_ML != 'true'
+        run: |
+          python scripts/carry_forward_training_health.py --curated ../data/curated/ \
+            --previous /tmp/prev_system_health.json
         working-directory: backend
 
       - name: Honor release gate for hourly forecast
@@ -283,6 +320,8 @@ jobs:
         working-directory: backend
 
       - name: Shadow standalone serving (UPDATE_PLAN 3.4)
+        # Only meaningful when training wrote the real frame to compare against.
+        if: env.RUN_ML == 'true'
         # Builds the forecast without training's output into a temp copy, diffs it
         # against the real one and appends the verdict to standalone_shadow_log.jsonl.
         # Never published; touches no other file in data/curated.
