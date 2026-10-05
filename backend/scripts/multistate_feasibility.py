@@ -201,6 +201,7 @@ def normalize(raw: pd.DataFrame) -> pd.DataFrame:
         | qual.str.contains(">|TNTC", regex=True)
     dl = pd.to_numeric(df["DetectionQuantitationLimitMeasure/MeasureValue"], errors="coerce")
     df.loc[df["nondetect"] & df["value"].isna(), "value"] = dl.where(dl.notna(), 0.0)
+    df["dl"] = dl
     df["censored"] = df["nondetect"] | df["above_range"]
     df["units"] = df["ResultMeasure/MeasureUnitCode"].fillna("unknown").str.strip()
     df["method"] = (df["ResultAnalyticalMethod/MethodIdentifier"].fillna("") + " / "
@@ -219,7 +220,7 @@ def normalize(raw: pd.DataFrame) -> pd.DataFrame:
     df["status"] = df["ResultStatusIdentifier"].fillna("")
     df = df.loc[df["sample_date"].notna()]
     return df[["station_id", "org", "sample_date", "ActivityStartTime/Time", "activity_type", "status",
-               "value_raw", "value", "nondetect", "above_range", "censored", "units", "method", "assay",
+               "value_raw", "value", "dl", "nondetect", "above_range", "censored", "units", "method", "assay",
                "ProjectName", "MonitoringLocationName", "ActivityLocation/LatitudeMeasure",
                "ActivityLocation/LongitudeMeasure", "LastUpdated"]].reset_index(drop=True)
 
@@ -300,6 +301,11 @@ def coverage(res: pd.DataFrame, sd: pd.DataFrame, culture_limit: float) -> dict:
     out["assay"] = {str(k): int(v) for k, v in res["assay"].value_counts().items()}
     out["share_nondetect"] = float(res["nondetect"].mean())
     out["share_censored_any"] = float(res["censored"].mean())
+    # Some labs report "<DL" as the bare DL with no qualifier (Florida DOH: 10, 4 or 2).
+    if "dl" in res.columns:
+        dl = pd.to_numeric(res["dl"], errors="coerce")
+        out["share_at_or_below_reported_detection_limit"] = float(((res["value"] <= dl) | res["nondetect"]).mean())
+        out["share_rows_with_detection_limit"] = float(dl.notna().mean())
     out["share_value_missing_after_nd_fill"] = float(res["value"].isna().mean())
     out["exceedance_rate_sampleday_state_limit"] = float(sd["exceeds"].mean())
     out["exceedance_rate_sampleday_104"] = float(sd["exceeds104"].mean())
