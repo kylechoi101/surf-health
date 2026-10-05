@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 from io import StringIO
@@ -697,6 +698,78 @@ def analyze_hi_cwb(with_model: bool = True) -> dict:
     return out
 
 
+# --------------------------------------------------------------------------- Part 2: live state feeds
+
+def feeds_hi() -> dict:
+    """Hawaii DOH CWB: beaches + advisory events exports (cached by hand from the public CSV endpoints)."""
+    ev = pd.read_csv(HI_CWB / "events.csv", encoding="utf-8-sig")
+    ev["issued"] = pd.to_datetime(ev["Issuance Date"], format="%m/%d/%Y %I:%M:%S %p", errors="coerce")
+    beach = ev[ev["Type"].isin(["Beach Advisory", "Beach Notification"])]
+    bact = beach[beach["Title"].str.contains("Exceedance|High Bacteria", na=False)]
+    beaches = pd.read_csv(HI_CWB / "beaches.csv", encoding="utf-8-sig")
+    return {
+        "beaches_csv": "https://eha-cloud.doh.hawaii.gov/cwb/api/beaches?format=csv",
+        "events_csv": "https://eha-cloud.doh.hawaii.gov/cwb/api/events?format=csv",
+        "results_csv": "https://eha-cloud.doh.hawaii.gov/cwb/api/sample-test-results/csv?format=csv",
+        "format": "CSV over plain HTTPS GET, no key, no auth (the 'Export CSV' endpoints of the CWB web app)",
+        "beaches_listed": int(len(beaches)),
+        "beaches_by_tier": {str(k): int(v) for k, v in beaches["Tier Rank"].value_counts().sort_index().items()},
+        "events_newest_issued": str(ev["issued"].max()),
+        "events_by_type": {str(k): int(v) for k, v in ev["Type"].value_counts().items()},
+        "bacteria_beach_events_per_year": {int(k): int(v) for k, v in
+                                           bact.groupby(bact["issued"].dt.year).size().items()},
+        "bacteria_events_since_2025_with_count": int(bact.loc[bact["issued"] >= "2025-01-01", "Count"].notna().sum()),
+        "bacteria_events_since_2025": int((bact["issued"] >= "2025-01-01").sum()),
+        "events_open_now": int(ev["Status"].eq("Open").sum()),
+    }
+
+
+def feeds_fl() -> dict:
+    """Florida: the official sampling-point layer (ArcGIS, machine-readable) and what we could see of results."""
+    fl_doh = REPO / "data" / "raw" / "fl_doh"
+    pts = json.loads((fl_doh / "sampling_points.json").read_text())
+    pts = pd.DataFrame([f["attributes"] for f in pts["features"]])
+    out = {
+        "sampling_points_layer": "https://services1.arcgis.com/CY1LXxl9zlJeBuRZ/arcgis/rest/services/"
+                                 "FloridaBeachSamplingPoints/FeatureServer/0",
+        "sampling_points_total": int(len(pts)),
+        "sampling_points_by_active": {str(k): int(v) for k, v in pts["Active"].value_counts().items()},
+        "sampling_points_counties": int(pts["County"].nunique()),
+        "sampling_points_with_storet_id": int(pts["STORET_Sta"].fillna("").str.strip().ne("").sum()),
+        "results_page": "https://www.floridahealth.gov/community-environmental-public-health/environmental-public-"
+                        "health/water-quality/aquatic-toxins/beach-water-quality/?County=..&SPLocation=..",
+        "results_page_status": "403 Cloudflare challenge to scripted HTTP clients; a text fetch of the page returns "
+                               "the program text but no results (rendered client-side). Not machine-readable by us.",
+    }
+    mirror = REPO / "data" / "raw" / "fl_thirdparty"
+    rows = []
+    for f in sorted(mirror.glob("*.html")):
+        t = f.read_text().replace('\\"', '"')
+        for m in re.finditer(r'"beachName":"([^"]+)","sampleDate":"([0-9/]+)","enterococcusValue":"([^"]*)",'
+                             r'"enterococcusStatus":"([^"]*)","advisoryStatus":"([^"]*)"', t):
+            rows.append((f.stem,) + m.groups())
+    if rows:
+        d = pd.DataFrame(rows, columns=["county", "beach", "date", "value", "status", "advisory"]).drop_duplicates()
+        d["date"] = pd.to_datetime(d["date"], errors="coerce")
+        latest = d.groupby(["county", "beach"])["date"].max()
+        lag = (TODAY - latest).dt.days
+        out["third_party_mirror"] = {
+            "url": "https://www.floridahealthybeaches.com/counties",
+            "note": "NOT an official source: a privately run site that says 'Data provided by: Florida Health'. "
+                    "Used only as evidence of how fresh FL DOH results are; not a candidate production feed.",
+            "sites": int(len(latest)), "counties": int(d["county"].nunique()),
+            "rows_embedded": int(len(d)), "oldest_row": str(d["date"].min().date()),
+            "newest_sample_date": str(d["date"].max().date()),
+            "lag_days_to_today": int((TODAY - d["date"].max()).days),
+            "site_latest_sample_lag_days": {"median": float(lag.median()), "p90": float(lag.quantile(0.9))},
+            "share_sites_sampled_last_7d": float((lag <= 7).mean()),
+            "share_sites_sampled_last_14d": float((lag <= 14).mean()),
+            "share_sites_sampled_last_30d": float((lag <= 30).mean()),
+            "carries_advisory_flag": bool(d["advisory"].str.contains("Yes").any()),
+        }
+    return out
+
+
 def write_results(state: str, payload: dict) -> None:
     from app.core.json_safe import dumps_strict, json_safe
     path = OUT / "feasibility_results.json"
@@ -709,7 +782,7 @@ def write_results(state: str, payload: dict) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("stage", choices=["fetch", "rain", "analyze", "hi-cwb"])
+    ap.add_argument("stage", choices=["fetch", "rain", "analyze", "hi-cwb", "feeds"])
     ap.add_argument("--state", choices=list(STATES), required=True)
     ap.add_argument("--no-model", action="store_true", help="Part 1 coverage only")
     args = ap.parse_args()
@@ -720,6 +793,8 @@ def main() -> None:
             prepare(args.state)
         # rain is only needed on training/scored rows (>= START + 365 d); HI was cached from 2021-12-25
         fetch_rain(args.state, start=str((START + pd.Timedelta(days=358)).date()))
+    elif args.stage == "feeds":
+        write_results(args.state, {"state_feed": feeds_hi() if args.state == "HI" else feeds_fl()})
     elif args.stage == "hi-cwb":
         write_results("HI", {"state_feed_cwb": analyze_hi_cwb(with_model=not args.no_model)})
     else:

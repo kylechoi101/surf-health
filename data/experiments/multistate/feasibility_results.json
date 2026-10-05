@@ -1,5 +1,5 @@
 {
- "generated_at": "2026-10-05T01:36:11.419670+00:00",
+ "generated_at": "2026-10-05T01:37:00.883991+00:00",
  "today": "2026-10-04",
  "HI": {
   "state": "Hawaii",
@@ -2227,6 +2227,42 @@
      }
     ]
    }
+  },
+  "state_feed": {
+   "beaches_csv": "https://eha-cloud.doh.hawaii.gov/cwb/api/beaches?format=csv",
+   "events_csv": "https://eha-cloud.doh.hawaii.gov/cwb/api/events?format=csv",
+   "results_csv": "https://eha-cloud.doh.hawaii.gov/cwb/api/sample-test-results/csv?format=csv",
+   "format": "CSV over plain HTTPS GET, no key, no auth (the 'Export CSV' endpoints of the CWB web app)",
+   "beaches_listed": 419,
+   "beaches_by_tier": {
+    "1": 61,
+    "2": 118,
+    "3": 197,
+    "4": 43
+   },
+   "events_newest_issued": "2026-10-02 13:18:59",
+   "events_by_type": {
+    "Brown Water Advisory": 1146,
+    "Sewage Spill": 330,
+    "Beach Advisory": 227,
+    "Beach Notification": 152,
+    "Permit Exceedance": 14
+   },
+   "bacteria_beach_events_per_year": {
+    "2017": 6,
+    "2018": 35,
+    "2019": 55,
+    "2020": 34,
+    "2021": 27,
+    "2022": 25,
+    "2023": 40,
+    "2024": 28,
+    "2025": 51,
+    "2026": 41
+   },
+   "bacteria_events_since_2025_with_count": 92,
+   "bacteria_events_since_2025": 92,
+   "events_open_now": 8
   }
  },
  "FL": {
@@ -3490,6 +3526,37 @@
    "years_of_history": 3.9890485968514717,
    "positive_sample_days": 2162,
    "passes": true
+  },
+  "state_feed": {
+   "sampling_points_layer": "https://services1.arcgis.com/CY1LXxl9zlJeBuRZ/arcgis/rest/services/FloridaBeachSamplingPoints/FeatureServer/0",
+   "sampling_points_total": 419,
+   "sampling_points_by_active": {
+    "Yes": 351,
+    "No": 67,
+    "Pending": 1
+   },
+   "sampling_points_counties": 34,
+   "sampling_points_with_storet_id": 419,
+   "results_page": "https://www.floridahealth.gov/community-environmental-public-health/environmental-public-health/water-quality/aquatic-toxins/beach-water-quality/?County=..&SPLocation=..",
+   "results_page_status": "403 Cloudflare challenge to scripted HTTP clients; a text fetch of the page returns the program text but no results (rendered client-side). Not machine-readable by us.",
+   "third_party_mirror": {
+    "url": "https://www.floridahealthybeaches.com/counties",
+    "note": "NOT an official source: a privately run site that says 'Data provided by: Florida Health'. Used only as evidence of how fresh FL DOH results are; not a candidate production feed.",
+    "sites": 313,
+    "counties": 31,
+    "rows_embedded": 2854,
+    "oldest_row": "2026-03-25",
+    "newest_sample_date": "2026-10-01",
+    "lag_days_to_today": 3,
+    "site_latest_sample_lag_days": {
+     "median": 6.0,
+     "p90": 60.60000000000008
+    },
+    "share_sites_sampled_last_7d": 0.6485623003194888,
+    "share_sites_sampled_last_14d": 0.8370607028753994,
+    "share_sites_sampled_last_30d": 0.8722044728434505,
+    "carries_advisory_flag": true
+   }
   }
  }
 }
