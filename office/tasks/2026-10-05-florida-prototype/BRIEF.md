@@ -3,7 +3,7 @@ task: florida-prototype
 repo: /Users/kylechoi/surf_health-fl
 worker: gemini
 created: 2026-10-05
-status: open
+status: done
 ---
 
 ## Goal
@@ -104,3 +104,12 @@ Deliverable: `all` runs end to end, `REPORT.md` written, and all Acceptance comm
 ## Corrections
 
 (appended by the PM; newest last; each entry dated)
+
+### 2026-10-05 (for Phase 100, not a fix to Phase 50)
+The earlier WQP-based study (`data/experiments/multistate/REPORT.md`, Florida section) scored calendar 2025 and got logistic AUROC 0.816 vs lookup 0.795. This backtest scores 2025-10..2026-09 and gets 0.744 vs 0.728. In REPORT.md, add a second scoring of the same models over calendar 2025 (2025-01..2025-12) from the USF data, so the two studies can be compared on the same months, and state plainly which differences remain (site set, source). Keep 2025-10..2026-09 as the headline window. `backtest.json` may hold both under separate keys; keep the existing `metrics` key for the headline window so the Acceptance command still works.
+
+### 2026-10-05 (for Phase 100): make silent defaults visible
+`generate_forecast` / `_rain_72h_from_hourly` turn missing rain into 0.0 mm (scoring the beach as dry), and a failed or under-supported fit falls back to `beta = 0` (the plain lookup). Neither is logged or recorded. Keep the behaviour, but:
+- add a `rain_missing` boolean column to the forecast output (True where no rain value could be computed for the station's coordinate), and log the count;
+- log a warning and record `model_fallback` (null, or the reason) plus the fitted coefficients, the variant used and the training row/positive counts in a small `data/experiments/florida/forecast_<D>_meta.json`;
+- a test for the missing-rain flag.

@@ -196,3 +196,19 @@ without a saved chat now starts fresh; `~/office` `134c29a`).
 10-10). 3.6 Render retirement after 2 weeks of the OTA (check scheduled 10-16; suspending the
 service is the CEO's manual step). Monterey outreach email is in the CEO's Gmail drafts
 (recipient address unverified).
+
+## 2026-10-05: daily run without ML, web dispatch live, Hawaii/Florida research, Florida test forecast
+
+**Web publish:** `WEB_DEPLOY_DISPATCH_TOKEN` was never set, so the site waited for its own cron (GitHub ran it 3-4 h late) and showed the previous day's forecast for hours. The CEO set the token 10-04; the dispatch fired on the 22:00 UTC run and the site went live 2 min after the data commit.
+
+**Daily run without ML (PR #52, merged 10-04):** training was 53 of 79 min and the served estimate does not use it. It now runs only on `run_ml=true`; serving runs `lookup_serving --standalone`, which now appends today's rows to `forecast_history.parquet`. `scripts/carry_forward_training_health.py` restores the `system_health.json` keys the pipeline wipes. First run: 27.5 min, forecast identical to the training path. This does the serving half of UPDATE_PLAN 3.5 ahead of the 10-10 check; the shadow diff now only runs on ML days.
+
+**Hawaii/Florida feasibility (branch `research/hi-fl-feasibility`, unmerged):** cloud agent, 2nd attempt (the 1st stalled with nothing pushed). Then two source searches:
+- Hawaii DOH's results API has routine Kauai results again since 2026-09-21; routine statewide publication stopped 2024-06-13.
+- Florida: USF Water Atlas republishes FL DOH results with a clean API, 1-2 weeks behind; the FL DOH Caspio page has results 1-4 days old but needs paced HTML parsing.
+
+**Florida test forecast (`office/tasks/2026-10-05-florida-prototype`, worktree `../surf_health-fl`, branch `research/florida-prototype`, uncommitted):** Gemini, 4 phases all aligned, 2 PM notes added for phase 100 (a calendar-2025 comparison; make silent rain/fit fallbacks visible).
+- USF data: 20,780 sample-days, 241 stations, limit 70.
+- Walk-forward 2025-10..2026-09: logistic AUROC 0.744 vs lookup 0.728 (CI +0.007..+0.029), within-station 0.48 vs 0.32.
+- Forecast for 10-05: 223 beaches, Low 200 / Moderate 14 / High 9.
+- Worker tokens: 2.40M total (2.13M in, 0.27M out).
