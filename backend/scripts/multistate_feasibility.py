@@ -24,7 +24,6 @@ import json
 import re
 import sys
 import time
-from io import StringIO
 from pathlib import Path
 
 import httpx
@@ -611,10 +610,8 @@ def analyze(state: str, with_model: bool = True) -> dict:
     sd.to_parquet(OUT / f"{state}_wqp_sample_days.parquet", index=False)
     out = {"state": STATES[state]["name"], "wqp_statecode": STATES[state]["fips"], "filter": filt,
            "coverage_state": coverage(res, sd, limit), "coverage_by_org": {}}
-    org_names = {}
     for org, r in res.groupby("org"):
         out["coverage_by_org"][org] = coverage(r, sd[sd["org"] == org], limit)
-        org_names[org] = None
     out["other_indicators_wqp_counts"] = json.loads((RAW_WQP / f"{state}_other_indicator_counts.json").read_text()) \
         if (RAW_WQP / f"{state}_other_indicator_counts.json").exists() else None
     gate = out["coverage_state"]
