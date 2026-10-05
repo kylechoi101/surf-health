@@ -37,6 +37,7 @@ This is research only, in the worktree `/Users/kylechoi/surf_health-fl` on branc
     7. `xgb_undersample_ensemble`: `XGBUndersampleEnsemble()`.
     8. `xgb_undersample_offset`: `XGBUndersampleOffsetEnsemble()` with `beach_ids` = station_id.
     9. `stacked_ensemble`: see training.py around line 1208.
+    10–14. **Sequence models** `tcn`, `cnn`, `lstm`, `transformer` and `pinn`: `BeachTCN`, `BeachCNN`, `BeachLSTM`, `BeachTransformer` and `BeachPINN_MultiTask` from `app.ml.models`, trained the way `train_sequence_model` in `app/ml/training.py` (line ~1579) does it. Reuse `_build_sequence_dataset`, `SequenceDataset` (`app/ml/datasets.py`), `_training_device` (MPS on this Mac), and the same optimizer, epochs and loss. Build each sample-day's input sequence from that station's previous sample-days and daily weather, strictly before the day, with the same window length California uses. The PINN's density target is log10(value). Same walk-forward months, calibration split and scored rows as the other models.
   - Where a training.py implementation is tied to California-only artifacts (counties, regions, CA files), reimplement it faithfully on Florida data and write down in the report exactly what you changed.
   - Remember `import xgboost` must come before `import torch` on macOS.
   - Write `data/experiments/florida/ml/FL_ml_walkforward_predictions.parquet`, one probability column per model plus `p_lookup` and `p_logistic_served` joined from the served-model file, and `data/experiments/florida/ml/ml_backtest.json`.
@@ -54,7 +55,6 @@ This is research only, in the worktree `/Users/kylechoi/surf_health-fl` on branc
 
 ## Out of scope
 
-- Sequence models (tcn, cnn, lstm, transformer, pinn). California dropped them, and they need a separate per-beach sequence pipeline. Mention this in the report.
 - `hist_gbm_regressor` (not a probability model).
 - Any change to `backend/app/**`, `backend/scripts/florida_prototype.py`, `backend/scripts/multistate_feasibility.py`, `.github/**`, `data/curated/**`, the existing `data/experiments/florida/*` files, or the web and mobile repos.
 - New dependencies.
@@ -78,7 +78,7 @@ This is research only, in the worktree `/Users/kylechoi/surf_health-fl` on branc
 $PY -m pytest -q tests/test_florida_ml_models.py tests/test_florida_prototype.py      # all pass, no network
 /Users/kylechoi/surf_health/backend/.venv/bin/ruff check scripts/florida_ml_models.py tests/test_florida_ml_models.py   # clean
 $PY scripts/florida_ml_models.py all          # exits 0
-$PY -c "import pandas as pd; m=pd.read_parquet('../data/experiments/florida/ml/FL_ml_walkforward_predictions.parquet'); s=pd.read_parquet('../data/experiments/florida/FL_usf_walkforward_predictions.parquet'); k=['station_id','sample_date']; assert len(m)==len(s) and m[k].merge(s[k]).shape[0]==len(s); need=['logistic','logistic_coastal_cells','logistic_hierarchical','hist_gbm','hist_gbm_positive_persistence_guard','hist_gbm_persistence_blend','xgb_undersample_ensemble','xgb_undersample_offset','stacked_ensemble']; miss=[n for n in need if 'p_'+n not in m]; assert not miss, miss; print(len(m),'rows, all 9 models')"
+$PY -c "import pandas as pd; m=pd.read_parquet('../data/experiments/florida/ml/FL_ml_walkforward_predictions.parquet'); s=pd.read_parquet('../data/experiments/florida/FL_usf_walkforward_predictions.parquet'); k=['station_id','sample_date']; assert len(m)==len(s) and m[k].merge(s[k]).shape[0]==len(s); need=['logistic','logistic_coastal_cells','logistic_hierarchical','hist_gbm','hist_gbm_positive_persistence_guard','hist_gbm_persistence_blend','xgb_undersample_ensemble','xgb_undersample_offset','stacked_ensemble','tcn','cnn','lstm','transformer','pinn']; miss=[n for n in need if 'p_'+n not in m]; assert not miss, miss; print(len(m),'rows, all 14 models')"
 $PY -c "import json; b=json.load(open('../data/experiments/florida/ml/ml_backtest.json')); print({k: round(v['auroc'],3) for k,v in b['metrics'].items()})"
 test -s ../data/experiments/florida/ml/ML_REPORT.md && echo report-ok
 ```
@@ -92,7 +92,7 @@ Deliverable: the `features` subcommand writes `FL_ml_features.parquet` (lab hist
 Deliverable: the `backtest` harness scores the exact served-model row set with date-split isotonic calibration, for `logistic`, `hist_gbm`, `xgb_undersample_ensemble` and `xgb_undersample_offset`; row-set and calibration-split tests pass.
 
 ### Phase 75
-Deliverable: the remaining five models (`logistic_coastal_cells`, `logistic_hierarchical`, `hist_gbm_positive_persistence_guard`, `hist_gbm_persistence_blend`, `stacked_ensemble`) are added, with what was reimplemented written down.
+Deliverable: the remaining five tabular models (`logistic_coastal_cells`, `logistic_hierarchical`, `hist_gbm_positive_persistence_guard`, `hist_gbm_persistence_blend`, `stacked_ensemble`) and the five sequence models (`tcn`, `cnn`, `lstm`, `transformer`, `pinn`) are added, with what was reimplemented written down, plus a test that sequences hold only strictly-prior days.
 
 ### Phase 100
 Deliverable: `report` writes `ml_backtest.json` and `ML_REPORT.md` with metrics, CIs vs the served logistic, training times and hist_gbm importances, and all Acceptance commands pass.
@@ -100,3 +100,6 @@ Deliverable: `report` writes `ml_backtest.json` and `ML_REPORT.md` with metrics,
 ## Corrections
 
 (appended by the PM; newest last; each entry dated)
+
+### 2026-10-05: all models means all 14
+The CEO asked for **all** ML models. Sequence models are now in scope: models 10–14 above, in Phase 75. The Acceptance check now requires all 14 `p_*` columns. Do not drop any model. If one cannot be trained (for example an MPS error), fall back to CPU. If it still fails, record the error in `ml_backtest.json` and ML_REPORT.md instead of omitting it silently.
