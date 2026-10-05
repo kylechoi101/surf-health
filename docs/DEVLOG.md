@@ -212,3 +212,17 @@ service is the CEO's manual step). Monterey outreach email is in the CEO's Gmail
 - Walk-forward 2025-10..2026-09: logistic AUROC 0.744 vs lookup 0.728 (CI +0.007..+0.029), within-station 0.48 vs 0.32.
 - Forecast for 10-05: 223 beaches, Low 200 / Moderate 14 / High 9.
 - Worker tokens: 2.40M total (2.13M in, 0.27M out).
+
+## 2026-10-05: every California ML model on Florida data
+
+`office/tasks/2026-10-05-florida-ml-models`, branch `research/florida-prototype` (uncommitted). Gemini ran 4 phases.
+- Phase 25 timed out once: a background weather fetch. Fixed by fetching in the foreground.
+- Phase 100 timed out waiting on its own acceptance run. The PM let that run finish and ran the Acceptance commands.
+- PM corrections: a label-column allowlist; all 14 models after the CEO asked for "all", the first brief having left out the 5 sequence models.
+
+**Result:** 14 models, the same 7,943 sample-days as the served logistic (2025-10..2026-09), with 40 inputs including cloud, shortwave and wind.
+- On AUROC, nothing beats the served 4-term logistic (0.744). stacked_ensemble scored 0.756, CI [-0.004, +0.031]. The XGB ensemble scored 0.732. Sequence models scored 0.64-0.68.
+- **But within-station AUROC favours the pooled ML models.** The served model scores 0.478. stacked_ensemble +0.061..+0.140, logistic_coastal_cells +0.077..+0.159, logistic_hierarchical +0.072..+0.167 and xgb_undersample_offset +0.036..+0.130 all have CIs above zero.
+- Sequence models are unseeded and move by about 0.02 between runs.
+- Worker tokens: 0.00M in, 0.00M out.
+

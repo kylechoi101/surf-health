@@ -3,7 +3,7 @@ task: florida-ml-models
 repo: /Users/kylechoi/surf_health-fl
 worker: gemini
 created: 2026-10-05
-status: open
+status: done
 ---
 
 ## Goal
@@ -103,3 +103,17 @@ Deliverable: `report` writes `ml_backtest.json` and `ML_REPORT.md` with metrics,
 
 ### 2026-10-05: all models means all 14
 The CEO asked for **all** ML models. Sequence models are now in scope: models 10–14 above, in Phase 75. The Acceptance check now requires all 14 `p_*` columns. Do not drop any model. If one cannot be trained (for example an MPS error), fall back to CPU. If it still fails, record the error in `ml_backtest.json` and ML_REPORT.md instead of omitting it silently.
+
+### 2026-10-05: Phase 25 timed out (exit 4)
+The first Phase 25 run started the Open-Meteo weather fetch as a background task and then waited on it until the phase timed out ("root agent idle; waiting up to 20m0s for 2 background task(s)"). No report and no `FL_ml_features.parquet` were written. 111 weather coordinates are already cached under `data/raw/florida/weather/` and the fetch resumes from the cache.
+- Run the remaining weather fetch in the **foreground**, in batches small enough to finish within a few minutes each, printing progress. Do not start background tasks and then wait on them.
+- If Open-Meteo returns 429 with an hourly or daily limit, stop fetching. Build the features with weather columns NaN for the uncached coordinates, record the coverage in the report, and finish the phase. Missing weather must not block the phase.
+- Write `reports/25.md` before the phase ends.
+
+### 2026-10-05 (for Phase 50 onward): label columns must never be model inputs
+`FL_ml_features.parquet` carries today's own result (`value`, `ratio`, `exceeds`) beside the features. Build the model input matrix from an **explicit allowlist** of feature columns. Never use `select_dtypes("number")` on the whole frame. `value`, `ratio`, `exceeds`, `is_qpcr`, `station_id`, `sample_date` and `name` must never reach a model. Add a test that fails if any of them is in the model input columns. Also drop the duplicate wind-direction pair (`wind_direction_sin/cos` equal `wind_dir_sin/cos`).
+
+### 2026-10-05 (for Phase 100): what ML_REPORT.md must say
+- Rank on AUROC, but show AUCPR, Brier and within-station AUROC beside it. Include raw and calibrated for every model, since isotonic calibration lowered AUROC for several.
+- For each model, give the bootstrap 95% CI of model minus `logistic_served`, and say plainly whether it excludes zero. `stacked_ensemble` (0.756 vs 0.744) is the one to watch.
+- State the sequence-window difference: Florida uses 30 calendar days × 7 channels, while California's `build_sliding_windows` uses windows over prior samples. State the k-means groupings that replaced counties and regions.
