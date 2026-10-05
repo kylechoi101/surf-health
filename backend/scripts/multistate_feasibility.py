@@ -147,36 +147,33 @@ def load_raw(state: str) -> tuple[pd.DataFrame, pd.DataFrame]:
     return raw, stations
 
 
-# Site types that are beaches / marine recreational water.
-MARINE_TYPES = {"ocean", "estuary", "beach program site-ocean", "beach program site-estuary",
-                "bay", "beach program site-bay", "beach program site-channelized stream",
-                "great lake", "beach program site-great lake", "coastal", "ocean: coastal",
-                "estuary: tidal", "bay/estuary", "sea"}
-BEACH_NAME_TOKENS = ("beach", "bch", "park", "cove", "bay", "pier", "shore", "landing", "harbor",
-                     "lagoon", "inlet", "pt ", "point", "reef", "surf", "kai", "ocean")
-
-
 def classify_sites(stations: pd.DataFrame, raw: pd.DataFrame) -> pd.DataFrame:
-    """One row per site: type, org, name, coords, and a keep/drop decision with a reason."""
+    """One row per site: type, org, name, coords, and a keep/drop decision with a reason.
+
+    Keep rule (in order):
+      1. WQX type "BEACH Program Site-*"  -> keep (the state's BEACH Act program sites)
+      2. WQX type "Ocean"                 -> keep (open-coast sites)
+      3. Estuary / Bay type whose site name says it is a swimming beach
+         ("beach", "bch", "swim", "bathing") -> keep
+      4. everything else (rivers, canals, lakes, ambient estuary stations) -> drop
+    Ambient estuary stations are dropped on purpose: they are water-quality monitoring
+    points (often mid-channel or at outfalls), not places people swim, and their
+    exceedance rates are not beach exceedance rates.
+    """
     st = stations.rename(columns={"LatitudeMeasure": "lat", "LongitudeMeasure": "lon"}).copy()
     st["type"] = st["MonitoringLocationTypeName"].fillna("").str.strip()
-    st["type_l"] = st["type"].str.lower()
+    t = st["type"].str.lower()
     st["name"] = st["MonitoringLocationName"].fillna("")
-    st["name_l"] = st["name"].str.lower()
-    # Project names on the results tell us which program sampled the site.
+    n = st["name"].str.lower()
     proj = (raw.groupby("MonitoringLocationIdentifier")["ProjectName"]
             .agg(lambda s: " | ".join(sorted(set(s.dropna().astype(str))))[:200]))
     st["projects"] = st["MonitoringLocationIdentifier"].map(proj).fillna("")
-    proj_l = st["projects"].str.lower()
-    is_beach_type = st["type_l"].str.startswith("beach program site") | st["type_l"].isin(MARINE_TYPES) \
-        | st["type_l"].str.contains("ocean|estuar|bay|coastal|beach", regex=True)
-    is_beach_proj = proj_l.str.contains("beach|bacteria monitor|recreational|healthy beaches", regex=True)
-    is_fresh_type = st["type_l"].str.contains(
-        "river|stream|lake|reservoir|spring|well|canal|ditch|wetland|pond|storm sewer|outfall|facility|pipe",
-        regex=True) & ~st["type_l"].str.startswith("beach program site")
-    st["keep"] = (is_beach_type | (is_beach_proj & ~is_fresh_type))
-    st["reason"] = np.where(is_beach_type, "marine/beach site type",
-                    np.where(is_beach_proj & ~is_fresh_type, "beach-program project name", "non-marine site type"))
+    r1 = t.str.startswith("beach program site")
+    r2 = t.eq("ocean")
+    r3 = t.str.contains("estuar|bay", regex=True) & n.str.contains(r"beach|\bbch\b|swim|bathing", regex=True)
+    st["keep"] = r1 | r2 | r3
+    st["reason"] = np.select([r1, r2, r3], ["BEACH program site type", "Ocean site type",
+                                            "estuary/bay site named as a beach"], default="non-beach site type")
     st["lat"] = pd.to_numeric(st["lat"], errors="coerce")
     st["lon"] = pd.to_numeric(st["lon"], errors="coerce")
     return st[["MonitoringLocationIdentifier", "OrganizationIdentifier", "type", "name", "projects",
@@ -319,7 +316,8 @@ def _coord_key(lat: float, lon: float) -> str:
     return f"{round(lat, 1):.1f}_{round(lon, 1):.1f}"
 
 
-def fetch_rain(state: str, stations: pd.DataFrame | None = None) -> None:
+def fetch_rain(state: str, stations: pd.DataFrame | None = None, start: str = "2021-12-25",
+               prefix: str | None = None) -> None:
     """One Open-Meteo archive request per 0.1 deg coord: hourly precipitation, local time."""
     cfg = STATES[state]
     RAW_RAIN.mkdir(parents=True, exist_ok=True)
@@ -331,27 +329,34 @@ def fetch_rain(state: str, stations: pd.DataFrame | None = None) -> None:
     end = (TODAY - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
     with httpx.Client(timeout=TIMEOUT) as client:
         for i, key in enumerate(coords):
-            path = RAW_RAIN / f"{state}_{key}.parquet"
+            path = RAW_RAIN / f"{prefix or state}_{key}.parquet"
             if path.exists():
                 continue
             lat, lon = map(float, key.split("_"))
-            params = {"latitude": lat, "longitude": lon, "start_date": "2021-12-25", "end_date": end,
+            params = {"latitude": lat, "longitude": lon, "start_date": start, "end_date": end,
                       "hourly": "precipitation", "timezone": cfg["tz"], "precipitation_unit": "mm"}
-            for attempt in range(1, 6):
+            resp = None
+            for attempt in range(1, 7):
                 try:
                     resp = client.get(OPEN_METEO_ARCHIVE, params=params)
                     if resp.status_code == 429:
-                        wait = 65 * attempt
-                        log(f"  429 rate-limited; sleep {wait}s")
+                        reason = resp.text[:160]
+                        # Open-Meteo free tier: 600 weighted calls/min, 5000/hour, 10000/day.
+                        wait = 900 if "hour" in reason.lower() else 70 * attempt
+                        log(f"  429 rate-limited ({reason}); sleep {wait}s")
                         time.sleep(wait)
+                        resp = None
                         continue
                     resp.raise_for_status()
                     break
                 except (httpx.HTTPError, httpx.TimeoutException) as exc:
                     log(f"  {key} attempt {attempt} failed: {type(exc).__name__}")
+                    resp = None
                     if attempt >= MAX_ATTEMPTS:
                         raise
                     time.sleep(5 * 2 ** (attempt - 1))
+            if resp is None:
+                raise RuntimeError(f"Open-Meteo kept rate-limiting {key}; rerun later (cache resumes)")
             h = resp.json()["hourly"]
             df = pd.DataFrame({"time": pd.to_datetime(h["time"]), "precip_mm": h["precipitation"]})
             tmp = path.with_suffix(".tmp")
@@ -359,16 +364,17 @@ def fetch_rain(state: str, stations: pd.DataFrame | None = None) -> None:
             tmp.replace(path)
             if i % 10 == 0:
                 log(f"{state} rain {i + 1}/{len(coords)} {key}")
-            time.sleep(1.0)
+            weight = max(1.0, (pd.Timestamp(end) - pd.Timestamp(start)).days / 14 / 10)
+            time.sleep(max(1.0, weight * 60 / 400))
     log(f"{state}: rain complete")
 
 
-def rain_72h_to_5am(state: str, keys: pd.Series, dates: pd.Series) -> np.ndarray:
+def rain_72h_to_5am(prefix: str, keys: pd.Series, dates: pd.Series) -> np.ndarray:
     """mm of rain in the 72 h ending 05:00 local on each date; NaN if the coord is not cached."""
     out = np.full(len(keys), np.nan)
     frame = pd.DataFrame({"k": keys.to_numpy(), "d": pd.to_datetime(dates).dt.normalize().to_numpy()})
     for key, idx in frame.groupby("k").groups.items():
-        path = RAW_RAIN / f"{state}_{key}.parquet"
+        path = RAW_RAIN / f"{prefix}_{key}.parquet"
         if not path.exists():
             continue
         h = pd.read_parquet(path).set_index("time")["precip_mm"].astype(float)
@@ -465,7 +471,8 @@ def cluster_bootstrap(y, pa, pb, b, reps: int = 500, seed: int = 0) -> dict:
 
 
 def walk_forward(state: str, sd: pd.DataFrame, stations: pd.DataFrame, label: str,
-                 end_month: pd.Period | None = None) -> dict:
+                 end_month: pd.Period | None = None, n_months: int = 12,
+                 history_start: pd.Timestamp = START, rain_prefix: str | None = None) -> dict:
     """Monthly refit on every sample-day before the month; score the 12 months ending at
     ``end_month`` (default: the newest month with data)."""
     sd = sd.sort_values(["station_id", "sample_date"]).reset_index(drop=True)
@@ -474,7 +481,7 @@ def walk_forward(state: str, sd: pd.DataFrame, stations: pd.DataFrame, label: st
     coord = stations.set_index("MonitoringLocationIdentifier")
     keys = sd["station_id"].map(lambda s: _coord_key(coord.at[s, "lat"], coord.at[s, "lon"])
                                 if s in coord.index and np.isfinite(coord.at[s, "lat"]) else "none")
-    mm = rain_72h_to_5am(state, keys, sd["sample_date"])
+    mm = rain_72h_to_5am(rain_prefix or state, keys, sd["sample_date"])
     rain_cov = float(np.isfinite(mm).mean())
     sd["rain_mm_72h"] = mm
     sd["W"] = np.log2(1.0 + 4.0 * np.nan_to_num(mm, nan=0.0).clip(min=0) / 25.4)
@@ -490,9 +497,9 @@ def walk_forward(state: str, sd: pd.DataFrame, stations: pd.DataFrame, label: st
         variants["logistic_qpcr"] = ["R", "RF", "W", "S", "qpcr"]
     sd["persistence"] = np.where(sd["last_exceeds"] == 1, 1.0, sd["g"])
     # training rows need a full 365-day lookup window behind them
-    eligible = sd["sample_date"] >= START + pd.Timedelta(days=365)
+    eligible = sd["sample_date"] >= history_start + pd.Timedelta(days=365)
     last_month = end_month or sd["sample_date"].max().to_period("M")
-    months = pd.period_range(last_month - 11, last_month, freq="M")
+    months = pd.period_range(last_month - (n_months - 1), last_month, freq="M")
     preds = []
     coefs = []
     for m in months:
@@ -559,6 +566,10 @@ def prepare(state: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict]
     filt["stations_dropped_by_site_filter"] = int((~in_results["keep"]).sum()) + len(missing)
     filt["dropped_site_types"] = {str(k): int(v) for k, v in
                                   in_results.loc[~in_results["keep"], "type"].value_counts().items()}
+    filt["kept_by_rule"] = {str(k): int(v) for k, v in
+                            in_results.loc[in_results["keep"], "reason"].value_counts().items()}
+    filt["dropped_stations_by_org"] = {str(k): int(v) for k, v in in_results.loc[
+        ~in_results["keep"], "OrganizationIdentifier"].value_counts().head(15).items()}
     res = res_all[res_all["station_id"].isin(keep_ids)]
     filt["results_dropped_by_site_filter"] = int(len(res_all) - len(res))
     act = res["activity_type"].str.lower()
@@ -611,6 +622,75 @@ def analyze(state: str, with_model: bool = True) -> dict:
     return out
 
 
+# --------------------------------------------------------------------------- Hawaii DOH own feed
+
+HI_CWB = REPO / "data" / "raw" / "hi_cwb"
+CWB_HISTORY_START = pd.Timestamp("2015-01-01")
+
+
+def load_hi_cwb() -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Hawaii DOH Clean Water Branch public export -> results in ``normalize``'s schema.
+
+    Source: https://eha-cloud.doh.hawaii.gov/cwb/api/sample-test-results/csv?format=csv
+    (no auth). Its latitude/longitude columns are swapped on every row; '<' values are
+    non-detects, '>' above-range, 'LA'/'INV' are lab-accident/invalid and dropped.
+    """
+    s = pd.read_csv(HI_CWB / "sample-test-results.csv", encoding="utf-8-sig", low_memory=False, dtype=str)
+    e = s[s["Parameter"].eq("Enterococcus")].copy()
+    fr = e["Final Result"].fillna("").str.strip()
+    flag = fr.str.replace(r"[0-9\.\s]", "", regex=True)
+    res = pd.DataFrame({
+        "station_id": "CWB-" + e["Station Number"].astype(str),
+        "org": "21HI (CWB export)",
+        "sample_date": pd.to_datetime(e["Sample Date"], format="%m-%d-%Y", errors="coerce"),
+        "value": pd.to_numeric(fr.str.extract(r"([0-9\.]+)")[0], errors="coerce"),
+        "nondetect": flag.str.contains("<|ND"), "above_range": flag.str.contains(">"),
+        "units": e["Unit of Measure"], "method": e["Method Description"], "assay": "MPN (Enterolert)",
+        "flag": flag,
+    })
+    res["censored"] = res["nondetect"] | res["above_range"]
+    res.loc[res["flag"].eq("ND") & res["value"].isna(), "value"] = 0.0
+    res = res[~res["flag"].isin(["LA", "INV"]) & res["value"].notna() & res["sample_date"].notna()]
+    st = pd.DataFrame({
+        "MonitoringLocationIdentifier": "CWB-" + e["Station Number"].astype(str),
+        "lat": pd.to_numeric(e["Longitude (decimal degrees)"], errors="coerce"),  # swapped in source
+        "lon": pd.to_numeric(e["Latitude (decimal degrees)"], errors="coerce"),
+        "name": e["Location Name"],
+    }).groupby("MonitoringLocationIdentifier", as_index=False).agg(lat=("lat", "median"), lon=("lon", "median"),
+                                                                 name=("name", "first"))
+    return res.reset_index(drop=True), st
+
+
+def analyze_hi_cwb(with_model: bool = True) -> dict:
+    """Same coverage numbers on the state's own export, plus a long-history model check.
+
+    The DOH program has 2005-2024 history in its own export, far more than WQP's 2022+ pull,
+    so the served model gets a fair test here: refit monthly on 2016+ sample-days and score
+    the 36 months to 2024-04 (the last month the program published routine results).
+    """
+    res, st = load_hi_cwb()
+    sd_all = build_sample_days(res, STATE_LIMIT["HI"])
+    recent = res[res["sample_date"] >= START]
+    fetched = HI_CWB / "fetched_at.txt"
+    out = {"source": "https://eha-cloud.doh.hawaii.gov/cwb/api/sample-test-results/csv?format=csv",
+           "fetched_at_utc": fetched.read_text().strip() if fetched.exists() else None,
+           "results_all_years": int(len(res)), "first_date": str(res["sample_date"].min().date()),
+           "results_per_year_all": {int(k): int(v) for k, v in res.groupby(res["sample_date"].dt.year).size().items()},
+           "coverage_2022_on": coverage(recent, sd_all[sd_all["sample_date"] >= START], STATE_LIMIT["HI"])}
+    if with_model:
+        hist = res[res["sample_date"] >= CWB_HISTORY_START]
+        sd = build_sample_days(hist, STATE_LIMIT["HI"])
+        st = st[st["MonitoringLocationIdentifier"].isin(set(sd["station_id"]))]
+        fetch_rain("HI", st, start=str((CWB_HISTORY_START - pd.Timedelta(days=7)).date()), prefix="HIcwb")
+        cov = coverage(hist, sd, STATE_LIMIT["HI"])
+        out["coverage_2015_on"] = {k: cov[k] for k in
+                                   ("sample_days", "positive_sample_days_total", "exceedance_rate_sampleday_state_limit",
+                                    "positive_sample_days_per_year")}
+        out["model_cwb_36m_to_2024_04"] = walk_forward("HI", sd, st, "cwb", pd.Period("2024-04", "M"), n_months=36,
+                                                      history_start=CWB_HISTORY_START, rain_prefix="HIcwb")
+    return out
+
+
 def write_results(state: str, payload: dict) -> None:
     from app.core.json_safe import dumps_strict, json_safe
     path = OUT / "feasibility_results.json"
@@ -623,7 +703,7 @@ def write_results(state: str, payload: dict) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("stage", choices=["fetch", "rain", "analyze"])
+    ap.add_argument("stage", choices=["fetch", "rain", "analyze", "hi-cwb"])
     ap.add_argument("--state", choices=list(STATES), required=True)
     ap.add_argument("--no-model", action="store_true", help="Part 1 coverage only")
     args = ap.parse_args()
@@ -632,7 +712,10 @@ def main() -> None:
     elif args.stage == "rain":
         if not (OUT / f"{args.state}_stations_kept.parquet").exists():
             prepare(args.state)
-        fetch_rain(args.state)
+        # rain is only needed on training/scored rows (>= START + 365 d); HI was cached from 2021-12-25
+        fetch_rain(args.state, start=str((START + pd.Timedelta(days=358)).date()))
+    elif args.stage == "hi-cwb":
+        write_results("HI", {"state_feed_cwb": analyze_hi_cwb(with_model=not args.no_model)})
     else:
         write_results(args.state, analyze(args.state, with_model=not args.no_model))
 
