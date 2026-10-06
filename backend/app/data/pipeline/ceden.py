@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -149,6 +151,30 @@ def build_ceden_datastore_sql(
 _STATION_BATCH_SIZE = 80  # keep URL well under server 414 limit (~8 KB)
 
 
+# data.ca.gov answers these batch queries in ~10-15 s, but a single reply has
+# taken over 60 s (2026-10-06), and one timeout used to abort the whole daily run
+# before any forecast was made. Retry slow or 5xx replies with backoff.
+_FETCH_ATTEMPTS = 4
+_FETCH_TIMEOUT_SECONDS = 120.0
+_FETCH_BACKOFF_SECONDS = 15.0
+
+
+def _get_with_retry(client, url: str, params: dict):
+    for attempt in range(1, _FETCH_ATTEMPTS + 1):
+        try:
+            response = client.get(url, params=params, timeout=_FETCH_TIMEOUT_SECONDS)
+            response.raise_for_status()
+            return response
+        except (httpx.TimeoutException, httpx.TransportError, httpx.HTTPStatusError) as exc:
+            retryable = not isinstance(exc, httpx.HTTPStatusError) or exc.response.status_code >= 500
+            if not retryable or attempt == _FETCH_ATTEMPTS:
+                raise
+            wait = _FETCH_BACKOFF_SECONDS * 2 ** (attempt - 1)
+            print(f"[ceden] {type(exc).__name__} on attempt {attempt}/{_FETCH_ATTEMPTS}; retrying in {wait:.0f}s",
+                  file=sys.stderr, flush=True)
+            time.sleep(wait)
+
+
 def fetch_ceden_datastore_subset(
     resource_id: str,
     station_codes: list[str],
@@ -183,8 +209,7 @@ def fetch_ceden_datastore_subset(
                     limit=limit,
                     offset=offset,
                 )
-                response = client.get(CEDEN_DATASTORE_SQL_URL, params={"sql": sql}, timeout=60.0)
-                response.raise_for_status()
+                response = _get_with_retry(client, CEDEN_DATASTORE_SQL_URL, {"sql": sql})
                 records = response.json().get("result", {}).get("records", [])
                 if not records:
                     break
