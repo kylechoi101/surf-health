@@ -226,3 +226,14 @@ service is the CEO's manual step). Monterey outreach email is in the CEO's Gmail
 - Sequence models are unseeded and move by about 0.02 between runs.
 - Worker tokens: 0.00M in, 0.00M out.
 
+
+## 2026-10-07: site moves to shorelifeca.org; iCloud mail; Search Console
+
+No worker task; PM did it directly (config, DNS and dashboards, not worker-grade code).
+- **Web** (shorelife-web PR 24, merged): `public/CNAME`, no base path, origin `https://shorelifeca.org`; new `/support` page; privacy/terms contact is support@shorelifeca.org. Deploy run 37647032852 green; Pages cert issued, HTTPS enforced.
+- **Redirects:** every `kylechoi101.github.io/surf-health/*` URL 301s to the same path on shorelifeca.org (checked `/beaches/` and `/data/beaches.json`). The user-site root page and robots.txt now point at the new domain (kylechoi101.github.io `6bf2858`).
+- **Backend:** CORS adds shorelifeca.org (`5996b8d44`). The live API already answers `*`.
+- **DNS (Squarespace):** removed the Squarespace parking and "Email Security" presets (SPF -all / DMARC reject would have bounced all mail). Added GitHub Pages A/AAAA + www CNAME, iCloud MX/SPF/DKIM/apple-domain, DMARC p=none, the GitHub Pages challenge TXT and the Google verification TXT.
+- **Email:** iCloud custom domain set up; support@, marketing@ and ceo@shorelifeca.org created. The default sending address is unchanged.
+- **SEO:** Search Console Domain property `sc-domain:shorelifeca.org` verified by DNS; sitemap submitted (919 URLs); homepage indexing requested. GitHub Pages domain verified (takeover protection).
+- **Pending:** shorelife-mobile still hard-codes the github.io host (staticData.ts, eas.json share base). The mobile session will change it after its own task, coordinating via `claude_texting.txt`. App Store Connect support URL and contact are waiting on Kyle's sign-in.

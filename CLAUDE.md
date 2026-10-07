@@ -26,8 +26,9 @@ backend/           Python FastAPI service + ML pipeline
       feature_agent/
         agent_features.py      AGENT_BUILDERS list (currently empty after pivot)
 mobile/            Expo/React Native app (shorelife brand)
-web/               Next.js app (served at https://kylechoi101.github.io/surf-health/
-                   — shorelife.app is NOT the domain; it does not resolve)
+web/               Next.js app, served at https://shorelifeca.org since 2026-10-07 (GitHub Pages
+                   custom domain; old kylechoi101.github.io/surf-health/* URLs 301 there).
+                   shorelife.app is NOT the domain; it does not resolve.
 data/
   curated/         beach_day.parquet, beaches.parquet, solar_wind_daily.parquet, ...
   raw/cnrfc/       Open-Meteo cache (openmeteo/, openmeteo_solar_wind/ subdirs)
