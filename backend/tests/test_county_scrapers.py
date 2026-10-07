@@ -570,20 +570,19 @@ def test_ventura_keeps_real_beach_name():
 # ---------- Monterey ---------- #
 
 
-def test_monterey_is_a_no_source_report_not_a_scraper():
-    import fetch_county_advisories as f
-
-    assert "hotline only" in NO_SOURCE_COUNTIES["Monterey"]
-    # A known gap is reported in its own field, never as `error`, so it does not
-    # read as a new scraper breakage (CEO note 2026-10-02).
+def test_monterey_is_samples_only_not_no_source():
     import dataclasses
     import inspect
+
+    import fetch_county_advisories as f
+
+    assert "Monterey" not in NO_SOURCE_COUNTIES
+    assert "Monterey" not in f.COUNTIES_FIRST_CLASS
+    assert "Monterey" not in {name for name, _ in f.COUNTIES_FIRST_CLASS}
 
     assert "no_public_source" in {fld.name for fld in dataclasses.fields(f.CountyReport)}
     src = inspect.getsource(f.main)
     assert "no_public_source=reason" in src and "error=reason" not in src
-    assert "Monterey" not in f.BEST_EFFORT_COUNTIES
-    assert "Monterey" not in {name for name, _ in f.COUNTIES_FIRST_CLASS}
 
 
 # ---------- Orange County lab results (xlsx) ---------- #

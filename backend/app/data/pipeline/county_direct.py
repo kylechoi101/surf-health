@@ -45,6 +45,12 @@ had its overlap against the state feed measured; Sonoma and Humboldt are also
 in the parquet but are themselves months stale (newest 2026-05-04 / 2026-05-11)
 and report freshwater indicators, so admitting them would add unvalidated rows
 for no recency gain.
+
+Monterey County stopped uploading to the state after 2026-08-25. Its weekly lab
+results published on county HTML pages were mirror-verified on four Oct-2025
+snapshots against state rows (19 of 19 enterococcus values identical), with
+the page date offset by +1 day from the state's sample date (stored as page date
+- 1 day) and non-detects reported as ND / <10 mapping to 10.0.
 """
 
 from __future__ import annotations
@@ -61,7 +67,7 @@ DATA_SOURCE = "CountyDirect"
 
 # Counties whose direct feed has been mirror-verified against the state route.
 # See the module docstring before adding to this set.
-INGEST_COUNTIES = frozenset({"San Francisco", "Orange"})
+INGEST_COUNTIES = frozenset({"San Francisco", "Orange", "Monterey"})
 
 # The feed reports MPN/100mL (see ``_SF_THRESHOLDS`` in
 # scripts/fetch_county_advisories.py). Units matter: ``compute_exceeds_stv`` is

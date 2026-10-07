@@ -33,6 +33,7 @@ Run after the state-feed normalization step in the daily-forecast pipeline:
 from __future__ import annotations
 
 import argparse
+from html.parser import HTMLParser
 import io
 import json
 import re
@@ -40,6 +41,7 @@ import sys
 from dataclasses import dataclass, field, asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import NamedTuple
 
 import httpx
 import pandas as pd
@@ -1973,6 +1975,190 @@ def fetch_orange_county_samples(client: httpx.Client, resolver: StationResolver)
     return len(samples)
 
 
+# ---------- Monterey County (apps.co.monterey.ca.us HTML tables) ---------- #
+
+MONTEREY_BASE_URL = "https://apps.co.monterey.ca.us/CountyWebsite/health/beaches"
+
+MONTEREY_PAGES: dict[str, str] = {
+    "sunset": "SDA",
+    "spanish_bay": "SPB",
+    "lovers_point": "LOP",
+    "san_carlos": "SCB",
+    "del_monte": "DMB",
+    "monterey_state_beach": "MBH",
+    "stillwater_cove": "STCO",
+    "carmel": "CBOA",
+}
+
+MONTEREY_LIMITS: dict[str, float] = {
+    "ENTEROCOCCUS": 104.0,
+    "FECAL_COLIFORM": 400.0,
+    "TOTAL_COLIFORM": 10000.0,
+}
+
+
+class MontereyReading(NamedTuple):
+    sample_date: pd.Timestamp
+    analyte: str
+    value: float
+
+
+class _MontereyHTMLParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.rows: list[list[str]] = []
+        self._cur_row: list[str] | None = None
+        self._cur_cell: list[str] | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        t = tag.lower()
+        if t == "tr":
+            self._cur_row = []
+        elif t in ("td", "th"):
+            self._cur_cell = []
+
+    def handle_endtag(self, tag: str) -> None:
+        t = tag.lower()
+        if t == "tr":
+            if self._cur_row is not None:
+                self.rows.append(self._cur_row)
+                self._cur_row = None
+        elif t in ("td", "th"):
+            if self._cur_row is not None and self._cur_cell is not None:
+                text = " ".join("".join(self._cur_cell).split())
+                self._cur_row.append(text)
+                self._cur_cell = None
+
+    def handle_data(self, data: str) -> None:
+        if self._cur_cell is not None:
+            self._cur_cell.append(data)
+
+
+def _monterey_parse_value(raw: str) -> float | None:
+    s = raw.strip()
+    if not s:
+        return None
+    if s.upper() == "ND":
+        return 10.0
+    s_cleaned = re.sub(r"^[<>=]+\s*", "", s).replace(",", "")
+    try:
+        val = float(s_cleaned)
+        return val if val >= 0 else None
+    except ValueError:
+        return None
+
+
+def _monterey_parse_page(html: str) -> list[MontereyReading]:
+    """Parse a single Monterey County beach HTML page into readings.
+
+    Header rows in FrontPage HTML have broken markup (<FONT </td>) swallowing
+    the last date cell for standard parsers, so dates are extracted via regex
+    from the raw text between 'Analysis Name' and 'Single Sample'.
+    Page dates are sample date + 1 day, so sample_date = page date - 1 day.
+    """
+    m = re.search(r"Analysis Name(.*?)Single Sample", html, re.DOTALL | re.IGNORECASE)
+    if not m:
+        return []
+    header_chunk = m.group(1)
+    raw_dates = re.findall(r"\d{1,2}/\d{1,2}/20\d\d", header_chunk)
+    if not raw_dates:
+        return []
+
+    sample_dates: list[pd.Timestamp] = []
+    for d_str in raw_dates:
+        try:
+            p_date = pd.to_datetime(d_str, format="%m/%d/%Y")
+        except Exception:
+            p_date = pd.to_datetime(d_str)
+        s_date = (p_date - pd.Timedelta(days=1)).normalize()
+        sample_dates.append(s_date)
+
+    parser = _MontereyHTMLParser()
+    parser.feed(html)
+
+    analyte_map = {
+        "enterococcus": "ENTEROCOCCUS",
+        "fecal coliform": "FECAL_COLIFORM",
+        "total coliform": "TOTAL_COLIFORM",
+    }
+
+    readings: list[MontereyReading] = []
+    for row in parser.rows:
+        if not row:
+            continue
+        first_cell = row[0].strip().lower()
+        if "ratio" in first_cell:
+            continue
+        analyte = None
+        for key, val in analyte_map.items():
+            if key in first_cell:
+                analyte = val
+                break
+        if analyte is None:
+            continue
+
+        val_cells = row[1 : 1 + len(sample_dates)]
+        for s_date, raw_val in zip(sample_dates, val_cells):
+            parsed_val = _monterey_parse_value(raw_val)
+            if parsed_val is not None:
+                readings.append(MontereyReading(sample_date=s_date, analyte=analyte, value=parsed_val))
+    return readings
+
+
+def fetch_monterey_samples(client: httpx.Client, resolver: StationResolver) -> int:
+    """Append Monterey County lab results (HTML tables) to _COLLECTED_SAMPLES.
+
+    Returns the number of samples added. Never raises: a failure here must not
+    cost the advisory run, so it is logged to stderr and 0 is returned (or the
+    count of any successfully collected samples).
+    """
+    samples: list[CountySample] = []
+    try:
+        for page_slug, station_code in MONTEREY_PAGES.items():
+            url = f"{MONTEREY_BASE_URL}/{page_slug}.htm"
+            try:
+                resp = client.get(url, headers={"User-Agent": _BROWSER_UA}, timeout=30.0)
+                resp.raise_for_status()
+                html = resp.content.decode("cp1252", errors="replace")
+                readings = _monterey_parse_page(html)
+                if not readings:
+                    print(
+                        f"  [Monterey samples] no readings parsed from {url}",
+                        file=sys.stderr,
+                    )
+                    continue
+                beach_id, _ = resolver.resolve_by_station_code("Monterey", station_code)
+                for r in readings:
+                    limit = MONTEREY_LIMITS.get(r.analyte)
+                    exceeds = (r.value > limit) if limit is not None else False
+                    samples.append(
+                        CountySample(
+                            county="Monterey",
+                            area=station_code,
+                            sample_date=r.sample_date,
+                            analyte=r.analyte,
+                            value=r.value,
+                            exceeds_limit=exceeds,
+                            source_url=url,
+                            station_code=station_code,
+                            beach_id=beach_id,
+                        )
+                    )
+            except Exception as e:
+                print(
+                    f"  [Monterey samples] failed for {page_slug} ({url}): {e}",
+                    file=sys.stderr,
+                )
+                continue
+    except Exception as e:
+        print(f"  [Monterey samples] failed: {e}", file=sys.stderr)
+        return 0
+
+    _COLLECTED_SAMPLES.extend(samples)
+    print(f"  [Monterey samples] {len(samples)} samples collected across Monterey County")
+    return len(samples)
+
+
 def persist_samples(
     samples: list[CountySample],
     curated_dir: Path,
@@ -2726,11 +2912,7 @@ BEST_EFFORT_COUNTIES: dict[str, list[str]] = {}
 # Counties with no public posting source at all. Reported (so the gap is
 # visible in county_advisories_report.json) but never scraped, never counted
 # toward the scraper gate, and never authoritative.
-NO_SOURCE_COUNTIES: dict[str, str] = {
-    # Reported through the State Water Board until 2026-08-25; the state routes pick
-    # it up with no code change if the county resumes. Hotline: 831-755-4599.
-    "Monterey": "no public posting source (hotline only); state reporting stopped 2026-08-25",
-}
+NO_SOURCE_COUNTIES: dict[str, str] = {}
 
 
 def main() -> int:
@@ -2875,6 +3057,21 @@ def main() -> int:
         if not args.only or "orange" in args.only.lower():
             print("Fetching Orange County lab results ...")
             fetch_orange_county_samples(client, resolver)
+
+        if not args.only or "monterey" in args.only.lower():
+            print("Fetching Monterey County lab results ...")
+            monterey_count = fetch_monterey_samples(client, resolver)
+            reports.append(
+                CountyReport(
+                    county="Monterey",
+                    success=monterey_count > 0,
+                    last_attempted_at=datetime.now(timezone.utc).isoformat(),
+                    source_url=MONTEREY_BASE_URL,
+                    stations_in_lookup=len(resolver._beach_name_lookup.get("Monterey", {})),
+                    samples_collected=monterey_count,
+                    error=None if monterey_count > 0 else "no Monterey samples collected",
+                )
+            )
 
     for county_name, reason in NO_SOURCE_COUNTIES.items():
         if args.only and args.only.lower() not in county_name.lower():

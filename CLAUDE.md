@@ -737,7 +737,11 @@ than parroting the last result. Necessary but not sufficient: right variance ≠
   spreadsheet; found by contents through the WordPress media API
   (`fetch_orange_county_samples`), ingested gap-only (`INGEST_COUNTIES`). Cadence ≈ 20–36 days
   between uploads — OC can drop out of the 30-day serving gate between uploads.
-  **Monterey** has no public source (hotline only); reported as `no_public_source`, not an error.
+  **Monterey** stopped uploading to the state after 2026-08-25. Since 2026-10-07 its results come
+  from the county's per-beach HTML pages (`apps.co.monterey.ca.us/CountyWebsite/health/beaches/`,
+  `fetch_monterey_samples`; 7 stations, each page holds the last 5 dates). ⚠️ The page date is
+  the sample date + 1 day, and an ND / `<10` result is stored as 10. "Monterey" is in
+  `INGEST_COUNTIES`.
 - **Advisory resolver:** `--heuristic-mode` defaults to **`suggest`** — a substring/fuzzy match
   goes to `unresolved_advisories.parquet` with `suggested_beach_id` for review, because the
   2026-10-02 review found 2 of 5 heuristic hits on the wrong beach. Add an alias row to accept

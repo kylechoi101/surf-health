@@ -183,3 +183,20 @@ def test_orange_county_is_allowlisted_and_judged_at_104():
     assert len(out) == 2
     flags = dict(zip(out["value"], out["exceeds_stv"]))
     assert flags[105.0] and not flags[10.0]
+
+
+def test_monterey_county_is_allowlisted_and_judged_at_104():
+    stations = pd.DataFrame([
+        {"beach_id": "monterey-1", "station_code": "LOP", "usepa_id": "CA4",
+         "county": "Monterey", "beach_name": "Lover's Point"},
+    ])
+    raw = pd.DataFrame([
+        _direct("monterey-1", "2026-10-06", 105.0, county="Monterey", station="LOP"),
+        _direct("monterey-1", "2026-09-29", 10.0, county="Monterey", station="LOP"),
+    ])
+    out = normalize_county_direct_samples(raw, stations, 104.0, now=pd.Timestamp("2026-10-07"))
+    assert len(out) == 2
+    assert (out["county"] == "Monterey").all()
+    flags = dict(zip(out["value"], out["exceeds_stv"]))
+    assert flags[105.0] and not flags[10.0]
+

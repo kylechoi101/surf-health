@@ -2,7 +2,7 @@
 task: monterey-samples
 worker: gemini
 created: 2026-10-07
-status: open
+status: done
 ---
 
 ## Goal
@@ -115,6 +115,7 @@ copy: never raises, logs to stderr, returns count), and `NO_SOURCE_COUNTIES["Mon
 - backend/tests/test_monterey_samples.py
 - backend/tests/test_county_direct.py
 - backend/tests/test_fetch_county_advisories.py
+- backend/tests/test_county_scrapers.py (only `test_monterey_is_a_no_source_report_not_a_scraper`)
 
 ## Allowed packages
 
@@ -146,3 +147,24 @@ Deliverable: cleanup, and all Acceptance commands pass.
 ## Corrections
 
 (appended by the PM; newest last; each entry dated)
+
+### 2026-10-07 (after phase 25, apply in phase 50)
+- `_monterey_parse_value`: the page legend says `ND = Not Detected` (below the 10/100 mL
+  detection limit). A cell reading `ND` (any case) must become **10.0**, same as `<10`; today it
+  is skipped. Add a test.
+- Remove the alias names `MONTEREY_STATIONS` and `MONTEREY_PAGE_TO_STATION`; keep only
+  `MONTEREY_PAGES` (update the test).
+
+### 2026-10-07 (after phase 50, apply in phase 75)
+- `test_county_scrapers.py::test_monterey_is_a_no_source_report_not_a_scraper` asserts the old
+  behaviour and now fails (`KeyError: 'Monterey'`). `test_county_scrapers.py` is added to
+  Allowed files for this one test only: replace it with a test that Monterey is NOT in
+  `NO_SOURCE_COUNTIES` and is NOT in `COUNTIES_FIRST_CLASS` (samples only, no advisory scrape).
+  Touch nothing else in that file.
+
+### 2026-10-07 (after phase 75, apply in phase 100)
+- In `test_county_scrapers.py`, rename `test_monterey_is_a_no_source_report_not_a_scraper` to
+  `test_monterey_is_samples_only_not_no_source` and keep its three Monterey asserts. Restore the
+  generic checks the old test had, which still guard the NO_SOURCE path for any future county:
+  `no_public_source` is a `CountyReport` field, and `main()`'s source contains
+  `no_public_source=reason` and not `error=reason`.

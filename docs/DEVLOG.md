@@ -237,3 +237,36 @@ No worker task; PM did it directly (config, DNS and dashboards, not worker-grade
 - **Email:** iCloud custom domain set up; support@, marketing@ and ceo@shorelifeca.org created. The default sending address is unchanged.
 - **SEO:** Search Console Domain property `sc-domain:shorelifeca.org` verified by DNS; sitemap submitted (919 URLs); homepage indexing requested. GitHub Pages domain verified (takeover protection).
 - **Pending:** shorelife-mobile still hard-codes the github.io host (staticData.ts, eas.json share base). The mobile session will change it after its own task, coordinating via `claude_texting.txt`. App Store Connect support URL and contact are waiting on Kyle's sign-in.
+
+## 2026-10-07: Monterey does publish results (corrects 10-02 "no public source")
+
+No worker task; PM investigation only, no code changed.
+- **The state gap is Monterey's, not ours.** BeachWatch `result.php` (County=Monterey) has nothing after 2026-08-25; nothing has been entered for Monterey in the last 30 days (`created=30` → 0 rows; `created=60` → 99). The other 13 state-routed counties have rows through late Sept/Oct. Last year Monterey had 43 Sept and 39 Oct samples, so sampling continues and only the state upload stopped. Monterey uploads in batches: the newest sample jumped 08-05 → 08-25 in one upload (first seen in the 09-03 commit).
+- **The county publishes results.** The per-beach pages on countyofmonterey.gov (Akamai 403s scripts; they open in a real browser) iframe plain HTML from `https://apps.co.monterey.ca.us/CountyWebsite/health/beaches/<page>.htm`, which is **not** bot-blocked. The 10-02 finding read the frozen `www2.co.monterey.ca.us` copies (last updated 2023) and the 403'd main site. Each page holds the last 5 sampling dates (entero / fecal / total coliform), a status line ("AS OF 10/6/2026 … IS OPEN WITHOUT RESTRICTION") and "last updated 10/6/2026". The `beaches/` index page has a county-wide status line.
+- **8 pages map to 8 stations:** sunset→SDA, spanish_bay→SPB, lovers_point→LOP, san_carlos→SCB ("Not Sampled" all five dates), del_monte→DMB (Monterey Municipal Beach), monterey_state_beach→MBH, stillwater_cove→STCO, carmel→CBOA. MSB, MSL, ZMB, SSB, VVS, PFB and MBCH have no page (guessed filenames return 404).
+- **Mirror check (Wayback, Oct 2025, 4 pages):** 19 of 19 comparable enterococcus values match the state rows. Page dates are **sample date + 1 day** (page 10/7 = state 10/06, 10/21 = 10/20, and so on). Page `<10` = state 10. The 2026 pages prefix values with `>` / `=` (e.g. `>63`, `=10`); the state rows for 2026 carry the same qualifier characters on ordinary values. The other four pages could not be checked because the Internet Archive went offline mid-check.
+- **The pages are FrontPage-era hand-edited HTML.** The header row has a broken `<FONT </td>` that swallows a date cell, so read dates by regex over the header region and value rows by HTML parser. Scratch parser: session scratchpad `parse_mty.py`.
+- **History rolls off:** a page keeps 5 dates, so each week one is lost. As of 10-07 the pages cover samples 09-08..10-05.
+
+## 2026-10-07: Monterey lab results back in (task monterey-samples)
+
+Worker: Gemini, phases 25–100 all aligned. Corrections: ND cells → 10 and alias cleanup (after
+25); one stale test asserting "Monterey = no source", replaced (after 50); its generic
+no-source asserts restored (after 75).
+- `fetch_county_advisories.py::fetch_monterey_samples` reads the 8 county pages every daily
+  run (it runs in the existing advisory-fetch step; no workflow change) and appends
+  enterococcus, fecal and total coliform to `county_direct_samples.parquet`. Monterey has its own
+  `CountyReport` entry: `samples_collected`, and `error` set when 0 samples, so an outage shows as
+  a breakage in `data_change_report.py`. Monterey left `NO_SOURCE_COUNTIES`; it is not an
+  advisory scraper.
+- `county_direct.INGEST_COUNTIES` += Monterey (gap-fill only, date-keyed).
+- **Backfill (PM, run locally and committed with the code):** +105 rows, 35 enterococcus, sample
+  dates 09-08..10-05 on 7 stations (CBOA, DMB, LOP, MBH, SDA, SPB, STCO); 0 already in
+  observations; 0 exceedances. San Carlos (SCB) shows "Not Sampled". **Not recoverable:** samples
+  between 08-26 and 09-07 (older than the pages' 5-date window, no 2026 Wayback snapshots, and Heal
+  the Bay's newest Monterey grade is 07-31). They only come back if the county resumes state
+  uploads. Still unserved: MSB, MSL, ZMB, SSB, VVS and PFB, which have no county page; the
+  Monterey EH outreach draft still covers those.
+- Acceptance (PM-run): 93 related tests, full suite 889 passed, ruff clean on CI scope, live
+  fetch 7 stations / all resolved. Local venv was missing the declared `openpyxl`; installed.
+- Worker tokens: 0.99M in, 0.13M out (+0.09M thinking).
