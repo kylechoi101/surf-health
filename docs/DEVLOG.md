@@ -270,3 +270,8 @@ no-source asserts restored (after 75).
 - Acceptance (PM-run): 93 related tests, full suite 889 passed, ruff clean on CI scope, live
   fetch 7 stations / all resolved. Local venv was missing the declared `openpyxl`; installed.
 - Worker tokens: 0.99M in, 0.13M out (+0.09M thinking).
+- **Outcome (daily refresh run 37669358319, push-triggered, success):** the pipeline merged
+  +35 Monterey samples into observations; the run's own scrape reached the county pages from
+  the GitHub runner (105 samples, report `success: true`). Forecast 2026-10-07: **7 of 14 Monterey
+  production beaches served** (CBOA, DMB, LOP, MBH, SDA, SPB, STCO; last sampled 10-05; all Low,
+  `logit-lookup-offset-v2`). shorelifeca.org `data/beaches.json` shows LOP last sampled 10-05.
