@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     cors_allowed_origins: str = (
         "http://localhost:3000,"
         "http://127.0.0.1:3000,"
+        "https://shorelifeca.org,"
+        "https://www.shorelifeca.org,"
         "https://kylechoi101.github.io"
     )
 

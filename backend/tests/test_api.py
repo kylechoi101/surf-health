@@ -3,6 +3,7 @@ from datetime import date
 
 os.environ["PREFERRED_REPOSITORY"] = "fixture"
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.api import routes
@@ -112,9 +113,8 @@ def test_system_health_returns_503_when_pipeline_stale(monkeypatch):
     monkeypatch.setattr(r, "build_repository", original_build)
 
 
-def test_cors_allows_public_web_origin_without_wildcard():
-    origin = "https://kylechoi101.github.io"
-
+@pytest.mark.parametrize("origin", ["https://shorelifeca.org", "https://kylechoi101.github.io"])
+def test_cors_allows_public_web_origin_without_wildcard(origin):
     response = client.get("/system/health", headers={"Origin": origin})
 
     assert response.headers["access-control-allow-origin"] == origin
