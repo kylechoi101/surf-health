@@ -1,9 +1,9 @@
 {
-  "pipeline_freshness": "2026-10-08T21:16:32+00:00",
+  "pipeline_freshness": "2026-10-09T20:45:39+00:00",
   "source_freshness": {
-    "beaches": "2026-10-08T21:16:32+00:00",
-    "observations": "2026-10-08T21:16:32+00:00",
-    "advisories": "2026-10-08T21:16:32+00:00"
+    "beaches": "2026-10-09T20:45:39+00:00",
+    "observations": "2026-10-09T20:45:39+00:00",
+    "advisories": "2026-10-09T20:45:39+00:00"
   },
   "model_registry": {
     "production_model": "xgb-undersample-ensemble-curated-v0",
@@ -614,24 +614,19 @@
     }
   },
   "scraper_gate": {
-    "generated_at": "2026-10-08T21:18:25.373623+00:00",
+    "generated_at": "2026-10-09T20:47:34.392466+00:00",
     "passed": true,
     "hard_failed": false,
-    "total_scraped": 80,
-    "unresolved_total": 5,
-    "unresolved_unexpected": 1,
+    "total_scraped": 78,
+    "unresolved_total": 4,
+    "unresolved_unexpected": 0,
     "unresolved_expected": 4,
-    "unresolved_ratio": 0.0125,
+    "unresolved_ratio": 0.0,
     "absolute_floor": 5,
     "hard_floor": 15,
     "ratio_threshold": 0.1,
     "blockers": [],
-    "unexpected_names": [
-      {
-        "county": "Orange",
-        "name": "Dana Point - From 75 feet upcoast to 75 feet downcoast of the San Juan Creek at Doheny State Beach"
-      }
-    ],
+    "unexpected_names": [],
     "expected_names": [
       {
         "county": "East Bay Parks District",
@@ -663,11 +658,11 @@
     },
     "window_days": 365,
     "prior_strength": 5,
-    "forecast_date": "2026-10-08",
-    "rows": 487,
-    "posted": 34,
-    "persistence_floored": 15,
-    "applied_at": "2026-10-08T21:27:55.941107+00:00",
+    "forecast_date": "2026-10-09",
+    "rows": 467,
+    "posted": 35,
+    "persistence_floored": 9,
+    "applied_at": "2026-10-09T20:57:34.186117+00:00",
     "logit": {
       "features": [
         "R",
@@ -678,226 +673,226 @@
         "R_ddpcr"
       ],
       "coefficients": {
-        "intercept": -0.22709308406852477,
-        "R": 0.31617681242313456,
-        "RF": 0.517210317978094,
-        "W": 0.7198174493013016,
-        "S": 0.33803441779759696,
-        "ddpcr": 0.10179958410074516,
-        "R_ddpcr": 0.6544952900546204
+        "intercept": -0.2265118341429508,
+        "R": 0.3156794926031362,
+        "RF": 0.5191827970539586,
+        "W": 0.7196030899000666,
+        "S": 0.33770289202417825,
+        "ddpcr": 0.09962650939649109,
+        "R_ddpcr": 0.6533118561108172
       },
-      "train_rows": 114040,
+      "train_rows": 114171,
       "rain_coverage": 1.0,
-      "mean_p_exceed_raw": 0.0724340308555595,
-      "mean_p_exceed_lookup": 0.11223389972774873,
-      "band_changes_vs_lookup": 49
+      "mean_p_exceed_raw": 0.07106559664408901,
+      "mean_p_exceed_lookup": 0.1116549686790293,
+      "band_changes_vs_lookup": 45
     },
     "live": {
       "versions": [
         "logit-lookup-offset-v1",
         "logit-lookup-offset-v2"
       ],
-      "served_days": 11,
+      "served_days": 12,
       "first_served": "2026-09-28",
       "forward_1_3d": {
-        "n_pairs": 958,
-        "n_positive": 97,
-        "base_rate": 0.1013,
-        "brier": 0.0687,
-        "brier_flat_base_rate": 0.091,
-        "aucpr": 0.5409,
-        "auroc": 0.8354,
-        "sensitivity_at_spec_0_87": 0.6289,
-        "within_beach_auroc": 0.3464,
+        "n_pairs": 1132,
+        "n_positive": 109,
+        "base_rate": 0.0963,
+        "brier": 0.0676,
+        "brier_flat_base_rate": 0.087,
+        "aucpr": 0.5044,
+        "auroc": 0.826,
+        "sensitivity_at_spec_0_87": 0.6239,
+        "within_beach_auroc": 0.3415,
         "reportable": false,
         "head_to_head": {
           "served": {
-            "n_pairs": 656,
-            "n_positive": 70,
-            "base_rate": 0.1067,
-            "brier": 0.0748,
-            "brier_flat_base_rate": 0.0953,
-            "aucpr": 0.54,
-            "auroc": 0.8349,
-            "sensitivity_at_spec_0_87": 0.6429,
-            "within_beach_auroc": 0.375
+            "n_pairs": 762,
+            "n_positive": 79,
+            "base_rate": 0.1037,
+            "brier": 0.0746,
+            "brier_flat_base_rate": 0.0929,
+            "aucpr": 0.5058,
+            "auroc": 0.8232,
+            "sensitivity_at_spec_0_87": 0.5949,
+            "within_beach_auroc": 0.3429
           },
-          "n_pairs": 656,
+          "n_pairs": 762,
           "reportable": false,
           "p_exceed_lookup": {
-            "n_pairs": 656,
-            "n_positive": 70,
-            "base_rate": 0.1067,
-            "brier": 0.0774,
-            "brier_flat_base_rate": 0.0953,
-            "aucpr": 0.5168,
-            "auroc": 0.8236,
-            "sensitivity_at_spec_0_87": 0.6143,
-            "within_beach_auroc": 0.392,
+            "n_pairs": 762,
+            "n_positive": 79,
+            "base_rate": 0.1037,
+            "brier": 0.0773,
+            "brier_flat_base_rate": 0.0929,
+            "aucpr": 0.484,
+            "auroc": 0.8113,
+            "sensitivity_at_spec_0_87": 0.5443,
+            "within_beach_auroc": 0.3952,
             "ci": {
               "within_beach_auroc": [
-                -0.2151,
-                0.2324
+                -0.1253,
+                0.2124
               ],
               "auroc": [
-                -0.046,
-                0.0165
+                -0.0429,
+                0.0131
               ],
               "brier": [
-                -0.003,
-                0.0085
+                -0.0021,
+                0.0083
               ]
             }
           },
           "p_exceed_ml": {
-            "n_pairs": 656,
-            "n_positive": 70,
-            "base_rate": 0.1067,
-            "brier": 0.0743,
-            "brier_flat_base_rate": 0.0953,
-            "aucpr": 0.4372,
-            "auroc": 0.8151,
-            "sensitivity_at_spec_0_87": 0.3714,
-            "within_beach_auroc": 0.3295,
+            "n_pairs": 762,
+            "n_positive": 79,
+            "base_rate": 0.1037,
+            "brier": 0.0747,
+            "brier_flat_base_rate": 0.0929,
+            "aucpr": 0.4073,
+            "auroc": 0.804,
+            "sensitivity_at_spec_0_87": 0.3291,
+            "within_beach_auroc": 0.3667,
             "ci": {
               "within_beach_auroc": [
-                -0.2279,
-                0.0867
+                -0.1287,
+                0.1627
               ],
               "auroc": [
-                -0.0514,
-                0.0068
+                -0.0491,
+                0.0102
               ],
               "brier": [
-                -0.0064,
-                0.0049
+                -0.0053,
+                0.0051
               ]
             }
           },
           "p_exceed_persistence": {
-            "n_pairs": 656,
-            "n_positive": 70,
-            "base_rate": 0.1067,
-            "brier": 0.1144,
-            "brier_flat_base_rate": 0.0953,
-            "aucpr": 0.3126,
-            "auroc": 0.7169,
-            "sensitivity_at_spec_0_87": 0.4714,
-            "within_beach_auroc": 0.3693,
+            "n_pairs": 762,
+            "n_positive": 79,
+            "base_rate": 0.1037,
+            "brier": 0.1086,
+            "brier_flat_base_rate": 0.0929,
+            "aucpr": 0.3041,
+            "auroc": 0.7041,
+            "sensitivity_at_spec_0_87": 0.443,
+            "within_beach_auroc": 0.3762,
             "ci": {
               "within_beach_auroc": [
-                -0.2079,
-                0.1605
+                -0.1141,
+                0.1724
               ],
               "auroc": [
-                -0.1815,
-                -0.0576
+                -0.1779,
+                -0.058
               ],
               "brier": [
-                0.0234,
-                0.0576
+                0.02,
+                0.0455
               ]
             }
           }
         }
       },
       "same_day": {
-        "n_pairs": 631,
-        "n_positive": 85,
-        "base_rate": 0.1347,
-        "brier": 0.085,
-        "brier_flat_base_rate": 0.1166,
-        "aucpr": 0.5781,
-        "auroc": 0.8193,
-        "sensitivity_at_spec_0_87": 0.5647,
-        "within_beach_auroc": 0.3404,
+        "n_pairs": 738,
+        "n_positive": 99,
+        "base_rate": 0.1341,
+        "brier": 0.0911,
+        "brier_flat_base_rate": 0.1162,
+        "aucpr": 0.5219,
+        "auroc": 0.7812,
+        "sensitivity_at_spec_0_87": 0.4848,
+        "within_beach_auroc": 0.3251,
         "reportable": false,
         "head_to_head": {
           "served": {
-            "n_pairs": 398,
-            "n_positive": 59,
-            "base_rate": 0.1482,
-            "brier": 0.1002,
-            "brier_flat_base_rate": 0.1263,
-            "aucpr": 0.5539,
-            "auroc": 0.7885,
-            "sensitivity_at_spec_0_87": 0.5424,
-            "within_beach_auroc": 0.4392
+            "n_pairs": 441,
+            "n_positive": 70,
+            "base_rate": 0.1587,
+            "brier": 0.1143,
+            "brier_flat_base_rate": 0.1335,
+            "aucpr": 0.4997,
+            "auroc": 0.7385,
+            "sensitivity_at_spec_0_87": 0.4571,
+            "within_beach_auroc": 0.3807
           },
-          "n_pairs": 398,
+          "n_pairs": 441,
           "reportable": false,
           "p_exceed_lookup": {
-            "n_pairs": 398,
-            "n_positive": 59,
-            "base_rate": 0.1482,
-            "brier": 0.1033,
-            "brier_flat_base_rate": 0.1263,
-            "aucpr": 0.5513,
-            "auroc": 0.7782,
-            "sensitivity_at_spec_0_87": 0.6271,
-            "within_beach_auroc": 0.5946,
+            "n_pairs": 441,
+            "n_positive": 70,
+            "base_rate": 0.1587,
+            "brier": 0.1145,
+            "brier_flat_base_rate": 0.1335,
+            "aucpr": 0.5015,
+            "auroc": 0.7313,
+            "sensitivity_at_spec_0_87": 0.5286,
+            "within_beach_auroc": 0.5568,
             "ci": {
               "within_beach_auroc": [
-                -0.0266,
-                0.3098
+                0.0451,
+                0.3214
               ],
               "auroc": [
-                -0.0457,
-                0.0184
+                -0.0382,
+                0.017
               ],
               "brier": [
-                -0.0041,
-                0.0095
+                -0.006,
+                0.0065
               ]
             }
           },
           "p_exceed_ml": {
-            "n_pairs": 398,
-            "n_positive": 59,
-            "base_rate": 0.1482,
-            "brier": 0.0934,
-            "brier_flat_base_rate": 0.1263,
-            "aucpr": 0.5409,
-            "auroc": 0.7973,
-            "sensitivity_at_spec_0_87": 0.4746,
-            "within_beach_auroc": 0.4797,
+            "n_pairs": 441,
+            "n_positive": 70,
+            "base_rate": 0.1587,
+            "brier": 0.1068,
+            "brier_flat_base_rate": 0.1335,
+            "aucpr": 0.4945,
+            "auroc": 0.7622,
+            "sensitivity_at_spec_0_87": 0.4,
+            "within_beach_auroc": 0.5057,
             "ci": {
               "within_beach_auroc": [
-                -0.125,
-                0.1632
+                -0.0141,
+                0.2647
               ],
               "auroc": [
-                -0.0325,
-                0.055
+                -0.0201,
+                0.063
               ],
               "brier": [
-                -0.0176,
-                0.0032
+                -0.0169,
+                0.0013
               ]
             }
           },
           "p_exceed_persistence": {
-            "n_pairs": 398,
-            "n_positive": 59,
-            "base_rate": 0.1482,
-            "brier": 0.1717,
-            "brier_flat_base_rate": 0.1263,
-            "aucpr": 0.3126,
-            "auroc": 0.7289,
-            "sensitivity_at_spec_0_87": 0.4746,
-            "within_beach_auroc": 0.3378,
+            "n_pairs": 441,
+            "n_positive": 70,
+            "base_rate": 0.1587,
+            "brier": 0.1741,
+            "brier_flat_base_rate": 0.1335,
+            "aucpr": 0.2953,
+            "auroc": 0.6859,
+            "sensitivity_at_spec_0_87": 0.4,
+            "within_beach_auroc": 0.3409,
             "ci": {
               "within_beach_auroc": [
-                -0.2144,
-                -0.0033
+                -0.1393,
+                0.0617
               ],
               "auroc": [
-                -0.1119,
-                0.0001
+                -0.1088,
+                0.0066
               ],
               "brier": [
-                0.0527,
-                0.0952
+                0.0383,
+                0.0804
               ]
             }
           }
@@ -970,40 +965,40 @@
   },
   "served_metrics": {
     "definition": "Served p_exceed from forecast_history.parquet (final issue per beach-day) scored against observations.parquet worst-sample-per-day; same_day = outcome on the forecast day, forward = first outcome in D+1..D+3 (provably unseen by the forecast).",
-    "history_rows": 96791,
-    "final_forecast_rows": 61229,
-    "history_span_days": 169,
-    "verifiable_fraction": 0.5167,
+    "history_rows": 97258,
+    "final_forecast_rows": 61696,
+    "history_span_days": 170,
+    "verifiable_fraction": 0.5231,
     "window_90d": {
       "same_day": {
-        "n_pairs": 6067,
-        "n_positive": 766,
-        "base_rate": 0.1263,
-        "brier": 0.0776,
-        "brier_flat_base_rate": 0.1103,
-        "aucpr": 0.5351,
-        "auroc": 0.8697,
-        "sensitivity_at_spec_0_87": 0.6984,
-        "within_beach_auroc": 0.4813,
+        "n_pairs": 6207,
+        "n_positive": 777,
+        "base_rate": 0.1252,
+        "brier": 0.0779,
+        "brier_flat_base_rate": 0.1095,
+        "aucpr": 0.5266,
+        "auroc": 0.8656,
+        "sensitivity_at_spec_0_87": 0.6885,
+        "within_beach_auroc": 0.4809,
         "band_operating": {
-          "n_pairs": 6067,
-          "exceedances": 766,
-          "sensitivity": 0.7572,
-          "specificity": 0.8461,
-          "exceedances_shown_low": 186,
-          "false_alarms": 816
+          "n_pairs": 6207,
+          "exceedances": 777,
+          "sensitivity": 0.7477,
+          "specificity": 0.8466,
+          "exceedances_shown_low": 196,
+          "false_alarms": 833
         }
       },
       "forward_1_3d": {
-        "n_pairs": 15397,
-        "n_positive": 1262,
-        "base_rate": 0.082,
-        "brier": 0.064,
-        "brier_flat_base_rate": 0.0752,
-        "aucpr": 0.3501,
-        "auroc": 0.8095,
-        "sensitivity_at_spec_0_87": 0.5959,
-        "within_beach_auroc": 0.4729
+        "n_pairs": 15566,
+        "n_positive": 1269,
+        "base_rate": 0.0815,
+        "brier": 0.0637,
+        "brier_flat_base_rate": 0.0749,
+        "aucpr": 0.3504,
+        "auroc": 0.8106,
+        "sensitivity_at_spec_0_87": 0.591,
+        "within_beach_auroc": 0.4794
       },
       "calibration_bins": [
         {
@@ -1011,87 +1006,87 @@
             0.0,
             0.05
           ],
-          "n": 10235,
-          "predicted_mean": 0.0284,
-          "actual_rate": 0.0223
+          "n": 10319,
+          "predicted_mean": 0.0285,
+          "actual_rate": 0.0217
         },
         {
           "p_range": [
             0.05,
             0.1
           ],
-          "n": 5552,
-          "predicted_mean": 0.0652,
-          "actual_rate": 0.0506
+          "n": 5648,
+          "predicted_mean": 0.0653,
+          "actual_rate": 0.0512
         },
         {
           "p_range": [
             0.1,
             0.2
           ],
-          "n": 1317,
-          "predicted_mean": 0.1397,
-          "actual_rate": 0.1169
+          "n": 1373,
+          "predicted_mean": 0.1399,
+          "actual_rate": 0.1194
         },
         {
           "p_range": [
             0.2,
             0.3
           ],
-          "n": 685,
-          "predicted_mean": 0.2526,
-          "actual_rate": 0.2
+          "n": 691,
+          "predicted_mean": 0.2521,
+          "actual_rate": 0.2026
         },
         {
           "p_range": [
             0.3,
             0.7
           ],
-          "n": 1981,
-          "predicted_mean": 0.3681,
-          "actual_rate": 0.2731
+          "n": 2028,
+          "predicted_mean": 0.3666,
+          "actual_rate": 0.2673
         },
         {
           "p_range": [
             0.7,
             1.0
           ],
-          "n": 264,
-          "predicted_mean": 0.9033,
-          "actual_rate": 0.6326
+          "n": 255,
+          "predicted_mean": 0.8999,
+          "actual_rate": 0.6431
         }
       ]
     },
     "window_30d": {
       "same_day": {
-        "n_pairs": 1742,
-        "n_positive": 232,
-        "base_rate": 0.1332,
-        "brier": 0.0872,
-        "brier_flat_base_rate": 0.1154,
-        "aucpr": 0.5561,
-        "auroc": 0.8427,
-        "sensitivity_at_spec_0_87": 0.5862,
-        "within_beach_auroc": 0.4807,
+        "n_pairs": 1804,
+        "n_positive": 224,
+        "base_rate": 0.1242,
+        "brier": 0.0863,
+        "brier_flat_base_rate": 0.1088,
+        "aucpr": 0.5278,
+        "auroc": 0.8257,
+        "sensitivity_at_spec_0_87": 0.5625,
+        "within_beach_auroc": 0.4693,
         "band_operating": {
-          "n_pairs": 1742,
-          "exceedances": 232,
-          "sensitivity": 0.7586,
-          "specificity": 0.7781,
-          "exceedances_shown_low": 56,
-          "false_alarms": 335
+          "n_pairs": 1804,
+          "exceedances": 224,
+          "sensitivity": 0.7232,
+          "specificity": 0.7804,
+          "exceedances_shown_low": 62,
+          "false_alarms": 347
         }
       },
       "forward_1_3d": {
-        "n_pairs": 4009,
-        "n_positive": 364,
-        "base_rate": 0.0908,
-        "brier": 0.0717,
-        "brier_flat_base_rate": 0.0826,
-        "aucpr": 0.4091,
-        "auroc": 0.8006,
-        "sensitivity_at_spec_0_87": 0.4863,
-        "within_beach_auroc": 0.4811
+        "n_pairs": 4267,
+        "n_positive": 379,
+        "base_rate": 0.0888,
+        "brier": 0.072,
+        "brier_flat_base_rate": 0.0809,
+        "aucpr": 0.3821,
+        "auroc": 0.7888,
+        "sensitivity_at_spec_0_87": 0.4512,
+        "within_beach_auroc": 0.5062
       },
       "calibration_bins": [
         {
@@ -1099,58 +1094,58 @@
             0.0,
             0.05
           ],
-          "n": 2689,
-          "predicted_mean": 0.0277,
-          "actual_rate": 0.0245
+          "n": 2862,
+          "predicted_mean": 0.0274,
+          "actual_rate": 0.0255
         },
         {
           "p_range": [
             0.05,
             0.1
           ],
-          "n": 1047,
-          "predicted_mean": 0.0666,
-          "actual_rate": 0.0688
+          "n": 1100,
+          "predicted_mean": 0.0672,
+          "actual_rate": 0.0709
         },
         {
           "p_range": [
             0.1,
             0.2
           ],
-          "n": 491,
-          "predicted_mean": 0.1394,
-          "actual_rate": 0.1181
+          "n": 547,
+          "predicted_mean": 0.1398,
+          "actual_rate": 0.1207
         },
         {
           "p_range": [
             0.2,
             0.3
           ],
-          "n": 266,
-          "predicted_mean": 0.2499,
-          "actual_rate": 0.1579
+          "n": 260,
+          "predicted_mean": 0.2475,
+          "actual_rate": 0.1692
         },
         {
           "p_range": [
             0.3,
             0.7
           ],
-          "n": 635,
-          "predicted_mean": 0.3604,
-          "actual_rate": 0.1858
+          "n": 670,
+          "predicted_mean": 0.3549,
+          "actual_rate": 0.1672
         },
         {
           "p_range": [
             0.7,
             1.0
           ],
-          "n": 142,
-          "predicted_mean": 0.8927,
-          "actual_rate": 0.7113
+          "n": 136,
+          "predicted_mean": 0.8944,
+          "actual_rate": 0.7059
         }
       ]
     },
-    "generated_at": "2026-10-08T21:27:40.695352+00:00"
+    "generated_at": "2026-10-09T20:57:22.454461+00:00"
   },
   "release_gate": {
     "enforced": false,
@@ -1161,11 +1156,11 @@
   },
   "ml_training": {
     "ran": false,
-    "skipped_at": "2026-10-08T21:27:40+00:00",
+    "skipped_at": "2026-10-09T20:57:22+00:00",
     "registry_carried_from": "2026-10-04T20:16:43.699787+00:00"
   },
   "forecast_audit": {
-    "generated_at": "2026-10-08T21:28:07.701579+00:00",
+    "generated_at": "2026-10-09T20:57:46.286086+00:00",
     "agreement_rate": 1.0,
     "acute_agreement_rate": 1.0,
     "acute_advised_beaches": 30,
@@ -1179,8 +1174,8 @@
       "stale": 0,
       "unknown_duration": 0
     },
-    "false_positives": 33,
-    "active_advisories": 34,
+    "false_positives": 24,
+    "active_advisories": 35,
     "risk_threshold": 0.2
   }
 }
