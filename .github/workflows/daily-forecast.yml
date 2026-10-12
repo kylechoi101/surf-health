@@ -2,6 +2,11 @@ name: Daily forecast refresh
 
 on:
   schedule:
+    # FALLBACK only. The on-time trigger is cron-job.org, which dispatches this
+    # workflow at 9:00 AM America/Los_Angeles with scheduled=true (2026-10-12).
+    # GitHub starts this cron 3.5-6.75 h late (10-08..10-12 started 19:41-22:42
+    # UTC), which aged the published forecast past the apps' 24 h notice every
+    # day. The `gate` job skips it once today's forecast is already committed.
     - cron: '0 16 * * *'   # 9 AM PDT / 8 AM PST — gives data.ca.gov BeachWatch
                             # ETL several hours of buffer after overnight refresh
   push:
@@ -30,6 +35,13 @@ on:
           is kept only as a challenger. full_comparison implies this.
         type: boolean
         default: false
+      scheduled:
+        description: >-
+          Set by the cron-job.org 9 AM trigger. Like the GitHub cron, a scheduled
+          run is skipped when today's forecast is already committed. Leave off for
+          a manual run, which always runs.
+        type: boolean
+        default: false
 
 # Never kill a mid-flight training/commit run — let it finish and queue the
 # next one. cancel-in-progress: false is deliberate: a cancelled run would
@@ -39,7 +51,33 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  gate:
+    # Two schedulers fire this workflow (cron-job.org on time, GitHub's cron
+    # hours late). Whichever lands second must not publish a second forecast
+    # for the same day. Manual and push runs always go through.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      run: ${{ steps.check.outputs.run }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SCHEDULED: ${{ github.event_name == 'schedule' || github.event.inputs.scheduled == 'true' }}
+        run: |
+          TODAY=$(TZ=America/Los_Angeles date +%Y-%m-%d)
+          if [ "$SCHEDULED" = "true" ] && gh api "repos/${{ github.repository }}/commits?sha=main&per_page=100" \
+              --jq '.[].commit.message' | grep -q "^chore: daily forecast refresh ${TODAY}"; then
+            echo "::notice::Today's forecast (${TODAY}) is already published; skipping this scheduled run."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
   refresh:
+    needs: gate
+    if: ${{ needs.gate.outputs.run == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 170
     permissions:
@@ -666,7 +704,8 @@ jobs:
   # issue, and closes it — so the issue tracker reflects the live pipeline state.
   notify-recovery:
     needs: refresh
-    if: ${{ success() }}
+    # A gate-skipped refresh is not a recovery; only close issues on a real run.
+    if: ${{ success() && needs.refresh.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       # contents:read so github-script can read the repo; issues:write to
