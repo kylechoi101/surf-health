@@ -1,16 +1,16 @@
 {
-  "generated_at": "2026-10-13T04:02:17.234983+00:00",
-  "forecast_date": "2026-10-12",
+  "generated_at": "2026-10-13T16:28:32.776766+00:00",
+  "forecast_date": "2026-10-13",
   "model_version": "logit-lookup-offset-v2",
   "risk_threshold": 0.2,
-  "total_beaches": 381,
+  "total_beaches": 382,
   "active_advisories": 84,
-  "agreement_rate": 0.905,
+  "agreement_rate": 1.0,
   "pool_metrics": {
     "acute": {
       "advised_beaches": 83,
-      "model_flagged": 75,
-      "agreement_rate": 0.904
+      "model_flagged": 83,
+      "agreement_rate": 1.0
     },
     "closure": {
       "advised_beaches": 1,
@@ -34,77 +34,20 @@
     }
   },
   "false_negatives": {
-    "count": 8,
+    "count": 0,
     "description": "Active advisory but model says Low/Moderate",
     "by_pool": {
-      "acute": 8,
+      "acute": 0,
       "closure": 0,
       "chronic": 0,
       "stale": 0,
       "unknown_duration": 0
     },
-    "worst_acute": [
-      {
-        "beach_id": "ca549911-east-bay-parks-district-crown-beach-alameda-co-crown-sunset-rd",
-        "risk_band": "Low",
-        "p_exceed": 0.049,
-        "pool": "acute",
-        "advisory_age_days": 0
-      },
-      {
-        "beach_id": "ca549911-east-bay-parks-district-crown-beach-alameda-co-crown-bath-house",
-        "risk_band": "Low",
-        "p_exceed": 0.052,
-        "pool": "acute",
-        "advisory_age_days": 0
-      },
-      {
-        "beach_id": "ca549911-east-bay-parks-district-crown-beach-alameda-co-crown-2001-shoreline-dr",
-        "risk_band": "Low",
-        "p_exceed": 0.082,
-        "pool": "acute",
-        "advisory_age_days": 0
-      },
-      {
-        "beach_id": "ca549911-east-bay-parks-district-crown-beach-alameda-co-crown-windsurfer-corner",
-        "risk_band": "Low",
-        "p_exceed": 0.087,
-        "pool": "acute",
-        "advisory_age_days": 0
-      },
-      {
-        "beach_id": "ca549911-east-bay-parks-district-crown-beach-alameda-co-crown-bird-sanctuary",
-        "risk_band": "Low",
-        "p_exceed": 0.1,
-        "pool": "acute",
-        "advisory_age_days": 0
-      },
-      {
-        "beach_id": "ca534500-san-mateo-gazos-creek-access-gazos-creek-access",
-        "risk_band": "Low",
-        "p_exceed": 0.119,
-        "pool": "acute",
-        "advisory_age_days": 0
-      },
-      {
-        "beach_id": "ca826873-east-bay-parks-district-keller-beach-contra-costa-co-keller-south-beach",
-        "risk_band": "Low",
-        "p_exceed": 0.147,
-        "pool": "acute",
-        "advisory_age_days": 0
-      },
-      {
-        "beach_id": "ca781317-san-mateo-marlin-park-foster-city-marlin-park",
-        "risk_band": "Low",
-        "p_exceed": 0.178,
-        "pool": "acute",
-        "advisory_age_days": 0
-      }
-    ],
+    "worst_acute": [],
     "worst_chronic": []
   },
   "false_positives": {
-    "count": 48,
+    "count": 50,
     "description": "Model says High/VeryHigh but no active advisory",
     "worst": [
       {
@@ -117,133 +60,133 @@
       {
         "beach_id": "ca104746-san-diego-tijuana-slough-national-wildlife-refuge-ib-030",
         "risk_band": "Very High",
-        "p_exceed": 0.937,
+        "p_exceed": 0.941,
         "pool": "none",
         "advisory_age_days": null
       },
       {
         "beach_id": "ca211999-san-diego-mission-bay-vacation-isle-mb-205",
         "risk_band": "Very High",
-        "p_exceed": 0.865,
+        "p_exceed": 0.867,
         "pool": "none",
         "advisory_age_days": null
       },
       {
         "beach_id": "ca424988-san-diego-mission-bay-sail-bay-mb-131",
         "risk_band": "Very High",
-        "p_exceed": 0.858,
+        "p_exceed": 0.863,
         "pool": "none",
         "advisory_age_days": null
       },
       {
         "beach_id": "ca104746-san-diego-tijuana-slough-national-wildlife-refuge-ib-040",
         "risk_band": "Very High",
-        "p_exceed": 0.799,
+        "p_exceed": 0.802,
         "pool": "none",
         "advisory_age_days": null
       },
       {
         "beach_id": "ca397227-san-diego-mission-bay-campland-on-the-bay-mb-080",
         "risk_band": "Very High",
-        "p_exceed": 0.766,
+        "p_exceed": 0.77,
         "pool": "none",
         "advisory_age_days": null
       },
       {
         "beach_id": "ca809706-san-diego-border-field-state-park-ib-020",
         "risk_band": "Very High",
-        "p_exceed": 0.761,
+        "p_exceed": 0.77,
         "pool": "none",
         "advisory_age_days": null
       },
       {
         "beach_id": "ca809706-san-diego-border-field-state-park-ib-010",
         "risk_band": "Very High",
-        "p_exceed": 0.761,
+        "p_exceed": 0.77,
         "pool": "none",
         "advisory_age_days": null
       },
       {
         "beach_id": "ca575202-los-angeles-will-rogers-state-beach-smb-2-1",
         "risk_band": "High",
-        "p_exceed": 0.635,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
-        "beach_id": "ca192160-san-diego-mission-bay-mariners-basin-mb-170",
-        "risk_band": "High",
-        "p_exceed": 0.624,
+        "p_exceed": 0.653,
         "pool": "none",
         "advisory_age_days": null
       },
       {
         "beach_id": "ca246103-san-diego-mission-bay-leisure-lagoon-mb-053",
         "risk_band": "High",
-        "p_exceed": 0.623,
+        "p_exceed": 0.631,
         "pool": "none",
         "advisory_age_days": null
       },
       {
-        "beach_id": "ca377016-san-diego-mission-bay-fanuel-park-mb-120",
+        "beach_id": "ca192160-san-diego-mission-bay-mariners-basin-mb-170",
         "risk_band": "High",
-        "p_exceed": 0.601,
-        "pool": "none",
-        "advisory_age_days": null
-      },
-      {
-        "beach_id": "ca624767-san-diego-harbor-beach-oc-100",
-        "risk_band": "High",
-        "p_exceed": 0.599,
+        "p_exceed": 0.63,
         "pool": "none",
         "advisory_age_days": null
       },
       {
         "beach_id": "ca735620-los-angeles-santa-monica-state-beach-smb-3-3",
         "risk_band": "High",
-        "p_exceed": 0.591,
+        "p_exceed": 0.626,
         "pool": "none",
         "advisory_age_days": null
       },
       {
-        "beach_id": "ca839312-san-diego-baja-california-mexico-bc-030",
+        "beach_id": "ca624767-san-diego-harbor-beach-oc-100",
         "risk_band": "High",
-        "p_exceed": 0.545,
+        "p_exceed": 0.613,
+        "pool": "none",
+        "advisory_age_days": null
+      },
+      {
+        "beach_id": "ca377016-san-diego-mission-bay-fanuel-park-mb-120",
+        "risk_band": "High",
+        "p_exceed": 0.611,
         "pool": "none",
         "advisory_age_days": null
       },
       {
         "beach_id": "ca333308-san-diego-oceanside-municipal-beach-other-oc-080",
         "risk_band": "High",
-        "p_exceed": 0.541,
+        "p_exceed": 0.558,
         "pool": "none",
         "advisory_age_days": null
       },
       {
         "beach_id": "ca895390-san-diego-mission-bay-de-anza-cove-mb-070",
         "risk_band": "High",
-        "p_exceed": 0.541,
+        "p_exceed": 0.556,
+        "pool": "none",
+        "advisory_age_days": null
+      },
+      {
+        "beach_id": "ca839312-san-diego-baja-california-mexico-bc-030",
+        "risk_band": "High",
+        "p_exceed": 0.551,
         "pool": "none",
         "advisory_age_days": null
       },
       {
         "beach_id": "ca152716-san-diego-cardiff-state-beach-se-060",
         "risk_band": "High",
-        "p_exceed": 0.523,
+        "p_exceed": 0.536,
         "pool": "none",
         "advisory_age_days": null
       },
       {
         "beach_id": "ca801852-san-diego-tecolote-shores-mb-041",
         "risk_band": "High",
-        "p_exceed": 0.471,
+        "p_exceed": 0.484,
         "pool": "none",
         "advisory_age_days": null
       },
       {
-        "beach_id": "ca839312-san-diego-baja-california-mexico-bc-020",
+        "beach_id": "ca674364-los-angeles-inner-cabrillo-beach-cb-02",
         "risk_band": "High",
-        "p_exceed": 0.464,
+        "p_exceed": 0.479,
         "pool": "none",
         "advisory_age_days": null
       }
