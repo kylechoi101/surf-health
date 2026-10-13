@@ -112,3 +112,15 @@ def test_workflow_is_chained_to_the_forecast_by_its_exact_name() -> None:
 
     # A clock trigger is exactly what raced the forecast; it must not come back.
     assert not re.search(r"^\s*schedule:", health, re.M)
+
+
+def test_scraper_health_skips_gate_skipped_forecast_run() -> None:
+    health = (WORKFLOWS / "scraper-health.yml").read_text()
+    # Must query github api for the triggering run's jobs
+    assert "actions/runs/${WORKFLOW_RUN_ID}/jobs" in health or "actions/runs/${{ github.event.workflow_run.id }}/jobs" in health
+    assert "select(.name == \"refresh\")" in health or 'select(.name == \\"refresh\\")' in health
+    # Must check for skipped refresh job
+    assert 'REFRESH_CONCLUSION' in health
+    assert '[ "$REFRESH_CONCLUSION" = "skipped" ]' in health
+    # Steps must be gated on skipped output
+    assert "steps.gate_check.outputs.skipped" in health

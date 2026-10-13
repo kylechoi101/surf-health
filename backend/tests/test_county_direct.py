@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 from app.data.pipeline.cli import refresh_latest_official_sample_at
@@ -199,4 +200,78 @@ def test_monterey_county_is_allowlisted_and_judged_at_104():
     assert (out["county"] == "Monterey").all()
     flags = dict(zip(out["value"], out["exceeds_stv"]))
     assert flags[105.0] and not flags[10.0]
+
+
+def test_san_diego_county_is_allowlisted_and_ddpcr_judged_at_1413():
+    """Phase 50: ddPCR row of 1500 copies exceeds and one of 500 copies does not."""
+    stations = pd.DataFrame([
+        {"beach_id": "sd-1", "station_code": "IB-050", "usepa_id": "CA5",
+         "county": "San Diego", "beach_name": "Imperial Beach"},
+    ])
+    raw = pd.DataFrame([
+        {
+            "county": "San Diego", "beach_id": "sd-1", "area": "IB-050", "station_code": "IB-050",
+            "sample_date": pd.Timestamp("2026-10-01"), "analyte": "ENTEROCOCCUS", "value": 1500.0,
+            "exceeds_limit": True, "source_url": "https://cosdapps.sandiegocounty.gov/sdbeachinfo/",
+            "method": "ddPCR", "units": "Copies/100ml",
+        },
+        {
+            "county": "San Diego", "beach_id": "sd-1", "area": "IB-050", "station_code": "IB-050",
+            "sample_date": pd.Timestamp("2026-10-02"), "analyte": "ENTEROCOCCUS", "value": 500.0,
+            "exceeds_limit": False, "source_url": "https://cosdapps.sandiegocounty.gov/sdbeachinfo/",
+            "method": "ddPCR", "units": "Copies/100ml",
+        },
+    ])
+    out = normalize_county_direct_samples(raw, stations, 104.0, now=pd.Timestamp("2026-10-07"))
+    assert len(out) == 2
+    assert (out["county"] == "San Diego").all()
+    assert (out["method"] == "ddPCR").all()
+    assert (out["units"] == "Copies/100ml").all()
+    flags = dict(zip(out["value"], out["exceeds_stv"]))
+    # ddPCR threshold is 1413: 1500 > 1413 -> True, 500 <= 1413 -> False
+    assert flags[1500.0] is True or flags[1500.0] == np.bool_(True)
+    assert flags[500.0] is False or flags[500.0] == np.bool_(False)
+
+
+def test_san_diego_state_row_on_same_beach_id_and_date_is_never_duplicated():
+    """Phase 50: state row on the same (beach_id, date) is never duplicated."""
+    observations = pd.DataFrame([{
+        "beach_id": "sd-1", "sample_time": pd.Timestamp("2026-10-01 08:30:00"),
+        "sample_date": pd.Timestamp("2026-10-01").date(), "analyte": "enterococcus",
+        "method": "ddPCR", "units": "Copies/100ml", "value": 1500.0, "exceeds_stv": True,
+        "county": "San Diego", "station_name": "IB-050", "beach_name": "Imperial Beach",
+        "usepa_id": "CA5", "data_source": "BeachWatch.SafeToSwim",
+    }])
+    stations = pd.DataFrame([
+        {"beach_id": "sd-1", "station_code": "IB-050", "usepa_id": "CA5",
+         "county": "San Diego", "beach_name": "Imperial Beach"},
+    ])
+    direct = normalize_county_direct_samples(
+        pd.DataFrame([
+            {
+                "county": "San Diego", "beach_id": "sd-1", "area": "IB-050", "station_code": "IB-050",
+                "sample_date": pd.Timestamp("2026-10-01"), "analyte": "ENTEROCOCCUS", "value": 1500.0,
+                "exceeds_limit": True, "source_url": "https://cosdapps.sandiegocounty.gov/sdbeachinfo/",
+                "method": "ddPCR", "units": "Copies/100ml",
+            },
+            {
+                "county": "San Diego", "beach_id": "sd-1", "area": "IB-050", "station_code": "IB-050",
+                "sample_date": pd.Timestamp("2026-10-02"), "analyte": "ENTEROCOCCUS", "value": 500.0,
+                "exceeds_limit": False, "source_url": "https://cosdapps.sandiegocounty.gov/sdbeachinfo/",
+                "method": "ddPCR", "units": "Copies/100ml",
+            },
+        ]),
+        stations, 104.0, now=pd.Timestamp("2026-10-07"),
+    )
+    merged = merge_county_direct_into_observations(observations, direct)
+    # The 2026-10-01 row was already in observations; only 2026-10-02 should be added
+    assert len(merged) == 2
+    row_10_01 = merged.loc[merged["sample_date"] == pd.Timestamp("2026-10-01").date()].iloc[0]
+    assert row_10_01["data_source"] == "BeachWatch.SafeToSwim"
+    assert row_10_01["sample_time"] == pd.Timestamp("2026-10-01 08:30:00")
+
+    row_10_02 = merged.loc[merged["sample_date"] == pd.Timestamp("2026-10-02").date()].iloc[0]
+    assert row_10_02["data_source"] == DATA_SOURCE
+    assert row_10_02["value"] == 500.0
+
 

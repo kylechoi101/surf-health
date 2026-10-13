@@ -742,6 +742,14 @@ than parroting the last result. Necessary but not sufficient: right variance ≠
   `fetch_monterey_samples`; 7 stations, each page holds the last 5 dates). ⚠️ The page date is
   the sample date + 1 day, and an ND / `<10` result is stored as 10. "Monterey" is in
   `INGEST_COUNTIES`.
+- **San Diego** lab results also come direct (2026-10-12, `fetch_san_diego_samples`, county
+  OutSystems `ScreenDataSetGetSamples`). It is the first county-direct feed with mixed assays, so
+  `county_direct_samples` rows carry `method`/`units` and ddPCR is judged at 1413. Resolution is by
+  station code only.
+- **County lab-freshness alarm** (`scripts/lab_freshness_check.py`, daily): flags a county whose
+  newest enterococcus result is older than max(14 d, 3 × its usual gap). It writes
+  `system_health.json["lab_freshness"]` and keeps one `county-feed-stale` issue open while any county
+  is stale. Orange trips it between its ~monthly uploads; that is expected.
 - **Advisory resolver:** `--heuristic-mode` defaults to **`suggest`** — a substring/fuzzy match
   goes to `unresolved_advisories.parquet` with `suggested_beach_id` for review, because the
   2026-10-02 review found 2 of 5 heuristic hits on the wrong beach. Add an alias row to accept

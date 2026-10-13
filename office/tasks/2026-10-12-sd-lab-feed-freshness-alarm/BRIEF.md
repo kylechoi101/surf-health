@@ -2,7 +2,7 @@
 task: sd-lab-feed-freshness-alarm
 worker: gemini
 created: 2026-10-12
-status: open
+status: done
 ---
 
 ## Goal
@@ -117,3 +117,17 @@ Deliverable: scraper-health.yml skips a gate-skipped forecast run (with a test i
 ## Corrections
 
 (appended by the PM; newest last; each entry dated)
+
+### 2026-10-12 20:10 (PM, after phase 25)
+- `_parse_sd_samples_payload` must resolve beach_id by **station code only**. Remove the
+  `resolver.resolve_by_name("San Diego", area)` fallback: name heuristics have mis-mapped
+  postings onto the wrong beach before (see CLAUDE.md, advisory resolver), and SD station IDs
+  are authoritative. An unresolved station keeps beach_id None (normalize already drops those).
+  Update the test that covers resolution accordingly. Do this in phase 50.
+
+### 2026-10-12 20:35 (PM, after phase 75)
+- In `.github/workflows/daily-forecast.yml`, add `continue-on-error: true` to BOTH new steps
+  ("Check county lab-feed freshness" and "Alert or resolve stale county lab feeds"). The brief
+  says this alarm never fails the job; today an exception in the script or a GitHub API error
+  in github-script would fail `refresh` and block the data commit. Keep `if: always()` off the
+  alert step. Use `if: success()` (the default) so it never runs on a half-written snapshot.

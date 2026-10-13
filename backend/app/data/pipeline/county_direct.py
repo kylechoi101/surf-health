@@ -51,6 +51,14 @@ results published on county HTML pages were mirror-verified on four Oct-2025
 snapshots against state rows (19 of 19 enterococcus values identical), with
 the page date offset by +1 day from the state's sample date (stored as page date
 - 1 day) and non-detects reported as ND / <10 mapping to 10.0.
+
+San Diego County publishes lab results directly through its public OutSystems
+endpoint. Its results were mirror-verified against state-feed observations on
+the trailing 60-day window (974 of 996 overlapping station-days identical on 2026-10-12,
+with discrepancies driven by multi-assay replicates or revised non-detect sentinels).
+San Diego reports both ddPCR (copies/100mL) and culture methods (MPN/100mL, CFU/100mL);
+each row carries its own method and units so molecular assays are judged against
+1413 copies/100mL and culture against 104.
 """
 
 from __future__ import annotations
@@ -67,7 +75,7 @@ DATA_SOURCE = "CountyDirect"
 
 # Counties whose direct feed has been mirror-verified against the state route.
 # See the module docstring before adding to this set.
-INGEST_COUNTIES = frozenset({"San Francisco", "Orange", "Monterey"})
+INGEST_COUNTIES = frozenset({"San Francisco", "Orange", "Monterey", "San Diego"})
 
 # The feed reports MPN/100mL (see ``_SF_THRESHOLDS`` in
 # scripts/fetch_county_advisories.py). Units matter: ``compute_exceeds_stv`` is
@@ -160,8 +168,16 @@ def normalize_county_direct_samples(
     if frame.empty:
         return pd.DataFrame(columns=_OBSERVATION_COLUMNS)
 
-    frame["units"] = UNITS
-    frame["method"] = METHOD
+    if "units" in frame.columns:
+        frame["units"] = frame["units"].fillna(UNITS)
+    else:
+        frame["units"] = UNITS
+
+    if "method" in frame.columns:
+        frame["method"] = frame["method"].fillna(METHOD)
+    else:
+        frame["method"] = METHOD
+
     frame["exceeds_stv"] = compute_exceeds_stv(
         frame["value"], frame["method"], frame["units"], stv_threshold
     )

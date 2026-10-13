@@ -167,6 +167,8 @@ class CountySample:
     source_url: str
     station_code: str | None = None
     beach_id: str | None = None  # filled in by the resolver, mirrors CountyAdvisory
+    method: str | None = None
+    units: str | None = None
 
 
 # Module-level collector so adding samples doesn't require changing the
@@ -555,7 +557,11 @@ SD_MODULE_INFO_URL = f"{SD_BASE_URL}/moduleservices/moduleinfo"
 SD_EVENTS_URL = (
     f"{SD_BASE_URL}/screenservices/CoSD_Beach_Water_CW/MainFlow/BlockNotification/ScreenDataSetGetEventsList"
 )
+SD_SAMPLES_URL = (
+    f"{SD_BASE_URL}/screenservices/CoSD_Beach_Water_CW/MainFlow/SampleBlock/ScreenDataSetGetSamples"
+)
 SD_DEFAULT_API_VERSION = "7ZgLP6EfhAWhyK1_ilFFoA"
+SD_SAMPLES_API_VERSION = "L1afk6NDVnwatxTYNUtNLA"
 SD_CSRF_TOKEN = "T6C+9iB49TLra4jEsMeSckDMNhQ="
 
 _SD_API_VERSION_RE = re.compile(
@@ -671,6 +677,87 @@ def _parse_sd_events_payload(
     return advisories, None
 
 
+def _parse_sd_samples_payload(
+    data: dict,
+    resolver: StationResolver | None = None,
+) -> list[CountySample]:
+    """Pure parser for San Diego County GetSamples JSON payload.
+
+    Keeps Enterococcus only, resolves beach_id when resolver provided,
+    preserves method and units per row, stores '<' qualifier values as the reported number,
+    and judges exceeds_limit: ddPCR > 1413, culture > 104.
+    If versionInfo.hasApiVersionChanged is True or exception is present, returns [].
+    """
+    version_info = data.get("versionInfo", {})
+    if version_info.get("hasApiVersionChanged"):
+        return []
+    if "exception" in data:
+        return []
+
+    items = data.get("data", {}).get("List", {}).get("List", [])
+    samples: list[CountySample] = []
+
+    for item in items:
+        param = (item.get("Parameter", {}).get("Label") or "").strip()
+        if param.lower() != "enterococcus":
+            continue
+
+        sample_obj = item.get("Sample", {})
+        result_str = str(sample_obj.get("Result") or "").strip()
+        try:
+            val = float(result_str)
+        except (ValueError, TypeError):
+            continue
+
+        sample_date_str = sample_obj.get("SampleDate")
+        if not sample_date_str:
+            continue
+        try:
+            sample_date = pd.Timestamp(sample_date_str).normalize()
+        except Exception:
+            continue
+
+        site = item.get("Site", {})
+        station_code = site.get("StationID") or None
+        beach_name = (site.get("BeachName") or "").strip()
+        location_name = (site.get("LocationName") or "").strip()
+        area = beach_name or location_name or (station_code or "Unknown")
+
+        method_label = (item.get("AnalysisMethod", {}).get("Label") or "").strip()
+        units_label = (item.get("Units", {}).get("Label") or "").strip()
+
+        # ddPCR (copies) > 1413, culture (CFU/MPN) > 104
+        is_pcr = "pcr" in method_label.lower() or "copies" in units_label.lower()
+        if is_pcr:
+            exceeds = val > 1413.0
+        else:
+            exceeds = val > 104.0
+
+        beach_id = None
+        if resolver and station_code:
+            bid, _ = resolver.resolve_by_station_code("San Diego", station_code)
+            if bid:
+                beach_id = bid
+
+        samples.append(
+            CountySample(
+                county="San Diego",
+                area=area,
+                sample_date=sample_date,
+                analyte="ENTEROCOCCUS",
+                value=val,
+                exceeds_limit=exceeds,
+                source_url=SD_HOMEPAGE,
+                station_code=station_code,
+                beach_id=beach_id,
+                method=method_label or None,
+                units=units_label or None,
+            )
+        )
+
+    return samples
+
+
 def fetch_san_diego_advisories(
     client: httpx.Client,
     resolver: StationResolver,
@@ -743,6 +830,103 @@ def fetch_san_diego_advisories(
     except Exception as e:
         rpt.error = f"fetch failed: {e}"
         return [], rpt
+
+
+def fetch_san_diego_samples(
+    client: httpx.Client,
+    resolver: StationResolver,
+    *,
+    now: pd.Timestamp | None = None,
+) -> int:
+    """Fetch San Diego County lab results (60-day trailing window) and append to _COLLECTED_SAMPLES.
+
+    Queries cosdapps.sandiegocounty.gov OutSystems API (ScreenDataSetGetSamples).
+    Paginates with StartIndex in chunks of 500 records.
+    Never raises: logs errors and returns collected count (or 0).
+    """
+    ref_now = now if now is not None else pd.Timestamp.now(timezone.utc)
+    ref_now_naive = ref_now.tz_localize(None) if ref_now.tzinfo is not None else ref_now
+    sample_data_to = ref_now_naive.strftime("%Y-%m-%d")
+    sample_data_from = (ref_now_naive - pd.Timedelta(days=60)).strftime("%Y-%m-%d")
+
+    samples: list[CountySample] = []
+    try:
+        # Step 1: GET homepage to establish session / cookies
+        client.get(SD_HOMEPAGE, timeout=30.0)
+
+        # Step 2: GET moduleversioninfo
+        ver_resp = client.get(SD_MODULE_VERSION_URL, timeout=30.0)
+        ver_resp.raise_for_status()
+        module_version = ver_resp.json().get("versionToken")
+        if not module_version:
+            print("  [SD samples] no versionToken in moduleversioninfo", file=sys.stderr)
+            return 0
+
+        start_index = 0
+        total_count = None
+        while True:
+            payload = {
+                "versionInfo": {
+                    "moduleVersion": module_version,
+                    "apiVersion": SD_SAMPLES_API_VERSION,
+                },
+                "viewName": "MainFlow.SamplesReport",
+                "screenData": {
+                    "variables": {
+                        "TableSort": "",
+                        "StartIndex": start_index,
+                        "MaxRecords": 500,
+                        "StationIdFilter": "",
+                        "StationName3": "",
+                        "SampleDataFrom": sample_data_from,
+                        "SampleDataTo": sample_data_to,
+                        "isPublic": True,
+                        "SiteId": "0",
+                        "ShowImport": False,
+                        "UrlBase": "",
+                    }
+                },
+                "inputParameters": {},
+            }
+
+            post_resp = client.post(
+                SD_SAMPLES_URL,
+                headers={
+                    "Content-Type": "application/json; charset=UTF-8",
+                    "X-CSRFToken": SD_CSRF_TOKEN,
+                },
+                json=payload,
+                timeout=30.0,
+            )
+            post_resp.raise_for_status()
+            data = post_resp.json()
+
+            version_info = data.get("versionInfo", {})
+            if version_info.get("hasApiVersionChanged"):
+                print("  [SD samples] versionInfo.hasApiVersionChanged is True", file=sys.stderr)
+                return 0
+            if "exception" in data:
+                print(f"  [SD samples] API exception: {data['exception']}", file=sys.stderr)
+                return 0
+
+            page_samples = _parse_sd_samples_payload(data, resolver=resolver)
+            samples.extend(page_samples)
+
+            raw_items = data.get("data", {}).get("List", {}).get("List", [])
+            if total_count is None:
+                total_count = data.get("data", {}).get("Count", 0)
+
+            start_index += len(raw_items)
+            if not raw_items or start_index >= total_count:
+                break
+
+    except Exception as e:
+        print(f"  [SD samples] failed: {e}", file=sys.stderr)
+        return 0
+
+    _COLLECTED_SAMPLES.extend(samples)
+    print(f"  [SD samples] {len(samples)} Enterococcus samples collected across San Diego County")
+    return len(samples)
 
 
 # ---------- Orange County (ocbeachinfo.com) ---------- #
@@ -2199,6 +2383,8 @@ def persist_samples(
         "value": float(s.value),
         "exceeds_limit": bool(s.exceeds_limit),
         "source_url": s.source_url,
+        "method": s.method,
+        "units": s.units,
     } for s in samples])
 
     parquet_path = curated_dir / _SAMPLES_PARQUET
@@ -3074,6 +3260,21 @@ def main() -> int:
                     stations_in_lookup=len(resolver._beach_name_lookup.get("Monterey", {})),
                     samples_collected=monterey_count,
                     error=None if monterey_count > 0 else "no Monterey samples collected",
+                )
+            )
+
+        if not args.only or "diego" in args.only.lower() or "san diego" in args.only.lower():
+            print("Fetching San Diego County lab results ...")
+            sd_count = fetch_san_diego_samples(client, resolver)
+            reports.append(
+                CountyReport(
+                    county="San Diego",
+                    success=sd_count > 0,
+                    last_attempted_at=datetime.now(timezone.utc).isoformat(),
+                    source_url=SD_SAMPLES_URL,
+                    stations_in_lookup=len(resolver._station_code_lookup.get("San Diego", {})),
+                    samples_collected=sd_count,
+                    error=None if sd_count > 0 else "no San Diego samples collected",
                 )
             )
 

@@ -67,8 +67,9 @@ jobs:
           SCHEDULED: ${{ github.event_name == 'schedule' || github.event.inputs.scheduled == 'true' }}
         run: |
           TODAY=$(TZ=America/Los_Angeles date +%Y-%m-%d)
+          MSG_PREFIX="chore: daily forecast"
           if [ "$SCHEDULED" = "true" ] && gh api "repos/${{ github.repository }}/commits?sha=main&per_page=100" \
-              --jq '.[].commit.message' | grep -q "^chore: daily forecast refresh ${TODAY}"; then
+              --jq '.[].commit.message' | grep -q "^${MSG_PREFIX} refresh ${TODAY}"; then
             echo "::notice::Today's forecast (${TODAY}) is already published; skipping this scheduled run."
             echo "run=false" >> "$GITHUB_OUTPUT"
           else
@@ -83,6 +84,7 @@ jobs:
     permissions:
       contents: write
       models: read
+      issues: write
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       # ML training is off on the daily cron (2026-10-04): it took 53 of the
@@ -427,9 +429,126 @@ jobs:
         run: python -m app.data.pipeline.serving_snapshot --curated ../data/curated/
         working-directory: backend
 
-      # Web static data baking moved to kylechoi101/shorelife-web private repo.
-      # That repo's CI pulls data/curated/ from this public repo via the
-      # GitHub raw URL and bakes its own static export.
+      - name: Check county lab-feed freshness
+        continue-on-error: true
+        run: python scripts/lab_freshness_check.py --curated ../data/curated/
+        working-directory: backend
+
+      - name: Alert or resolve stale county lab feeds
+        continue-on-error: true
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const fs = require('fs');
+            const path = 'data/curated/system_health.json';
+            if (!fs.existsSync(path)) {
+              core.notice('system_health.json not found; skipping county freshness alert check');
+              return;
+            }
+
+            let health;
+            try {
+              health = JSON.parse(fs.readFileSync(path, 'utf8'));
+            } catch (e) {
+              core.warning(`Could not parse system_health.json: ${e}`);
+              return;
+            }
+
+            const labFreshness = health.lab_freshness;
+            if (!labFreshness || !Array.isArray(labFreshness.counties)) {
+              core.notice('No lab_freshness data in system_health.json');
+              return;
+            }
+
+            const staleCounties = labFreshness.counties.filter(c => c.stale);
+            const label = 'county-feed-stale';
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const today = new Date().toISOString().slice(0, 10);
+
+            // Ensure label exists (idempotent)
+            try {
+              await github.rest.issues.createLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: label,
+                color: 'e99695',
+                description: 'County lab result feed stopped advancing',
+              });
+            } catch (e) {
+              if (e.status !== 422) throw e;
+            }
+
+            // Find existing open issues with the label
+            const open = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: label,
+              per_page: 100,
+            });
+
+            if (staleCounties.length > 0) {
+              const staleList = staleCounties.map(c => `- **${c.county}**: newest ${c.newest} (age ${c.age_days}d, cadence ${c.cadence_days}d) — ${c.reason}`).join('\n');
+              const title = `⚠️ Stale county lab feed detected: ${staleCounties.map(c => c.county).join(', ')}`;
+              const body = [
+                `The following county lab feed(s) have stopped advancing enterococcus results:`,
+                ``,
+                staleList,
+                ``,
+                `- Run: ${runUrl}`,
+                `- Date: ${today}`,
+                ``,
+                `Please inspect upstream county data sources or state Water Board ingestion feeds.`,
+              ].join('\n');
+
+              if (open.length > 0) {
+                const existing = open[0];
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: existing.number,
+                  body: `Still stale on ${today} (run ${runUrl}):\n\n${staleList}`,
+                });
+                core.notice(`Commented on existing stale county feed issue #${existing.number}`);
+              } else {
+                const base = {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  title,
+                  body,
+                  labels: [label],
+                };
+                let created;
+                try {
+                  created = await github.rest.issues.create({ ...base, assignees: [context.repo.owner] });
+                } catch (e) {
+                  if (e.status !== 422) throw e;
+                  created = await github.rest.issues.create(base);
+                }
+                core.notice(`Opened stale county feed issue #${created.data.number}`);
+              }
+            } else {
+              // No counties stale: close any open issues
+              if (open.length === 0) {
+                core.notice('No stale county feeds and no open issues to close.');
+                return;
+              }
+              for (const issue of open) {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  body: `County lab feeds healthy — all counties advancing as of ${today} (run ${runUrl}). Closing alert.`,
+                });
+                await github.rest.issues.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  state: 'closed',
+                });
+                core.notice(`Closed resolved stale county feed issue #${issue.number}`);
+              }
+            }
 
       - name: Commit and push if changed
         run: |

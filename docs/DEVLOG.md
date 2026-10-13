@@ -275,3 +275,31 @@ no-source asserts restored (after 75).
   the GitHub runner (105 samples, report `success: true`). Forecast 2026-10-07: **7 of 14 Monterey
   production beaches served** (CBOA, DMB, LOP, MBH, SDA, SPB, STCO; last sampled 10-05; all Low,
   `logit-lookup-offset-v2`). shorelifeca.org `data/beaches.json` shows LOP last sampled 10-05.
+
+## 2026-10-12 — San Diego county lab feed + county lab-freshness alarm (office task 2026-10-12-sd-lab-feed-freshness-alarm)
+
+- **Why:** a fresh San Diego advisory sat next to a weeks-old "last tested" date (South Casa). The
+  advisory scraper is same-day, but SD lab numbers arrived only through the State Water Board feed.
+  Separately, Orange (08-24) and Monterey (08-25) stopped reporting to the state and nobody noticed
+  for weeks.
+- **SD feed:** `fetch_san_diego_samples` reads the county's public OutSystems call
+  `SampleBlock/ScreenDataSetGetSamples` (60-day window, paged by 500, never raises). Enterococcus
+  only. `CountySample` and `county_direct_samples.parquet` now carry per-row `method`/`units`, and
+  `normalize_county_direct_samples` uses them, so SD ddPCR is judged at 1413 copies and culture at
+  104 (the old fixed `MPN/100mL`/`unknown` stamp would have judged ddPCR at 104). Resolution is by
+  station code only. "San Diego" is in `INGEST_COUNTIES`, with gap-only, date-keyed merging as before.
+  Live dry run: 1,057 entero rows, 996 overlapping station-days with 974 identical (97.8%), 21 new
+  station-days.
+- **Freshness alarm:** `scripts/lab_freshness_check.py` runs in the daily job:
+  - Per county, from merged observations: eligible with >= 20 sample dates/365 d; stale when age >
+    max(14, 3 × median county-wide gap over 180 d).
+  - Writes `system_health.json["lab_freshness"]`.
+  - A github-script step opens, comments on or closes one `county-feed-stale` issue. Both steps are
+    `continue-on-error`.
+  - First run flags **Orange** (newest 09-11), which is a true positive given OC's ~monthly
+    spreadsheet uploads.
+- **scraper-health:** skips gate-skipped forecast runs (the 9 AM cron-job.org trigger plus GitHub's
+  late cron) so they don't count as a checked day. Added `actions: read`.
+- Corrections: name-fallback resolution removed (phase 50), continue-on-error (phase 100), and PM
+  fixes for `actions: read` and the docstring overlap figure.
+- Worker tokens: 2.70M in, 0.12M out (gemini-3.8-flash-medium, 4 phases, ~38 min).

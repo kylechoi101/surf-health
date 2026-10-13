@@ -31,6 +31,7 @@ on:
 
 permissions:
   contents: write
+  actions: read   # gate_check reads the triggering forecast run's jobs
 
 # A cron forecast and a code-push forecast finishing close together must not
 # race each other's streak commit.
@@ -55,10 +56,32 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Check whether triggering forecast run was gate-skipped
+        id: gate_check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WORKFLOW_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          if [ -z "$WORKFLOW_RUN_ID" ]; then
+            echo "skipped=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          REFRESH_CONCLUSION=$(gh api "repos/${{ github.repository }}/actions/runs/${WORKFLOW_RUN_ID}/jobs" \
+            --jq '.jobs[] | select(.name == "refresh") | .conclusion')
+          echo "Triggering forecast refresh job conclusion: '$REFRESH_CONCLUSION'"
+          if [ "$REFRESH_CONCLUSION" = "skipped" ]; then
+            echo "::notice::The triggering daily-forecast run was gate-skipped (today's forecast was already published). Exiting early without updating streak."
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skipped=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Install minimal deps
+        if: steps.gate_check.outputs.skipped != 'true'
         run: pip install --quiet pandas pyarrow
 
       - name: Run scraper-health check
+        if: steps.gate_check.outputs.skipped != 'true'
         env:
           # success / failure / cancelled / timed_out ... Empty on a manual
           # dispatch, in which case the script skips the conclusion check.
@@ -70,6 +93,7 @@ jobs:
             --forecast-conclusion "$FORECAST_CONCLUSION"
 
       - name: Commit updated streak file
+        if: steps.gate_check.outputs.skipped != 'true'
         run: |
           if [ -z "$(git status --porcelain data/curated/scraper_health.json)" ]; then
             echo "no streak change to commit"
