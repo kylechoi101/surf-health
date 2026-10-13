@@ -225,6 +225,25 @@ def test_sd_parse_events_advisories_and_chronic_rule(test_resolver: StationResol
     assert eh010.advisory_type == "Posting"
 
 
+def test_sd_blank_reason_is_not_labelled_a_bacterial_violation(test_resolver: StationResolver):
+    """The county API leaves `Reason` blank on every posting (60 of 60 on
+    2026-10-12, the day after a 1.3-inch storm). Filling in "Bacterial Standards
+    Violation" told users a lab result caused postings the county more likely
+    issued for rain. Blank stays blank; a stated reason and the Tijuana rule
+    still pass through.
+    """
+    data = json.loads((FIXTURES_DIR / "sd_events1.json").read_text())
+    items = data["data"]["List"]["List"]
+    assert all(not (it["Event"].get("Reason") or "").strip() for it in items)
+    advs, err = _parse_sd_events_payload(data, event_type_id=1, resolver=test_resolver)
+    assert err is None and advs
+    assert all(a.cause is None for a in advs if "tijuana" not in a.area.lower())
+
+    items[0]["Event"]["Reason"] = "Sewage Spill"
+    advs, _ = _parse_sd_events_payload(data, event_type_id=1, resolver=test_resolver)
+    assert advs[0].cause == "Sewage Spill"
+
+
 def test_sd_parse_events_closures(test_resolver: StationResolver):
     """Test parsing of sd_events2.json (EventTypeId 2 - Closures).
     Verify that EventTypeId 2 always produces 'Closure'.
@@ -241,7 +260,7 @@ def test_sd_parse_events_closures(test_resolver: StationResolver):
         assert a.advisory_type == "Closure"
         assert a.county == "San Diego"
         assert a.beach_id is not None
-        assert a.cause in ("Bacterial Standards Violation", "Other - Tijuana River Associated")
+        assert a.cause in (None, "Other - Tijuana River Associated")
 
     codes = [a.station_code for a in advs]
     assert codes == ["IB-010", "IB-020", "IB-030", "IB-040"]

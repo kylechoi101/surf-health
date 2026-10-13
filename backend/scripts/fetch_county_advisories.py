@@ -645,7 +645,11 @@ def _parse_sd_events_payload(
         elif "tijuana" in (beach_name + " " + location_name).lower():
             cause = "Other - Tijuana River Associated"
         else:
-            cause = "Bacterial Standards Violation"
+            # The API leaves Reason blank on every posting (60/60 on 2026-10-12,
+            # the day after a 1.3" storm), so we don't know the cause. Inventing
+            # "Bacterial Standards Violation" told users a lab result caused
+            # what were more likely rain postings.
+            cause = None
 
         beach_id = None
         if resolver and station_code:
