@@ -1,16 +1,16 @@
 {
-  "generated_at": "2026-10-12T23:10:15.159546+00:00",
+  "generated_at": "2026-10-13T04:02:17.234983+00:00",
   "forecast_date": "2026-10-12",
   "model_version": "logit-lookup-offset-v2",
   "risk_threshold": 0.2,
   "total_beaches": 381,
-  "active_advisories": 69,
-  "agreement_rate": 1.0,
+  "active_advisories": 84,
+  "agreement_rate": 0.905,
   "pool_metrics": {
     "acute": {
-      "advised_beaches": 68,
-      "model_flagged": 68,
-      "agreement_rate": 1.0
+      "advised_beaches": 83,
+      "model_flagged": 75,
+      "agreement_rate": 0.904
     },
     "closure": {
       "advised_beaches": 1,
@@ -34,20 +34,77 @@
     }
   },
   "false_negatives": {
-    "count": 0,
+    "count": 8,
     "description": "Active advisory but model says Low/Moderate",
     "by_pool": {
-      "acute": 0,
+      "acute": 8,
       "closure": 0,
       "chronic": 0,
       "stale": 0,
       "unknown_duration": 0
     },
-    "worst_acute": [],
+    "worst_acute": [
+      {
+        "beach_id": "ca549911-east-bay-parks-district-crown-beach-alameda-co-crown-sunset-rd",
+        "risk_band": "Low",
+        "p_exceed": 0.049,
+        "pool": "acute",
+        "advisory_age_days": 0
+      },
+      {
+        "beach_id": "ca549911-east-bay-parks-district-crown-beach-alameda-co-crown-bath-house",
+        "risk_band": "Low",
+        "p_exceed": 0.052,
+        "pool": "acute",
+        "advisory_age_days": 0
+      },
+      {
+        "beach_id": "ca549911-east-bay-parks-district-crown-beach-alameda-co-crown-2001-shoreline-dr",
+        "risk_band": "Low",
+        "p_exceed": 0.082,
+        "pool": "acute",
+        "advisory_age_days": 0
+      },
+      {
+        "beach_id": "ca549911-east-bay-parks-district-crown-beach-alameda-co-crown-windsurfer-corner",
+        "risk_band": "Low",
+        "p_exceed": 0.087,
+        "pool": "acute",
+        "advisory_age_days": 0
+      },
+      {
+        "beach_id": "ca549911-east-bay-parks-district-crown-beach-alameda-co-crown-bird-sanctuary",
+        "risk_band": "Low",
+        "p_exceed": 0.1,
+        "pool": "acute",
+        "advisory_age_days": 0
+      },
+      {
+        "beach_id": "ca534500-san-mateo-gazos-creek-access-gazos-creek-access",
+        "risk_band": "Low",
+        "p_exceed": 0.119,
+        "pool": "acute",
+        "advisory_age_days": 0
+      },
+      {
+        "beach_id": "ca826873-east-bay-parks-district-keller-beach-contra-costa-co-keller-south-beach",
+        "risk_band": "Low",
+        "p_exceed": 0.147,
+        "pool": "acute",
+        "advisory_age_days": 0
+      },
+      {
+        "beach_id": "ca781317-san-mateo-marlin-park-foster-city-marlin-park",
+        "risk_band": "Low",
+        "p_exceed": 0.178,
+        "pool": "acute",
+        "advisory_age_days": 0
+      }
+    ],
     "worst_chronic": []
   },
   "false_positives": {
-    "count": 63,
+    "count": 48,
     "description": "Model says High/VeryHigh but no active advisory",
     "worst": [
       {
@@ -177,16 +234,16 @@
         "advisory_age_days": null
       },
       {
-        "beach_id": "ca279698-long-beach-city-long-beach-b-11",
+        "beach_id": "ca801852-san-diego-tecolote-shores-mb-041",
         "risk_band": "High",
-        "p_exceed": 0.485,
+        "p_exceed": 0.471,
         "pool": "none",
         "advisory_age_days": null
       },
       {
-        "beach_id": "ca801852-san-diego-tecolote-shores-mb-041",
+        "beach_id": "ca839312-san-diego-baja-california-mexico-bc-020",
         "risk_band": "High",
-        "p_exceed": 0.471,
+        "p_exceed": 0.464,
         "pool": "none",
         "advisory_age_days": null
       }
