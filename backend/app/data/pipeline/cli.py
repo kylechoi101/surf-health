@@ -1035,6 +1035,7 @@ def main() -> None:
             from app.data.pipeline.solar_wind import (
                 aggregate_solar_wind_windows,
                 merge_uv_hourly,
+                solar_wind_backfill_plan,
             )
             from app.data.pipeline.marine_microbiology import (
                 compute_beach_shore_azimuth,
@@ -1060,11 +1061,21 @@ def main() -> None:
                 if pd.notna(r.get('latitude')) and pd.notna(r.get('longitude'))
             })
             _sw_path = Path(settings.curated_dir) / "solar_wind_daily.parquet"
+            _sw_backfill_cells: list[tuple[float, float]] = []
+            _sw_backfill_ranges: list = []
             if not args.start_date and _sw_path.exists():
                 _existing_sw = pd.read_parquet(_sw_path)
                 _sw_max = pd.to_datetime(_existing_sw["sample_date"]).max().date() if "sample_date" in _existing_sw.columns else _full_start_date
                 _sw_fetch_start = max(_full_start_date, (pd.Timestamp(_sw_max) - pd.Timedelta(days=7)).date())
                 print(f"[solar-wind] incremental fetch {_sw_fetch_start} → {end_date}")
+                # Cells that joined the roster after the file was first built have
+                # no history before the day they joined; fetch it back to the full start.
+                _sw_backfill_cells, _sw_backfill_ranges = solar_wind_backfill_plan(
+                    _existing_sw, station_locs, _full_start_date, _sw_fetch_start
+                )
+                if _sw_backfill_cells:
+                    print(f"[solar-wind] backfilling {len(_sw_backfill_cells)} grid cells "
+                          f"from {_full_start_date} in {len(_sw_backfill_ranges)} ranges")
             else:
                 _sw_fetch_start = _date.fromisoformat(args.start_date) if args.start_date else _full_start_date
                 print(f"[solar-wind] full fetch {_sw_fetch_start} → {end_date}")
@@ -1090,6 +1101,19 @@ def main() -> None:
                     cache_dir=settings.precip_cache_dir / "openmeteo_uv",
                 )
             )
+            for _lo, _hi in _sw_backfill_ranges:
+                raw_sw = pd.concat([raw_sw, asyncio.run(
+                    OpenMeteoHistoricalSolarWindConnector().fetch_historical_solar_wind(
+                        _sw_backfill_cells, _lo, _hi,
+                        cache_dir=settings.precip_cache_dir / "openmeteo_solar_wind",
+                    )
+                )], ignore_index=True)
+                raw_uv = pd.concat([raw_uv, asyncio.run(
+                    OpenMeteoHistoricalUvConnector().fetch_historical_uv(
+                        _sw_backfill_cells, _lo, _hi,
+                        cache_dir=settings.precip_cache_dir / "openmeteo_uv",
+                    )
+                )], ignore_index=True)
             print(f"[solar-wind] air-quality UV hours fetched: {len(raw_uv)}")
             raw_sw = merge_uv_hourly(raw_sw, raw_uv)
             new_sw_daily = aggregate_solar_wind_windows(raw_sw)

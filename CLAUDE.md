@@ -750,6 +750,15 @@ than parroting the last result. Necessary but not sufficient: right variance ≠
   newest enterococcus result is older than max(14 d, 3 × its usual gap). It writes
   `system_health.json["lab_freshness"]` and keeps one `county-feed-stale` issue open while any county
   is stale. Orange trips it between its ~monthly uploads; that is expected.
+- **Solar/cloud/wind/UV history backfilled to 2020 (2026-10-14).** Until then 116 of 123 grid cells
+  in `solar_wind_daily.parquet` started on 2026-04-20 or later: the incremental fetch started every
+  cell at the newest date on file, so cells that joined the roster later never got history, and
+  those features covered ~19% of 2021–2025 beach-days (UV 0%). The `--with-solar-wind` step now
+  backfills any cell whose first day is more than 31 days after 2020-01-01
+  (`solar_wind.solar_wind_backfill_plan`, yearly ranges). The committed file was rebuilt once with
+  `scripts/backfill_solar_wind.py` (`--fill-gaps` refetches cells hit by Open-Meteo 429s, one
+  request at a time): 123 cells from 2020-01-01. UV before 2022-08-04 is the shortwave proxy
+  (`uv_index_is_proxy`), as before.
 - **Advisory resolver:** `--heuristic-mode` defaults to **`suggest`** — a substring/fuzzy match
   goes to `unresolved_advisories.parquet` with `suggested_beach_id` for review, because the
   2026-10-02 review found 2 of 5 heuristic hits on the wrong beach. Add an alias row to accept

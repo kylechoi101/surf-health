@@ -303,3 +303,18 @@ no-source asserts restored (after 75).
 - Corrections: name-fallback resolution removed (phase 50), continue-on-error (phase 100), and PM
   fixes for `actions: read` and the docstring overlap figure.
 - Worker tokens: 2.70M in, 0.12M out (gemini-3.8-flash-medium, 4 phases, ~38 min).
+
+## 2026-10-14: solar/cloud/wind/UV history backfilled to 2020
+
+No worker task; PM fix (found by the within-beach-ts phase 50 coverage check).
+- **Cause:** the `--with-solar-wind` incremental fetch starts every grid cell at the newest date on file
+  minus 7 days. 116 of 123 cells joined after the file was built and only ever had data from
+  2026-04-20 or later, so `beach_day` carried shortwave/cloud/wind on ~19% of 2021–2025 rows and UV on 0%.
+- **Fix:** `solar_wind.solar_wind_backfill_plan` finds cells whose history starts late; the pipeline
+  fetches them back to 2020-01-01 in yearly ranges (5 tests).
+- **Data:** `scripts/backfill_solar_wind.py` rebuilt `solar_wind_daily.parquet` from the local archive
+  cache: 37,303 → 304,654 rows; 123 cells from 2020-01-01, 120 complete, 3 missing ≤ 9 days.
+  The first pass hit Open-Meteo 429s on the 2026 range for 64 cells; `--fill-gaps` refetched them one at a time.
+- **Checks:** full backend suite 911 passed; ruff clean.
+- **Effect:** the served estimate does not use these features. The next pipeline run joins the history
+  into `beach_day` for the ML challenger and the within-beach experiment.

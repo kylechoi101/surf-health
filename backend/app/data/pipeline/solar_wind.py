@@ -6,6 +6,7 @@ leaking same-morning sample data into features.
 from __future__ import annotations
 
 import logging
+from datetime import date, timedelta
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -19,6 +20,45 @@ logger = logging.getLogger(__name__)
 # of ~11; 900/80 = 11.25. Cloudy ~300 W/m^2 -> ~3.75.
 UV_FROM_SHORTWAVE_DIVISOR = 80.0
 UV_INDEX_CEILING = 15.0
+
+# A grid cell whose first day on file is more than this after the full start date
+# is treated as missing its history.
+BACKFILL_TOLERANCE_DAYS = 31
+
+
+def solar_wind_backfill_plan(
+    existing: pd.DataFrame | None,
+    station_locs: list[tuple[float, float]],
+    full_start: date,
+    fetch_start: date,
+) -> tuple[list[tuple[float, float]], list[tuple[date, date]]]:
+    """Grid cells whose history on file starts late, and the ranges to fetch for them.
+
+    The incremental fetch starts EVERY cell at the newest date on file minus 7 days, so a
+    cell that joins the roster later is only ever fetched from the day it joined. On
+    2026-10-13, 116 of 123 cells started on 2026-04-20 or later, which left the solar,
+    cloud and wind features on ~19% of 2021-2025 beach-days. Ranges are calendar years
+    (the cached archive files are keyed that way) and stop the day before ``fetch_start``,
+    where the incremental fetch takes over.
+    """
+    first: dict[str, date] = {}
+    if existing is not None and not existing.empty and {"station_id", "sample_date"} <= set(existing.columns):
+        first = (
+            pd.to_datetime(existing["sample_date"])
+            .groupby(existing["station_id"].astype(str))
+            .min()
+            .dt.date.to_dict()
+        )
+    limit = full_start + timedelta(days=BACKFILL_TOLERANCE_DAYS)
+    cells = sorted(loc for loc in station_locs if first.get(f"{loc[0]}_{loc[1]}", date.max) > limit)
+    ranges: list[tuple[date, date]] = []
+    if cells:
+        last = fetch_start - timedelta(days=1)
+        for year in range(full_start.year, last.year + 1):
+            lo, hi = max(full_start, date(year, 1, 1)), min(last, date(year, 12, 31))
+            if lo <= hi:
+                ranges.append((lo, hi))
+    return cells, ranges
 
 
 def uv_index_24h_max(uv_values, shortwave_values) -> tuple[float, bool]:
