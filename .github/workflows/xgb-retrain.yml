@@ -1,0 +1,85 @@
+name: Retrain XGB challenger on new lab results
+
+# ML training is off on the daily run (2026-10-04), so the XGB challenger only
+# moves when daily-forecast.yml is dispatched with run_ml=true. This chains to
+# every forecast run's completion and dispatches that ML run when official lab
+# results have landed since the last training (backend/scripts/ml_retrain_due.py
+# compares beach_day.parquet with data/curated/ml_training_labels.json, which
+# the ML run writes). At most one retrain per Pacific day.
+#
+# The ML run is a full daily-forecast run (~80 min) and republishes the day's
+# forecast from fresher data. If it fails, the morning forecast already on main
+# keeps serving; the next forecast run's completion tries again.
+#
+# Matched by NAME: renaming daily-forecast.yml's `name:` silently breaks this
+# chain. backend/tests/test_ml_retrain_due.py pins the two together.
+
+on:
+  workflow_run:
+    workflows: ["Daily forecast refresh"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write   # list forecast runs and dispatch the ML run
+
+concurrency:
+  group: xgb-retrain
+  cancel-in-progress: false
+
+jobs:
+  check:
+    # A failed or cancelled forecast run does not dispatch; the next one will.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The forecast's data commit lands on main during its run; check out
+          # main's tip, not the SHA the forecast started from.
+          ref: main
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install minimal deps
+        # Same pins as backend/constraints.txt.
+        run: pip install --quiet pandas==3.0.2 pyarrow==24.0.0
+
+      - name: Skip while a forecast run is queued or running
+        # Its completion re-runs this check against newer data. Without this, a
+        # forecast finishing while the dispatched ML run is still in flight
+        # (e.g. GitHub's late fallback cron, gate-skipped) would queue a second
+        # ML run, since the marker is only written when training ends.
+        id: busy
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ACTIVE=$(gh run list --repo "${{ github.repository }}" --workflow daily-forecast.yml \
+            --limit 20 --json status --jq '[.[] | select(.status != "completed")] | length')
+          echo "Active daily-forecast runs: ${ACTIVE}"
+          if [ "${ACTIVE}" -gt 0 ]; then
+            echo "::notice::A daily-forecast run is queued or in progress; its completion will re-check."
+            echo "busy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "busy=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check for new lab results since the last training
+        if: steps.busy.outputs.busy != 'true'
+        id: due
+        run: python backend/scripts/ml_retrain_due.py --curated data/curated --github-output "$GITHUB_OUTPUT"
+
+      - name: Dispatch the ML run
+        if: steps.busy.outputs.busy != 'true' && steps.due.outputs.due == 'true'
+        # workflow_dispatch is one of the two events GITHUB_TOKEN may start.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run daily-forecast.yml --repo "${{ github.repository }}" --ref main -f run_ml=true
+          echo "::notice::Dispatched daily-forecast.yml with run_ml=true (${{ steps.due.outputs.reason }})."
