@@ -15,7 +15,10 @@ Two modes:
 - default (check): run by xgb-retrain.yml after every forecast run. Due when the
   label set differs from the marker, or when there is no marker. At most one
   retrain per Pacific day: a marker stamped today is never due, which also keeps
-  the ML run's own completion from dispatching another one.
+  the ML run's own completion from dispatching another one. Nothing is due
+  after 21:00 Pacific: an ~80 min run would commit after midnight, stamp the
+  next day's forecast and gate out the 9 AM run. The next morning's run checks
+  again.
 
 The fingerprint covers (beach_id, sample_date, exceeds_stv), so a corrected
 label counts as a new result, and a row gained anywhere in history (counties
@@ -40,6 +43,7 @@ import pandas as pd
 
 MARKER_NAME = "ml_training_labels.json"
 PACIFIC = ZoneInfo("America/Los_Angeles")
+LATEST_DISPATCH_HOUR_PT = 21
 
 
 def label_summary(beach_day: pd.DataFrame) -> dict:
@@ -48,14 +52,14 @@ def label_summary(beach_day: pd.DataFrame) -> dict:
     keys = pd.DataFrame(
         {
             "beach_id": rows["beach_id"].astype(str),
-            "sample_date": pd.to_datetime(rows["sample_date"]).dt.strftime("%Y-%m-%d"),
+            "sample_date": pd.to_datetime(rows["sample_date"]).dt.strftime("%Y-%m-%d").fillna("NaT"),
             "exceeds_stv": rows["exceeds_stv"].astype(bool).astype(int).astype(str),
         }
     ).sort_values(["beach_id", "sample_date", "exceeds_stv"])
     lines = (keys["beach_id"] + "|" + keys["sample_date"] + "|" + keys["exceeds_stv"]).str.cat(sep="\n")
     return {
         "n_labels": int(len(keys)),
-        "newest_sample_date": keys["sample_date"].max() if len(keys) else None,
+        "newest_sample_date": keys.loc[keys["sample_date"] != "NaT", "sample_date"].max() if len(keys) else None,
         "fingerprint": hashlib.sha256(lines.encode()).hexdigest(),
     }
 
@@ -78,9 +82,12 @@ def retrain_due(curated: Path, now: datetime | None = None) -> dict:
     """``{"due": bool, "reason": str, ...counts}`` for the current curated data."""
     now = now or datetime.now(UTC)
     current = load_summary(curated)
+    if now.astimezone(PACIFIC).hour >= LATEST_DISPATCH_HOUR_PT:
+        return {"due": False, "reason": "too_late_in_pacific_day", **current}
     try:
         marker = json.loads((curated / MARKER_NAME).read_text())
-    except (OSError, ValueError):
+        trained_at = datetime.fromisoformat(marker["trained_at"])
+    except (OSError, ValueError, TypeError, KeyError):
         return {"due": True, "reason": "no_marker", **current}
 
     out = {
@@ -88,7 +95,6 @@ def retrain_due(curated: Path, now: datetime | None = None) -> dict:
         "marker_trained_at": marker.get("trained_at"),
         "new_labels": current["n_labels"] - int(marker.get("n_labels") or 0),
     }
-    trained_at = datetime.fromisoformat(marker["trained_at"])
     if trained_at.astimezone(PACIFIC).date() == now.astimezone(PACIFIC).date():
         return {"due": False, "reason": "already_trained_today", **out}
     if current["fingerprint"] == marker.get("fingerprint"):

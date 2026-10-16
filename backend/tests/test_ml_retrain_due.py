@@ -130,3 +130,33 @@ def test_the_ml_run_writes_the_marker_after_training_and_before_the_commit():
     marker = forecast.index("scripts/ml_retrain_due.py --curated ../data/curated/ --write-marker")
     commit = forecast.index("git add data/curated/")
     assert train < marker < commit
+
+
+def test_nothing_is_due_after_21_pacific(tmp_path):
+    """An ~80 min run started late would commit after midnight and gate out the 9 AM run."""
+    late = datetime(2026, 10, 16, 4, 30, tzinfo=UTC)  # 2026-10-15 21:30 PT
+    assert due.retrain_due(_curated(tmp_path), now=late)["reason"] == "too_late_in_pacific_day"
+
+
+def test_a_marker_without_a_usable_stamp_counts_as_missing(tmp_path):
+    curated = _curated(tmp_path)
+    for bad in ({"fingerprint": "x"}, {"trained_at": "yesterday"}, {"trained_at": None}, ["not", "a", "dict"]):
+        (curated / due.MARKER_NAME).write_text(json.dumps(bad))
+        assert due.retrain_due(curated, now=NOW)["reason"] == "no_marker"
+
+
+def test_an_undated_label_still_changes_the_fingerprint_but_not_the_newest_date():
+    base = due.label_summary(_beach_day(BASE))
+    undated = _beach_day(BASE)
+    undated.loc[len(undated)] = ["c", pd.NaT, True]
+    summary = due.label_summary(undated)
+    assert summary["fingerprint"] != base["fingerprint"]
+    assert summary["newest_sample_date"] == "2026-10-08"
+
+
+def test_ml_runs_are_titled_so_the_daily_cap_can_count_them():
+    forecast = (WORKFLOWS / "daily-forecast.yml").read_text()
+    run_name = re.search(r"^run-name:\s*(.+)$", forecast, re.M).group(1)
+    assert "inputs.run_ml" in run_name and "(ML)" in run_name
+    retrain = (WORKFLOWS / "xgb-retrain.yml").read_text()
+    assert 'endswith("(ML)")' in retrain

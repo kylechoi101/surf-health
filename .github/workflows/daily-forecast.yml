@@ -1,4 +1,8 @@
 name: Daily forecast refresh
+# ML runs carry "(ML)" in their title: xgb-retrain.yml counts today's ML runs by
+# it to cap automatic retrains at one per Pacific day. workflow_run triggers
+# match the `name:` above, not this.
+run-name: ${{ (github.event.inputs.run_ml == 'true' || github.event.inputs.full_comparison == 'true') && 'Daily forecast refresh (ML)' || 'Daily forecast refresh' }}
 
 on:
   schedule:
