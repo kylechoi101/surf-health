@@ -1,4 +1,8 @@
 name: Daily forecast refresh
+# ML runs carry "(ML)" in their title: xgb-retrain.yml counts today's ML runs by
+# it to cap automatic retrains at one per Pacific day. workflow_run triggers
+# match the `name:` above, not this.
+run-name: ${{ (github.event.inputs.run_ml == 'true' || github.event.inputs.full_comparison == 'true') && 'Daily forecast refresh (ML)' || 'Daily forecast refresh' }}
 
 on:
   schedule:
@@ -90,7 +94,9 @@ jobs:
       # ML training is off on the daily cron (2026-10-04): it took 53 of the
       # run's 79 minutes and the served estimate (logit on the per-beach lookup,
       # lookup_serving.py) does not use it. Serving builds its own candidate
-      # frame (--standalone, UPDATE_PLAN 3.4). Run it by hand with run_ml=true.
+      # frame (--standalone, UPDATE_PLAN 3.4). xgb-retrain.yml dispatches a
+      # run_ml=true run when new lab results have landed since the last
+      # training (once per Pacific day); run_ml=true by hand also works.
       RUN_ML: ${{ github.event.inputs.run_ml == 'true' || github.event.inputs.full_comparison == 'true' }}
 
     steps:
@@ -264,6 +270,13 @@ jobs:
           # blockers still land in system_health.json; the verify_release_gate.py
           # step (after the commit) then fails the job to fire the alert.
           python -m app.ml.training --curated --forecast-date "$FORECAST_DATE" $WINNER_FLAG $BACKTEST_FLAGS --training-window-days 1095 --forecast-min-recency-days 30 --enforce-release-gate
+        working-directory: backend
+
+      - name: Record the lab results this training saw
+        # xgb-retrain.yml compares the next runs' beach_day.parquet with this
+        # marker to decide when the challenger is due again.
+        if: env.RUN_ML == 'true'
+        run: python scripts/ml_retrain_due.py --curated ../data/curated/ --write-marker
         working-directory: backend
 
       - name: Serve the per-beach estimate
