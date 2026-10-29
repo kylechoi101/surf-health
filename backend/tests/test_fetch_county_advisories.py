@@ -1013,7 +1013,9 @@ def test_shipped_alias_disambiguates_the_two_la_mothers_beaches():
     resolver = StationResolver(beaches)
     beach_ids, kind = resolver.resolve_all_by_name("Los Angeles", "Mothers Beach")
     assert kind == "csv"
-    assert beach_ids == ["ca034301-los-angeles-marina-del-rey-beach-mothers-beach-mdrh-3"]
+    assert beach_ids == [
+        f"ca034301-los-angeles-marina-del-rey-beach-mothers-beach-mdrh-{n}" for n in (1, 2, 3)
+    ]
 
 
 def test_shipped_alias_targets_exist_in_registry():
@@ -1045,7 +1047,7 @@ def test_shipped_aliases_resolve_2026_10_28_la_and_oc_postings():
             [la.format("719054", "dockweiler-state-beach-smb-bc-1"),
              la.format("719054", "dockweiler-state-beach-dph-122")],
         ("Los Angeles", "Mother's Beach in Marina Del Rey"):
-            [la.format("034301", "marina-del-rey-beach-mothers-beach-mdrh-3")],
+            [la.format("034301", f"marina-del-rey-beach-mothers-beach-mdrh-{n}") for n in (1, 2, 3)],
         ("Los Angeles", "Topanga Canyon Beach in Malibu"):
             [la.format("000886", "topanga-state-beach-smb-1-18")],
         ("Los Angeles", "Santa Monica Canyon Creek at Will Rogers State beach. Near Will Rogers Tower 18"):
@@ -1055,7 +1057,8 @@ def test_shipped_aliases_resolve_2026_10_28_la_and_oc_postings():
         ("Los Angeles", "Ashland Ave. storm drain in Santa Monica. Santa Monica South Tower 28"):
             [la.format("735620", "santa-monica-state-beach-smb-3-5")],
         ("Los Angeles", "Malibu Point at Surfrider Beach. Near Malibu Tower 3"):
-            [la.format("738498", "surfrider-beach-dph-002")],
+            [la.format("738498", "surfrider-beach-dph-002"),
+             la.format("719054", "dockweiler-state-beach-dph-002b")],
         ("Los Angeles", "Avalon Beach at Catalina Island"):
             [la.format("474271", f"avalon-beach-dph-{n}") for n in range(117, 122)],
     }
