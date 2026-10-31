@@ -1,9 +1,9 @@
 {
-  "pipeline_freshness": "2026-10-30T17:50:09.580093+00:00",
+  "pipeline_freshness": "2026-10-31T16:13:21+00:00",
   "source_freshness": {
-    "beaches": "2026-10-30T16:43:04+00:00",
-    "observations": "2026-10-30T16:43:04+00:00",
-    "advisories": "2026-10-30T16:43:04+00:00"
+    "beaches": "2026-10-31T16:13:21+00:00",
+    "observations": "2026-10-31T16:13:21+00:00",
+    "advisories": "2026-10-31T16:13:21+00:00"
   },
   "model_registry": {
     "production_model": "xgb-undersample-ensemble-curated-v0",
@@ -614,24 +614,19 @@
     }
   },
   "scraper_gate": {
-    "generated_at": "2026-10-30T16:45:02.333432+00:00",
+    "generated_at": "2026-10-31T16:15:14.278386+00:00",
     "passed": true,
     "hard_failed": false,
-    "total_scraped": 124,
-    "unresolved_total": 5,
-    "unresolved_unexpected": 1,
+    "total_scraped": 110,
+    "unresolved_total": 4,
+    "unresolved_unexpected": 0,
     "unresolved_expected": 4,
-    "unresolved_ratio": 0.0081,
+    "unresolved_ratio": 0.0,
     "absolute_floor": 5,
     "hard_floor": 15,
     "ratio_threshold": 0.1,
     "blockers": [],
-    "unexpected_names": [
-      {
-        "county": "Orange",
-        "name": "Dana Point - From 150 feet upcoast to 150 feet downcoast of the last campground at Doheny State Beach"
-      }
-    ],
+    "unexpected_names": [],
     "expected_names": [
       {
         "county": "East Bay Parks District",
@@ -652,211 +647,6 @@
     ],
     "county_regressions": []
   },
-  "served_metrics": {
-    "definition": "Served p_exceed from forecast_history.parquet (final issue per beach-day) scored against observations.parquet worst-sample-per-day; same_day = outcome on the forecast day, forward = first outcome in D+1..D+3 (provably unseen by the forecast).",
-    "history_rows": 116769,
-    "final_forecast_rows": 72320,
-    "history_span_days": 191,
-    "verifiable_fraction": 0.5232,
-    "window_90d": {
-      "same_day": {
-        "n_pairs": 6906,
-        "n_positive": 878,
-        "base_rate": 0.1271,
-        "brier": 0.071,
-        "brier_flat_base_rate": 0.111,
-        "aucpr": 0.6236,
-        "auroc": 0.877,
-        "sensitivity_at_spec_0_87": 0.7198,
-        "within_beach_auroc": 0.5762,
-        "band_operating": {
-          "n_pairs": 6906,
-          "exceedances": 878,
-          "sensitivity": 0.7779,
-          "specificity": 0.8406,
-          "exceedances_shown_low": 195,
-          "false_alarms": 961
-        }
-      },
-      "forward_1_3d": {
-        "n_pairs": 16980,
-        "n_positive": 1518,
-        "base_rate": 0.0894,
-        "brier": 0.0631,
-        "brier_flat_base_rate": 0.0814,
-        "aucpr": 0.4632,
-        "auroc": 0.8265,
-        "sensitivity_at_spec_0_87": 0.5968,
-        "within_beach_auroc": 0.5392
-      },
-      "calibration_bins": [
-        {
-          "p_range": [
-            0.0,
-            0.05
-          ],
-          "n": 11322,
-          "predicted_mean": 0.0275,
-          "actual_rate": 0.0211
-        },
-        {
-          "p_range": [
-            0.05,
-            0.1
-          ],
-          "n": 5617,
-          "predicted_mean": 0.0659,
-          "actual_rate": 0.0529
-        },
-        {
-          "p_range": [
-            0.1,
-            0.2
-          ],
-          "n": 1634,
-          "predicted_mean": 0.138,
-          "actual_rate": 0.1095
-        },
-        {
-          "p_range": [
-            0.2,
-            0.3
-          ],
-          "n": 927,
-          "predicted_mean": 0.2465,
-          "actual_rate": 0.1899
-        },
-        {
-          "p_range": [
-            0.3,
-            0.7
-          ],
-          "n": 2331,
-          "predicted_mean": 0.3681,
-          "actual_rate": 0.2565
-        },
-        {
-          "p_range": [
-            0.7,
-            1.0
-          ],
-          "n": 404,
-          "predicted_mean": 0.8903,
-          "actual_rate": 0.8366
-        }
-      ]
-    },
-    "window_30d": {
-      "same_day": {
-        "n_pairs": 1915,
-        "n_positive": 280,
-        "base_rate": 0.1462,
-        "brier": 0.0691,
-        "brier_flat_base_rate": 0.1248,
-        "aucpr": 0.7275,
-        "auroc": 0.8861,
-        "sensitivity_at_spec_0_87": 0.7536,
-        "within_beach_auroc": 0.6929,
-        "band_operating": {
-          "n_pairs": 1915,
-          "exceedances": 280,
-          "sensitivity": 0.7964,
-          "specificity": 0.8336,
-          "exceedances_shown_low": 57,
-          "false_alarms": 272
-        }
-      },
-      "forward_1_3d": {
-        "n_pairs": 4622,
-        "n_positive": 510,
-        "base_rate": 0.1103,
-        "brier": 0.067,
-        "brier_flat_base_rate": 0.0982,
-        "aucpr": 0.6024,
-        "auroc": 0.8513,
-        "sensitivity_at_spec_0_87": 0.6333,
-        "within_beach_auroc": 0.6003
-      },
-      "calibration_bins": [
-        {
-          "p_range": [
-            0.0,
-            0.05
-          ],
-          "n": 3196,
-          "predicted_mean": 0.0226,
-          "actual_rate": 0.0213
-        },
-        {
-          "p_range": [
-            0.05,
-            0.1
-          ],
-          "n": 1045,
-          "predicted_mean": 0.0715,
-          "actual_rate": 0.0603
-        },
-        {
-          "p_range": [
-            0.1,
-            0.2
-          ],
-          "n": 600,
-          "predicted_mean": 0.1365,
-          "actual_rate": 0.0983
-        },
-        {
-          "p_range": [
-            0.2,
-            0.3
-          ],
-          "n": 276,
-          "predicted_mean": 0.2298,
-          "actual_rate": 0.1848
-        },
-        {
-          "p_range": [
-            0.3,
-            0.7
-          ],
-          "n": 710,
-          "predicted_mean": 0.3689,
-          "actual_rate": 0.2465
-        },
-        {
-          "p_range": [
-            0.7,
-            1.0
-          ],
-          "n": 241,
-          "predicted_mean": 0.9122,
-          "actual_rate": 0.8714
-        }
-      ]
-    },
-    "generated_at": "2026-10-30T17:50:09.579790+00:00"
-  },
-  "serving_calibration": {
-    "active": true,
-    "fitted_at": "2026-10-30T17:49:57.016400+00:00",
-    "window_days": 120,
-    "n_pairs": 26614,
-    "n_positive": 2032,
-    "n_pin_era_excluded": 354,
-    "y_max": 1.0,
-    "top_step_capped_from": null,
-    "min_top_step_support": 10,
-    "ceiling_warning": null,
-    "brier_before": 0.0536,
-    "brier_after": 0.0529,
-    "brier_flat_base_rate": 0.0705
-  },
-  "release_gate": {
-    "enforced": true,
-    "public_release_eligible": true,
-    "forecast_published": true,
-    "blockers": []
-  },
   "serving_method": {
     "name": "logit-lookup-offset-v2",
     "method_requested": "logit",
@@ -868,11 +658,11 @@
     },
     "window_days": 365,
     "prior_strength": 5,
-    "forecast_date": "2026-10-30",
-    "rows": 535,
-    "posted": 57,
-    "persistence_floored": 12,
-    "applied_at": "2026-10-30T17:50:49.555672+00:00",
+    "forecast_date": "2026-10-31",
+    "rows": 532,
+    "posted": 45,
+    "persistence_floored": 7,
+    "applied_at": "2026-10-31T16:22:30.051730+00:00",
     "logit": {
       "features": [
         "R",
@@ -883,226 +673,226 @@
         "R_ddpcr"
       ],
       "coefficients": {
-        "intercept": -0.22865158126238136,
-        "R": 0.3172051713066214,
-        "RF": 0.5162247187462723,
-        "W": 0.7240431439460412,
-        "S": 0.3368813095067505,
-        "ddpcr": 0.10411874336448321,
-        "R_ddpcr": 0.6579140160575091
+        "intercept": -0.22894277089857012,
+        "R": 0.3170923666698913,
+        "RF": 0.5156661745061276,
+        "W": 0.7240044772862482,
+        "S": 0.3368681481919356,
+        "ddpcr": 0.1042434784482617,
+        "R_ddpcr": 0.6575980026007053
       },
-      "train_rows": 114618,
+      "train_rows": 114642,
       "rain_coverage": 1.0,
-      "mean_p_exceed_raw": 0.09581815606550864,
-      "mean_p_exceed_lookup": 0.10498042454298012,
-      "band_changes_vs_lookup": 19
+      "mean_p_exceed_raw": 0.10357859290744377,
+      "mean_p_exceed_lookup": 0.1043789754561079,
+      "band_changes_vs_lookup": 25
     },
     "live": {
       "versions": [
         "logit-lookup-offset-v1",
         "logit-lookup-offset-v2"
       ],
-      "served_days": 33,
+      "served_days": 34,
       "first_served": "2026-09-28",
       "forward_1_3d": {
-        "n_pairs": 4951,
-        "n_positive": 558,
-        "base_rate": 0.1127,
-        "brier": 0.0685,
-        "brier_flat_base_rate": 0.1,
-        "aucpr": 0.6017,
-        "auroc": 0.846,
-        "sensitivity_at_spec_0_87": 0.629,
-        "within_beach_auroc": 0.5912,
+        "n_pairs": 5046,
+        "n_positive": 567,
+        "base_rate": 0.1124,
+        "brier": 0.0691,
+        "brier_flat_base_rate": 0.0997,
+        "aucpr": 0.5977,
+        "auroc": 0.844,
+        "sensitivity_at_spec_0_87": 0.619,
+        "within_beach_auroc": 0.5926,
         "reportable": true,
         "head_to_head": {
           "served": {
-            "n_pairs": 2483,
-            "n_positive": 297,
-            "base_rate": 0.1196,
-            "brier": 0.0722,
-            "brier_flat_base_rate": 0.1053,
-            "aucpr": 0.6111,
-            "auroc": 0.8605,
-            "sensitivity_at_spec_0_87": 0.6498,
-            "within_beach_auroc": 0.6085
+            "n_pairs": 2551,
+            "n_positive": 303,
+            "base_rate": 0.1188,
+            "brier": 0.0728,
+            "brier_flat_base_rate": 0.1047,
+            "aucpr": 0.605,
+            "auroc": 0.8575,
+            "sensitivity_at_spec_0_87": 0.6403,
+            "within_beach_auroc": 0.6058
           },
-          "n_pairs": 2483,
+          "n_pairs": 2551,
           "reportable": true,
           "p_exceed_lookup": {
-            "n_pairs": 2483,
-            "n_positive": 297,
-            "base_rate": 0.1196,
+            "n_pairs": 2551,
+            "n_positive": 303,
+            "base_rate": 0.1188,
             "brier": 0.0741,
-            "brier_flat_base_rate": 0.1053,
-            "aucpr": 0.5803,
-            "auroc": 0.8387,
-            "sensitivity_at_spec_0_87": 0.6633,
-            "within_beach_auroc": 0.3501,
+            "brier_flat_base_rate": 0.1047,
+            "aucpr": 0.5762,
+            "auroc": 0.8368,
+            "sensitivity_at_spec_0_87": 0.6634,
+            "within_beach_auroc": 0.35,
             "ci": {
               "within_beach_auroc": [
-                -0.3309,
-                -0.174
+                -0.3237,
+                -0.1778
               ],
               "auroc": [
-                -0.0429,
-                -0.0013
+                -0.0418,
+                -0.0007
               ],
               "brier": [
-                -0.0022,
-                0.0067
+                -0.0028,
+                0.0061
               ]
             }
           },
           "p_exceed_ml": {
-            "n_pairs": 2483,
-            "n_positive": 297,
-            "base_rate": 0.1196,
-            "brier": 0.0753,
-            "brier_flat_base_rate": 0.1053,
-            "aucpr": 0.5433,
-            "auroc": 0.8214,
-            "sensitivity_at_spec_0_87": 0.4478,
-            "within_beach_auroc": 0.5999,
+            "n_pairs": 2551,
+            "n_positive": 303,
+            "base_rate": 0.1188,
+            "brier": 0.0758,
+            "brier_flat_base_rate": 0.1047,
+            "aucpr": 0.5352,
+            "auroc": 0.819,
+            "sensitivity_at_spec_0_87": 0.4422,
+            "within_beach_auroc": 0.5983,
             "ci": {
               "within_beach_auroc": [
-                -0.0627,
-                0.0528
+                -0.06,
+                0.0515
               ],
               "auroc": [
-                -0.0614,
-                -0.0194
+                -0.0604,
+                -0.0188
               ],
               "brier": [
-                -0.0012,
-                0.0073
+                -0.0015,
+                0.007
               ]
             }
           },
           "p_exceed_persistence": {
-            "n_pairs": 2483,
-            "n_positive": 297,
-            "base_rate": 0.1196,
-            "brier": 0.104,
-            "brier_flat_base_rate": 0.1053,
-            "aucpr": 0.3938,
-            "auroc": 0.685,
-            "sensitivity_at_spec_0_87": 0.5354,
-            "within_beach_auroc": 0.4009,
+            "n_pairs": 2551,
+            "n_positive": 303,
+            "base_rate": 0.1188,
+            "brier": 0.1035,
+            "brier_flat_base_rate": 0.1047,
+            "aucpr": 0.3883,
+            "auroc": 0.6796,
+            "sensitivity_at_spec_0_87": 0.5248,
+            "within_beach_auroc": 0.3972,
             "ci": {
               "within_beach_auroc": [
-                -0.3195,
-                -0.0981
+                -0.3252,
+                -0.1103
               ],
               "auroc": [
-                -0.2526,
-                -0.1204
+                -0.2533,
+                -0.1216
               ],
               "brier": [
-                0.0235,
-                0.0414
+                0.0224,
+                0.04
               ]
             }
           }
         }
       },
       "same_day": {
-        "n_pairs": 2313,
-        "n_positive": 337,
-        "base_rate": 0.1457,
-        "brier": 0.074,
-        "brier_flat_base_rate": 0.1245,
-        "aucpr": 0.6917,
-        "auroc": 0.8583,
-        "sensitivity_at_spec_0_87": 0.6973,
-        "within_beach_auroc": 0.645,
+        "n_pairs": 2346,
+        "n_positive": 340,
+        "base_rate": 0.1449,
+        "brier": 0.0741,
+        "brier_flat_base_rate": 0.1239,
+        "aucpr": 0.688,
+        "auroc": 0.8566,
+        "sensitivity_at_spec_0_87": 0.6971,
+        "within_beach_auroc": 0.6417,
         "reportable": true,
         "head_to_head": {
           "served": {
-            "n_pairs": 1400,
-            "n_positive": 233,
-            "base_rate": 0.1664,
-            "brier": 0.084,
-            "brier_flat_base_rate": 0.1387,
-            "aucpr": 0.6983,
-            "auroc": 0.8507,
-            "sensitivity_at_spec_0_87": 0.7039,
-            "within_beach_auroc": 0.6967
+            "n_pairs": 1433,
+            "n_positive": 236,
+            "base_rate": 0.1647,
+            "brier": 0.0841,
+            "brier_flat_base_rate": 0.1376,
+            "aucpr": 0.6927,
+            "auroc": 0.848,
+            "sensitivity_at_spec_0_87": 0.6949,
+            "within_beach_auroc": 0.6907
           },
-          "n_pairs": 1400,
+          "n_pairs": 1433,
           "reportable": true,
           "p_exceed_lookup": {
-            "n_pairs": 1400,
-            "n_positive": 233,
-            "base_rate": 0.1664,
-            "brier": 0.0914,
-            "brier_flat_base_rate": 0.1387,
-            "aucpr": 0.6508,
-            "auroc": 0.83,
-            "sensitivity_at_spec_0_87": 0.6481,
-            "within_beach_auroc": 0.3803,
+            "n_pairs": 1433,
+            "n_positive": 236,
+            "base_rate": 0.1647,
+            "brier": 0.0912,
+            "brier_flat_base_rate": 0.1376,
+            "aucpr": 0.647,
+            "auroc": 0.828,
+            "sensitivity_at_spec_0_87": 0.6483,
+            "within_beach_auroc": 0.3759,
             "ci": {
               "within_beach_auroc": [
-                -0.4075,
-                -0.218
+                -0.4049,
+                -0.2208
               ],
               "auroc": [
-                -0.0368,
-                -0.0071
+                -0.0358,
+                -0.0065
               ],
               "brier": [
-                0.0027,
-                0.013
+                0.0023,
+                0.0125
               ]
             }
           },
           "p_exceed_ml": {
-            "n_pairs": 1400,
-            "n_positive": 233,
-            "base_rate": 0.1664,
-            "brier": 0.0819,
-            "brier_flat_base_rate": 0.1387,
-            "aucpr": 0.6977,
-            "auroc": 0.8532,
-            "sensitivity_at_spec_0_87": 0.5837,
-            "within_beach_auroc": 0.7638,
+            "n_pairs": 1433,
+            "n_positive": 236,
+            "base_rate": 0.1647,
+            "brier": 0.0823,
+            "brier_flat_base_rate": 0.1376,
+            "aucpr": 0.6904,
+            "auroc": 0.8501,
+            "sensitivity_at_spec_0_87": 0.5763,
+            "within_beach_auroc": 0.7617,
             "ci": {
               "within_beach_auroc": [
-                0.0273,
-                0.107
+                0.0315,
+                0.1138
               ],
               "auroc": [
-                -0.0156,
-                0.0207
+                -0.0164,
+                0.0194
               ],
               "brier": [
-                -0.0068,
-                0.0018
+                -0.0063,
+                0.002
               ]
             }
           },
           "p_exceed_persistence": {
-            "n_pairs": 1400,
-            "n_positive": 233,
-            "base_rate": 0.1664,
-            "brier": 0.1301,
-            "brier_flat_base_rate": 0.1387,
-            "aucpr": 0.46,
-            "auroc": 0.7361,
-            "sensitivity_at_spec_0_87": 0.5794,
-            "within_beach_auroc": 0.4693,
+            "n_pairs": 1433,
+            "n_positive": 236,
+            "base_rate": 0.1647,
+            "brier": 0.1319,
+            "brier_flat_base_rate": 0.1376,
+            "aucpr": 0.4489,
+            "auroc": 0.7306,
+            "sensitivity_at_spec_0_87": 0.572,
+            "within_beach_auroc": 0.4636,
             "ci": {
               "within_beach_auroc": [
-                -0.3353,
-                -0.1028
+                -0.3333,
+                -0.1061
               ],
               "auroc": [
-                -0.1775,
-                -0.0705
+                -0.1835,
+                -0.0768
               ],
               "brier": [
-                0.0315,
-                0.0589
+                0.0348,
+                0.0605
               ]
             }
           }
@@ -1158,11 +948,222 @@
       }
     }
   },
+  "serving_calibration": {
+    "active": true,
+    "fitted_at": "2026-10-30T17:49:57.016400+00:00",
+    "window_days": 120,
+    "n_pairs": 26614,
+    "n_positive": 2032,
+    "n_pin_era_excluded": 354,
+    "y_max": 1.0,
+    "top_step_capped_from": null,
+    "min_top_step_support": 10,
+    "ceiling_warning": null,
+    "brier_before": 0.0536,
+    "brier_after": 0.0529,
+    "brier_flat_base_rate": 0.0705
+  },
+  "served_metrics": {
+    "definition": "Served p_exceed from forecast_history.parquet (final issue per beach-day) scored against observations.parquet worst-sample-per-day; same_day = outcome on the forecast day, forward = first outcome in D+1..D+3 (provably unseen by the forecast).",
+    "history_rows": 117301,
+    "final_forecast_rows": 72852,
+    "history_span_days": 192,
+    "verifiable_fraction": 0.5247,
+    "window_90d": {
+      "same_day": {
+        "n_pairs": 6931,
+        "n_positive": 874,
+        "base_rate": 0.1261,
+        "brier": 0.0709,
+        "brier_flat_base_rate": 0.1102,
+        "aucpr": 0.6203,
+        "auroc": 0.8755,
+        "sensitivity_at_spec_0_87": 0.7174,
+        "within_beach_auroc": 0.5782,
+        "band_operating": {
+          "n_pairs": 6931,
+          "exceedances": 874,
+          "sensitivity": 0.7757,
+          "specificity": 0.84,
+          "exceedances_shown_low": 196,
+          "false_alarms": 969
+        }
+      },
+      "forward_1_3d": {
+        "n_pairs": 16607,
+        "n_positive": 1508,
+        "base_rate": 0.0908,
+        "brier": 0.0639,
+        "brier_flat_base_rate": 0.0826,
+        "aucpr": 0.466,
+        "auroc": 0.8267,
+        "sensitivity_at_spec_0_87": 0.5995,
+        "within_beach_auroc": 0.5376
+      },
+      "calibration_bins": [
+        {
+          "p_range": [
+            0.0,
+            0.05
+          ],
+          "n": 11077,
+          "predicted_mean": 0.0273,
+          "actual_rate": 0.0213
+        },
+        {
+          "p_range": [
+            0.05,
+            0.1
+          ],
+          "n": 5488,
+          "predicted_mean": 0.0657,
+          "actual_rate": 0.0532
+        },
+        {
+          "p_range": [
+            0.1,
+            0.2
+          ],
+          "n": 1656,
+          "predicted_mean": 0.1377,
+          "actual_rate": 0.1087
+        },
+        {
+          "p_range": [
+            0.2,
+            0.3
+          ],
+          "n": 940,
+          "predicted_mean": 0.2469,
+          "actual_rate": 0.1872
+        },
+        {
+          "p_range": [
+            0.3,
+            0.7
+          ],
+          "n": 2324,
+          "predicted_mean": 0.3684,
+          "actual_rate": 0.2556
+        },
+        {
+          "p_range": [
+            0.7,
+            1.0
+          ],
+          "n": 404,
+          "predicted_mean": 0.8903,
+          "actual_rate": 0.8366
+        }
+      ]
+    },
+    "window_30d": {
+      "same_day": {
+        "n_pairs": 1914,
+        "n_positive": 273,
+        "base_rate": 0.1426,
+        "brier": 0.068,
+        "brier_flat_base_rate": 0.1223,
+        "aucpr": 0.7233,
+        "auroc": 0.884,
+        "sensitivity_at_spec_0_87": 0.7509,
+        "within_beach_auroc": 0.6955,
+        "band_operating": {
+          "n_pairs": 1914,
+          "exceedances": 273,
+          "sensitivity": 0.7949,
+          "specificity": 0.8349,
+          "exceedances_shown_low": 56,
+          "false_alarms": 271
+        }
+      },
+      "forward_1_3d": {
+        "n_pairs": 4687,
+        "n_positive": 516,
+        "base_rate": 0.1101,
+        "brier": 0.067,
+        "brier_flat_base_rate": 0.098,
+        "aucpr": 0.6034,
+        "auroc": 0.8496,
+        "sensitivity_at_spec_0_87": 0.626,
+        "within_beach_auroc": 0.5919
+      },
+      "calibration_bins": [
+        {
+          "p_range": [
+            0.0,
+            0.05
+          ],
+          "n": 3206,
+          "predicted_mean": 0.0226,
+          "actual_rate": 0.0215
+        },
+        {
+          "p_range": [
+            0.05,
+            0.1
+          ],
+          "n": 1047,
+          "predicted_mean": 0.0716,
+          "actual_rate": 0.0592
+        },
+        {
+          "p_range": [
+            0.1,
+            0.2
+          ],
+          "n": 633,
+          "predicted_mean": 0.136,
+          "actual_rate": 0.0964
+        },
+        {
+          "p_range": [
+            0.2,
+            0.3
+          ],
+          "n": 289,
+          "predicted_mean": 0.2316,
+          "actual_rate": 0.1765
+        },
+        {
+          "p_range": [
+            0.3,
+            0.7
+          ],
+          "n": 736,
+          "predicted_mean": 0.3725,
+          "actual_rate": 0.2418
+        },
+        {
+          "p_range": [
+            0.7,
+            1.0
+          ],
+          "n": 236,
+          "predicted_mean": 0.9121,
+          "actual_rate": 0.8729
+        }
+      ]
+    },
+    "generated_at": "2026-10-31T16:22:19.028455+00:00"
+  },
+  "release_gate": {
+    "enforced": false,
+    "public_release_eligible": true,
+    "forecast_published": true,
+    "blockers": [],
+    "note": "ML training skipped this run; the served estimate does not depend on the ML release gate."
+  },
+  "ml_training": {
+    "ran": false,
+    "skipped_at": "2026-10-31T16:22:19+00:00",
+    "registry_carried_from": "2026-10-30T17:50:09.580093+00:00"
+  },
   "forecast_audit": {
-    "generated_at": "2026-10-30T17:51:33.462551+00:00",
+    "generated_at": "2026-10-31T16:22:40.994029+00:00",
     "agreement_rate": 1.0,
     "acute_agreement_rate": 1.0,
-    "acute_advised_beaches": 54,
+    "acute_advised_beaches": 42,
     "chronic_agreement_rate": null,
     "stale_agreement_rate": 1.0,
     "false_negatives": 0,
@@ -1173,36 +1174,36 @@
       "stale": 0,
       "unknown_duration": 0
     },
-    "false_positives": 45,
-    "active_advisories": 57,
+    "false_positives": 50,
+    "active_advisories": 45,
     "risk_threshold": 0.2
   },
   "lab_freshness": {
-    "as_of": "2026-10-30",
+    "as_of": "2026-10-31",
     "stale_count": 1,
     "counties": [
       {
         "county": "East Bay Parks District",
         "eligible": true,
         "newest": "2026-10-05",
-        "age_days": 25,
+        "age_days": 26,
         "cadence_days": 7.0,
         "stale": true,
-        "reason": "stale: age 25d > max(14, 3 * 7.0d) = 21d"
+        "reason": "stale: age 26d > max(14, 3 * 7.0d) = 21d"
       },
       {
         "county": "Humboldt",
         "eligible": true,
-        "newest": "2026-10-26",
-        "age_days": 4,
+        "newest": "2026-10-29",
+        "age_days": 2,
         "cadence_days": 5.0,
         "stale": false,
-        "reason": "fresh: age 4d <= max(14, 3 * 5.0d) = 15d"
+        "reason": "fresh: age 2d <= max(14, 3 * 5.0d) = 15d"
       },
       {
         "county": "Los Angeles",
         "eligible": true,
-        "newest": "2026-10-28",
+        "newest": "2026-10-29",
         "age_days": 2,
         "cadence_days": 1.0,
         "stale": false,
@@ -1212,109 +1213,109 @@
         "county": "Marin",
         "eligible": true,
         "newest": "2026-10-27",
-        "age_days": 3,
+        "age_days": 4,
         "cadence_days": 1.0,
         "stale": false,
-        "reason": "fresh: age 3d <= max(14, 3 * 1.0d) = 14d"
+        "reason": "fresh: age 4d <= max(14, 3 * 1.0d) = 14d"
       },
       {
         "county": "Mendocino",
         "eligible": true,
         "newest": "2026-10-27",
-        "age_days": 3,
+        "age_days": 4,
         "cadence_days": 7.0,
         "stale": false,
-        "reason": "fresh: age 3d <= max(14, 3 * 7.0d) = 21d"
+        "reason": "fresh: age 4d <= max(14, 3 * 7.0d) = 21d"
       },
       {
         "county": "Monterey",
         "eligible": true,
         "newest": "2026-10-27",
-        "age_days": 3,
+        "age_days": 4,
         "cadence_days": 3.5,
         "stale": false,
-        "reason": "fresh: age 3d <= max(14, 3 * 3.5d) = 14d"
+        "reason": "fresh: age 4d <= max(14, 3 * 3.5d) = 14d"
       },
       {
         "county": "Orange",
         "eligible": true,
         "newest": "2026-10-21",
-        "age_days": 9,
+        "age_days": 10,
         "cadence_days": 1.0,
         "stale": false,
-        "reason": "fresh: age 9d <= max(14, 3 * 1.0d) = 14d"
+        "reason": "fresh: age 10d <= max(14, 3 * 1.0d) = 14d"
       },
       {
         "county": "San Diego",
         "eligible": true,
         "newest": "2026-10-29",
-        "age_days": 1,
+        "age_days": 2,
         "cadence_days": 1.0,
         "stale": false,
-        "reason": "fresh: age 1d <= max(14, 3 * 1.0d) = 14d"
+        "reason": "fresh: age 2d <= max(14, 3 * 1.0d) = 14d"
       },
       {
         "county": "San Francisco",
         "eligible": true,
         "newest": "2026-10-27",
-        "age_days": 3,
-        "cadence_days": 5.0,
-        "stale": false,
-        "reason": "fresh: age 3d <= max(14, 3 * 5.0d) = 15d"
-      },
-      {
-        "county": "San Luis Obispo",
-        "eligible": true,
-        "newest": "2026-10-19",
-        "age_days": 11,
-        "cadence_days": 6.0,
-        "stale": false,
-        "reason": "fresh: age 11d <= max(14, 3 * 6.0d) = 18d"
-      },
-      {
-        "county": "San Mateo",
-        "eligible": true,
-        "newest": "2026-10-19",
-        "age_days": 11,
-        "cadence_days": 7.0,
-        "stale": false,
-        "reason": "fresh: age 11d <= max(14, 3 * 7.0d) = 21d"
-      },
-      {
-        "county": "Santa Barbara",
-        "eligible": true,
-        "newest": "2026-10-26",
         "age_days": 4,
         "cadence_days": 5.0,
         "stale": false,
         "reason": "fresh: age 4d <= max(14, 3 * 5.0d) = 15d"
       },
       {
+        "county": "San Luis Obispo",
+        "eligible": true,
+        "newest": "2026-10-19",
+        "age_days": 12,
+        "cadence_days": 6.0,
+        "stale": false,
+        "reason": "fresh: age 12d <= max(14, 3 * 6.0d) = 18d"
+      },
+      {
+        "county": "San Mateo",
+        "eligible": true,
+        "newest": "2026-10-26",
+        "age_days": 5,
+        "cadence_days": 7.0,
+        "stale": false,
+        "reason": "fresh: age 5d <= max(14, 3 * 7.0d) = 21d"
+      },
+      {
+        "county": "Santa Barbara",
+        "eligible": true,
+        "newest": "2026-10-26",
+        "age_days": 5,
+        "cadence_days": 5.0,
+        "stale": false,
+        "reason": "fresh: age 5d <= max(14, 3 * 5.0d) = 15d"
+      },
+      {
         "county": "Santa Cruz",
         "eligible": true,
         "newest": "2026-10-28",
-        "age_days": 2,
+        "age_days": 3,
         "cadence_days": 5.0,
         "stale": false,
-        "reason": "fresh: age 2d <= max(14, 3 * 5.0d) = 15d"
+        "reason": "fresh: age 3d <= max(14, 3 * 5.0d) = 15d"
       },
       {
         "county": "Sonoma",
         "eligible": true,
         "newest": "2026-10-19",
-        "age_days": 11,
+        "age_days": 12,
         "cadence_days": 7.0,
         "stale": false,
-        "reason": "fresh: age 11d <= max(14, 3 * 7.0d) = 21d"
+        "reason": "fresh: age 12d <= max(14, 3 * 7.0d) = 21d"
       },
       {
         "county": "Ventura",
         "eligible": true,
         "newest": "2026-10-28",
-        "age_days": 2,
+        "age_days": 3,
         "cadence_days": 1.0,
         "stale": false,
-        "reason": "fresh: age 2d <= max(14, 3 * 1.0d) = 14d"
+        "reason": "fresh: age 3d <= max(14, 3 * 1.0d) = 14d"
       }
     ]
   }
