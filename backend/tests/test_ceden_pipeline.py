@@ -1,4 +1,6 @@
+import httpx
 import pandas as pd
+import pytest
 
 from app.data.pipeline.ceden import (
     build_ceden_datastore_sql,
@@ -464,3 +466,49 @@ def test_fetch_ceden_datastore_subset_pages_and_caches(tmp_path):
     assert len(frame) == 1
     assert cache_path.exists()
     assert len(client.queries) == 1
+
+
+class _FlakyClient(_DummyClient):
+    """Times out on the first ``failures`` calls, then serves pages."""
+
+    def __init__(self, pages, failures):
+        super().__init__(pages)
+        self.failures = failures
+        self.calls = 0
+
+    def get(self, url, params, timeout):
+        self.calls += 1
+        if self.calls <= self.failures:
+            raise httpx.ReadTimeout("The read operation timed out")
+        return super().get(url, params, timeout)
+
+
+def test_fetch_ceden_datastore_subset_retries_a_slow_reply(tmp_path, monkeypatch):
+    from app.data.pipeline import ceden
+
+    monkeypatch.setattr(ceden.time, "sleep", lambda s: None)
+    record = {"StationName": "x", "StationCode": "EH-060", "Analyte": "Enterococcus",
+              "Result": "80", "SampleDateTime": "2026-04-21T09:00:00"}
+    client = _FlakyClient(pages=[[record], []], failures=2)
+
+    frame = fetch_ceden_datastore_subset(
+        resource_id="resource-id", station_codes=["EH-060"], max_rows=100,
+        batch_size=50, cache_path=tmp_path / "c.csv", client=client,
+    )
+
+    assert len(frame) == 1
+    assert client.calls == 3
+
+
+def test_fetch_ceden_datastore_subset_gives_up_after_the_last_attempt(tmp_path, monkeypatch):
+    from app.data.pipeline import ceden
+
+    monkeypatch.setattr(ceden.time, "sleep", lambda s: None)
+    client = _FlakyClient(pages=[], failures=99)
+
+    with pytest.raises(httpx.ReadTimeout):
+        fetch_ceden_datastore_subset(
+            resource_id="resource-id", station_codes=["EH-060"], max_rows=100,
+            batch_size=50, cache_path=tmp_path / "c.csv", client=client,
+        )
+    assert client.calls == ceden._FETCH_ATTEMPTS
