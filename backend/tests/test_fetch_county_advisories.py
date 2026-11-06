@@ -1066,6 +1066,17 @@ def test_shipped_aliases_resolve_2026_10_28_la_and_oc_postings():
         assert resolver.resolve_all_by_name(county, name) == (beach_ids, "csv"), name
 
 
+def test_shipped_aliases_resolve_2026_11_06_postings():
+    """San Mateo's KML posts 'PARKSIDE AQUATIC PARK', which maps to the
+    'Aquatic Park' station (ca308430-san-mateo-aquatic-park-aquatic-park)."""
+    beaches = pd.read_parquet(ROOT.parent / "data" / "curated" / "beaches.parquet")
+    resolver = StationResolver(beaches)
+    assert resolver.resolve_all_by_name("San Mateo", "PARKSIDE AQUATIC PARK") == (
+        ["ca308430-san-mateo-aquatic-park-aquatic-park"],
+        "csv",
+    )
+
+
 def test_allowlist_reason_may_contain_a_hash(tmp_path):
     """Comment stripping is line-based: a '#' inside a quoted reason must not
     truncate the row's remaining columns."""
