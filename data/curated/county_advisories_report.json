@@ -1,11 +1,11 @@
 {
-  "generated_at": "2026-11-13T17:15:01.417227+00:00",
+  "generated_at": "2026-11-13T17:38:37.286223+00:00",
   "total_resolved_advisories": 148,
   "counties": [
     {
       "county": "State Board",
       "success": true,
-      "last_attempted_at": "2026-11-13T17:14:43.155092+00:00",
+      "last_attempted_at": "2026-11-13T17:38:18.392800+00:00",
       "source_url": "https://beachwatch.waterboards.ca.gov/public/advisory.php",
       "stations_in_lookup": 848,
       "advisories_parsed": 48,
@@ -25,7 +25,7 @@
     {
       "county": "San Diego",
       "success": true,
-      "last_attempted_at": "2026-11-13T17:14:50.297558+00:00",
+      "last_attempted_at": "2026-11-13T17:38:25.733020+00:00",
       "source_url": "https://cosdapps.sandiegocounty.gov/sdbeachinfo/",
       "stations_in_lookup": 221,
       "advisories_parsed": 54,
@@ -44,20 +44,35 @@
     },
     {
       "county": "Orange",
-      "success": false,
-      "last_attempted_at": "2026-11-13T17:14:51.279747+00:00",
+      "success": true,
+      "last_attempted_at": "2026-11-13T17:38:27.132024+00:00",
       "source_url": "https://www.ocbeachinfo.com/",
       "stations_in_lookup": 22,
-      "advisories_parsed": 0,
+      "advisories_parsed": 3,
       "matched_via_live_list": 0,
       "matched_via_csv": 0,
       "matched_via_fuzzy": 0,
       "matched_via_exact": 0,
       "matched_via_secondary": 0,
       "matched_via_substring": 0,
-      "heuristic_matches": [],
-      "unmatched_names": [],
-      "error": "expected section markers (CLOSURES/WARNINGS/ADVISORIES) not all found [status=202 url=https://www.ocbeachinfo.com/ title='' text='']",
+      "heuristic_matches": [
+        {
+          "posted_name": "Laguna Beach: 300 feet in front of Hotel Laguna",
+          "beach_id": "ca853136-orange-laguna-beach-westz",
+          "kind": "substring"
+        },
+        {
+          "posted_name": "Dana Point - From the Salt Creek to 300 feet downcoast of the Salt Creek at Salt Creek County Beach",
+          "beach_id": "ca825837-orange-dana-point-s-6",
+          "kind": "substring"
+        }
+      ],
+      "unmatched_names": [
+        "Laguna Beach: 300 feet in front of Hotel Laguna",
+        "300 feet of Treasure Island Beach",
+        "Dana Point - From the Salt Creek to 300 feet downcoast of the Salt Creek at Salt Creek County Beach"
+      ],
+      "error": null,
       "no_public_source": null,
       "samples_collected": 0,
       "rejected_fragments": 0
@@ -65,7 +80,7 @@
     {
       "county": "Santa Barbara",
       "success": true,
-      "last_attempted_at": "2026-11-13T17:14:51.652896+00:00",
+      "last_attempted_at": "2026-11-13T17:38:28.017817+00:00",
       "source_url": "https://www.countyofsb.org/ch-ocean-water-monitoring-program",
       "stations_in_lookup": 20,
       "advisories_parsed": 7,
@@ -85,7 +100,7 @@
     {
       "county": "San Mateo",
       "success": true,
-      "last_attempted_at": "2026-11-13T17:14:51.805558+00:00",
+      "last_attempted_at": "2026-11-13T17:38:28.322276+00:00",
       "source_url": "https://smchealth.org/division/divisions/environmental-health-services/permits-business-services/water-protection-and-land-use/beach-creek-monitoring-program/",
       "stations_in_lookup": 24,
       "advisories_parsed": 13,
@@ -105,7 +120,7 @@
     {
       "county": "Los Angeles",
       "success": false,
-      "last_attempted_at": "2026-11-13T17:14:52.452409+00:00",
+      "last_attempted_at": "2026-11-13T17:38:28.660246+00:00",
       "source_url": "http://publichealth.lacounty.gov/phcommon/public/eh/water_quality/beach_grades.cfm",
       "stations_in_lookup": 40,
       "advisories_parsed": 0,
@@ -125,7 +140,7 @@
     {
       "county": "Marin",
       "success": true,
-      "last_attempted_at": "2026-11-13T17:14:52.948499+00:00",
+      "last_attempted_at": "2026-11-13T17:38:29.244646+00:00",
       "source_url": "https://data.marincounty.gov/resource/88ua-5nh2.json",
       "stations_in_lookup": 22,
       "advisories_parsed": 20,
@@ -145,7 +160,7 @@
     {
       "county": "Long Beach City",
       "success": true,
-      "last_attempted_at": "2026-11-13T17:14:53.630555+00:00",
+      "last_attempted_at": "2026-11-13T17:38:29.534697+00:00",
       "source_url": "https://longbeach.gov/health/inspections-and-reporting/inspections/recreational-water-samples/",
       "stations_in_lookup": 0,
       "advisories_parsed": 1,
@@ -165,7 +180,7 @@
     {
       "county": "East Bay Parks District",
       "success": true,
-      "last_attempted_at": "2026-11-13T17:14:54.243260+00:00",
+      "last_attempted_at": "2026-11-13T17:38:30.269807+00:00",
       "source_url": "https://www.ebparks.org/natural-resources/water-quality",
       "stations_in_lookup": 9,
       "advisories_parsed": 10,
@@ -197,7 +212,7 @@
     {
       "county": "Ventura",
       "success": true,
-      "last_attempted_at": "2026-11-13T17:14:54.560276+00:00",
+      "last_attempted_at": "2026-11-13T17:38:30.557175+00:00",
       "source_url": "https://rma.venturacounty.gov/divisions/environmental-health/ocean-water-quality-sampling-results/",
       "stations_in_lookup": 28,
       "advisories_parsed": 0,
@@ -217,7 +232,7 @@
     {
       "county": "San Francisco",
       "success": true,
-      "last_attempted_at": "2026-11-13T17:14:54.991349+00:00",
+      "last_attempted_at": "2026-11-13T17:38:31.092453+00:00",
       "source_url": "https://data.sfgov.org/resource/v3fv-x3ux.json",
       "stations_in_lookup": 21,
       "advisories_parsed": 0,
@@ -237,7 +252,7 @@
     {
       "county": "Humboldt",
       "success": false,
-      "last_attempted_at": "2026-11-13T17:14:57.102667+00:00",
+      "last_attempted_at": "2026-11-13T17:38:31.802595+00:00",
       "source_url": "https://humboldtgov.org/1696/Water-Quality-Test-Results",
       "stations_in_lookup": 7,
       "advisories_parsed": 0,
@@ -257,7 +272,7 @@
     {
       "county": "Sonoma",
       "success": false,
-      "last_attempted_at": "2026-11-13T17:14:57.907225+00:00",
+      "last_attempted_at": "2026-11-13T17:38:32.440261+00:00",
       "source_url": "https://sonomacounty.gov/health-and-human-services/health-services/divisions/public-health/environmental-health/programs-and-services/ocean-water-quality",
       "stations_in_lookup": 7,
       "advisories_parsed": 0,
@@ -277,7 +292,7 @@
     {
       "county": "San Luis Obispo",
       "success": false,
-      "last_attempted_at": "2026-11-13T17:14:58.369869+00:00",
+      "last_attempted_at": "2026-11-13T17:38:32.820632+00:00",
       "source_url": "https://slocounty.maps.arcgis.com/apps/dashboards/0693b6f43f444995afc3f90d29b81432",
       "stations_in_lookup": 11,
       "advisories_parsed": 0,
@@ -297,7 +312,7 @@
     {
       "county": "Monterey",
       "success": true,
-      "last_attempted_at": "2026-11-13T17:14:59.397147+00:00",
+      "last_attempted_at": "2026-11-13T17:38:36.109728+00:00",
       "source_url": "https://apps.co.monterey.ca.us/CountyWebsite/health/beaches",
       "stations_in_lookup": 15,
       "advisories_parsed": 0,
@@ -317,7 +332,7 @@
     {
       "county": "San Diego",
       "success": true,
-      "last_attempted_at": "2026-11-13T17:15:01.416803+00:00",
+      "last_attempted_at": "2026-11-13T17:38:37.285927+00:00",
       "source_url": "https://cosdapps.sandiegocounty.gov/sdbeachinfo/screenservices/CoSD_Beach_Water_CW/MainFlow/SampleBlock/ScreenDataSetGetSamples",
       "stations_in_lookup": 221,
       "advisories_parsed": 0,
