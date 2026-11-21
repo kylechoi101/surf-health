@@ -1,7 +1,7 @@
 # Model Card: Shorelife `xgb-undersample-ensemble-curated-v0`
 
 ## Deployment Status
-- **Generated at**: 2026-11-20T18:46:05.492548+00:00
+- **Generated at**: 2026-11-21T18:31:21.490175+00:00
 - **Deployment stage**: candidate_ready
 - **Public release eligible**: true
 - **Promotion blocker (latest)**: None
@@ -9,10 +9,10 @@
 ## Headline Metrics (from `system_health.json`)
 
 ### Temporal (held-out time slice)
-- **AUCPR**: 0.737
-- **Brier**: 0.060
-- **Log loss**: 0.216
-- **Calibration slope**: 0.936
+- **AUCPR**: 0.742
+- **Brier**: 0.061
+- **Log loss**: 0.218
+- **Calibration slope**: 0.965
 
 ### Deployment (active stations only; recency-filtered roster)
 - **AUCPR**: —
@@ -20,12 +20,12 @@
 - **n_samples**: 0
 
 ### Validation (calibration/training-time slice; not a public headline)
-- **AUCPR**: 0.820
-- **Brier**: 0.079
+- **AUCPR**: 0.819
+- **Brier**: 0.077
 
 ### Spatial (holdouts)
 - **Spatial county AUCPR**: 0.689
-- **Spatial county persistence AUCPR**: 0.477
+- **Spatial county persistence AUCPR**: 0.476
 
 ## Operational Agreement Check
 Active advisories are decomposed into three pools by age. The overall agreement rate below is dominated by the stale pool (administrative postings the model is not designed to flag), so per-pool numbers are the honest model-quality signal.
